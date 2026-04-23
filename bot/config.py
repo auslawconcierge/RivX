@@ -29,82 +29,54 @@ TELEGRAM_CHAT_ID    = os.getenv("TELEGRAM_CHAT_ID")
 ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY")
 
 # ─── Timing (AEST = UTC+10) ───────────────────────────────────────────────────
-# US market hours in AEST: 11:30pm - 6:00am
-# Evening briefing: 9:00pm AEST
-# Morning summary:  6:30am AEST
-EVENING_BRIEFING_HOUR_AEST  = 20   # 8pm
-MORNING_SUMMARY_HOUR_AEST   = 6    # 6am
-US_MARKET_OPEN_HOUR_AEST    = 23   # 11pm (approx)
-US_MARKET_CLOSE_HOUR_AEST   = 6    # 6am
+EVENING_BRIEFING_HOUR_AEST  = 20   # 8pm AEST
+MORNING_SUMMARY_HOUR_AEST   = 6    # 6:30am AEST
+US_MARKET_OPEN_HOUR_AEST    = 23   # 11:30pm AEST
+US_MARKET_CLOSE_HOUR_AEST   = 6    # 6am AEST
 
 # ─── Portfolio ────────────────────────────────────────────────────────────────
-TOTAL_PORTFOLIO_AUD = 5000
+# Scanner picks the actual assets each night — these are just allocation rules
+# Claude is not limited to these symbols — it scans 50+ stocks and 25+ crypto
+TOTAL_PORTFOLIO_AUD     = 5000
+MAX_STOCK_PORTFOLIO     = 2000   # 40% stocks
+MAX_CRYPTO_PORTFOLIO    = 2000   # 40% crypto
+CASH_BUFFER             = 1000   # 20% cash buffer for opportunities
+MAX_POSITION_SIZE       = 500    # max $500 per single position
+MAX_CRYPTO_POSITIONS    = 5      # max 5 crypto positions open at once
+MAX_STOCK_POSITIONS     = 5      # max 5 stock positions open at once
 
+# Default stop/take-profit by asset type
+STOP_LOSS = {
+    "etf":    0.07,
+    "stock":  0.07,
+    "crypto": 0.10,
+}
+TAKE_PROFIT = {
+    "etf":    0.05,
+    "stock":  0.08,
+    "crypto": 0.12,
+}
+
+# Legacy PORTFOLIO dict — kept for stop-loss checks on existing positions
+# New trades are sized dynamically by Claude using the rules above
 PORTFOLIO = {
-    # Conservative 50% = $2,500
-    "SPY": {
-        "tier":           "conservative",
-        "allocated_aud":  1250,
-        "market":         "alpaca",
-        "type":           "etf",
-        "stop_loss_pct":  0.07,
-        "take_profit_pct": 0.05,
-    },
-    "QQQ": {
-        "tier":           "conservative",
-        "allocated_aud":  1250,
-        "market":         "alpaca",
-        "type":           "etf",
-        "stop_loss_pct":  0.07,
-        "take_profit_pct": 0.05,
-    },
-    # Moderate 30% = $1,500
-    "NVDA": {
-        "tier":           "moderate",
-        "allocated_aud":  500,
-        "market":         "alpaca",
-        "type":           "stock",
-        "stop_loss_pct":  0.07,
-        "take_profit_pct": 0.08,
-    },
-    "TSLA": {
-        "tier":           "moderate",
-        "allocated_aud":  500,
-        "market":         "alpaca",
-        "type":           "stock",
-        "stop_loss_pct":  0.07,
-        "take_profit_pct": 0.08,
-    },
-    "META": {
-        "tier":           "moderate",
-        "allocated_aud":  500,
-        "market":         "alpaca",
-        "type":           "stock",
-        "stop_loss_pct":  0.07,
-        "take_profit_pct": 0.08,
-    },
-    # High risk 20% = $1,000
-    "BTC": {
-        "tier":           "high_risk",
-        "allocated_aud":  700,
-        "market":         "coinspot",
-        "type":           "crypto",
-        "stop_loss_pct":  0.10,
-        "take_profit_pct": 0.12,
-    },
-    "ETH": {
-        "tier":           "high_risk",
-        "allocated_aud":  300,
-        "market":         "coinspot",
-        "type":           "crypto",
-        "stop_loss_pct":  0.10,
-        "take_profit_pct": 0.12,
-    },
+    "BTC": {"tier": "high_risk", "allocated_aud": 500, "market": "coinspot",
+            "type": "crypto", "stop_loss_pct": 0.10, "take_profit_pct": 0.12},
+    "ETH": {"tier": "high_risk", "allocated_aud": 500, "market": "coinspot",
+            "type": "crypto", "stop_loss_pct": 0.10, "take_profit_pct": 0.12},
+    "SOL": {"tier": "high_risk", "allocated_aud": 400, "market": "coinspot",
+            "type": "crypto", "stop_loss_pct": 0.10, "take_profit_pct": 0.12},
+    "XRP": {"tier": "high_risk", "allocated_aud": 400, "market": "coinspot",
+            "type": "crypto", "stop_loss_pct": 0.10, "take_profit_pct": 0.12},
+    "SPY": {"tier": "conservative", "allocated_aud": 500, "market": "alpaca",
+            "type": "etf", "stop_loss_pct": 0.07, "take_profit_pct": 0.05},
+    "QQQ": {"tier": "conservative", "allocated_aud": 500, "market": "alpaca",
+            "type": "etf", "stop_loss_pct": 0.07, "take_profit_pct": 0.05},
 }
 
 # ─── Trading rules ────────────────────────────────────────────────────────────
-MIN_CONFIDENCE_TO_TRADE  = 0.55   # Claude must be >55% confident to act
-INTRADAY_CHECK_INTERVAL  = 120    # seconds between intraday checks (2 mins)
-CRYPTO_CHECK_INTERVAL    = 300    # seconds between crypto checks (5 mins)
+MIN_CONFIDENCE_TO_TRADE  = 0.60   # 60% confidence minimum
+INTRADAY_CHECK_INTERVAL  = 120    # 2 mins between intraday checks
+CRYPTO_CHECK_INTERVAL    = 300    # 5 mins between crypto checks
 APPROVAL_TIMEOUT_SECONDS = 3600   # 1 hour to approve evening briefing
 AUD_USD_FALLBACK         = 0.635
