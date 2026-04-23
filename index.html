@@ -1,8 +1,8 @@
-<!DOCTYPE html> 
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0"> 
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>RivX</title>
 
 <style>
@@ -10,25 +10,32 @@
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#ffffff;color:#1a1a2e;min-height:100vh;}
 
 /* LOGIN */
-#login-screen{display:flex;align-items:center;justify-content:center;min-height:100vh;background:#0d1f38;}
-.login-wrap{width:400px;}
-.login-logo{font-size:48px;font-weight:600;color:#ffffff;letter-spacing:-2px;text-align:center;margin-bottom:4px;}
-.login-sub{font-size:11px;color:#4a6a8a;letter-spacing:0.2em;text-transform:uppercase;text-align:center;margin-bottom:4px;}
-.login-divider{width:32px;height:1px;background:rgba(255,255,255,0.15);margin:14px auto 18px;}
-.login-status{display:flex;align-items:center;justify-content:center;gap:6px;margin-bottom:28px;}
+#login-screen{display:flex;align-items:center;justify-content:center;min-height:100vh;background:#f5f6f8;position:relative;overflow:hidden;}
+#login-screen::before{content:'';position:absolute;top:-200px;right:-200px;width:600px;height:600px;border-radius:50%;border:1px solid rgba(13,31,56,0.06);pointer-events:none;}
+#login-screen::after{content:'';position:absolute;top:-150px;right:-150px;width:450px;height:450px;border-radius:50%;border:1px solid rgba(13,31,56,0.08);pointer-events:none;}
+.login-wrap{width:420px;position:relative;z-index:1;}
+.login-header{text-align:center;margin-bottom:32px;}
+.login-logo{font-size:52px;font-weight:700;color:#0d1f38;letter-spacing:-3px;line-height:1;}
+.login-sub{font-size:10px;color:#9aa0a6;letter-spacing:0.25em;text-transform:uppercase;margin-top:6px;}
+.login-status{display:flex;align-items:center;justify-content:center;gap:6px;margin-top:12px;}
 .status-dot{width:6px;height:6px;border-radius:50%;background:#4ade80;}
-.login-box{background:rgba(255,255,255,0.04);border:0.5px solid rgba(255,255,255,0.1);border-radius:12px;padding:24px;}
-.login-label{font-size:10px;color:#4a6a8a;letter-spacing:0.2em;text-transform:uppercase;text-align:center;margin-bottom:14px;}
-.login-box input{width:100%;background:rgba(0,0,0,0.2);border:0.5px solid rgba(255,255,255,0.1);border-radius:8px;padding:12px 14px;color:white;font-size:14px;font-family:monospace;margin-bottom:12px;outline:none;}
-.login-box input:focus{border-color:rgba(255,255,255,0.3);}
-.login-btn{width:100%;background:white;color:#0d1f38;border:none;border-radius:8px;padding:12px;font-size:13px;font-weight:600;cursor:pointer;letter-spacing:0.08em;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;}
-.login-btn:hover{background:#f0f0f0;}
-.login-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:14px;}
-.login-stat{background:rgba(0,0,0,0.2);border:0.5px solid rgba(255,255,255,0.08);border-radius:8px;padding:10px;text-align:center;}
+.login-box{background:#0d1f38;border-radius:16px;padding:32px;position:relative;overflow:hidden;box-shadow:0 24px 48px rgba(13,31,56,0.2);}
+.login-box::before{content:'';position:absolute;top:-60px;right:-60px;width:200px;height:200px;border-radius:50%;border:1px solid rgba(255,255,255,0.06);}
+.login-box::after{content:'';position:absolute;top:-30px;right:-30px;width:140px;height:140px;border-radius:50%;border:1px solid rgba(255,255,255,0.04);}
+.login-box-lines{position:absolute;bottom:0;left:0;right:0;height:3px;background:linear-gradient(90deg,transparent,rgba(255,255,255,0.1),transparent);}
+.login-label{font-size:10px;color:rgba(255,255,255,0.4);letter-spacing:0.2em;text-transform:uppercase;text-align:center;margin-bottom:16px;}
+.login-box input{width:100%;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:13px 16px;color:white;font-size:14px;font-family:monospace;margin-bottom:12px;outline:none;transition:border-color 0.2s;}
+.login-box input::placeholder{color:rgba(255,255,255,0.25);}
+.login-box input:focus{border-color:rgba(255,255,255,0.35);background:rgba(255,255,255,0.08);}
+.login-btn{width:100%;background:white;color:#0d1f38;border:none;border-radius:8px;padding:13px;font-size:13px;font-weight:700;cursor:pointer;letter-spacing:0.1em;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;transition:background 0.2s,transform 0.1s;}
+.login-btn:hover{background:#f0f4ff;}
+.login-btn:active{transform:scale(0.99);}
+.login-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:16px;}
+.login-stat{background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:10px;text-align:center;}
 .login-stat-val{font-size:16px;font-weight:600;color:white;}
-.login-stat-label{font-size:10px;color:#4a6a8a;margin-top:2px;}
+.login-stat-label{font-size:10px;color:rgba(255,255,255,0.35);margin-top:2px;}
 .login-error{color:#f87171;font-size:12px;text-align:center;margin-top:10px;display:none;}
-.login-footer{text-align:center;margin-top:20px;font-size:10px;color:#1e3a5f;letter-spacing:0.15em;}
+.login-footer{text-align:center;margin-top:20px;font-size:10px;color:#c4c7cc;letter-spacing:0.15em;}
 
 /* DASHBOARD */
 #dashboard{display:none;background:#f5f6f8;min-height:100vh;}
@@ -169,11 +176,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <!-- LOGIN -->
 <div id="login-screen">
   <div class="login-wrap">
-    <div class="login-logo">RivX</div>
-    <div class="login-sub">Autonomous Trading System</div>
-    <div class="login-divider"></div>
-    <div class="login-status"><span class="status-dot"></span><span style="font-size:10px;color:#94a3b8;letter-spacing:0.12em;">SYSTEMS ONLINE</span></div>
+    <div class="login-header">
+      <div class="login-logo">RivX</div>
+      <div class="login-sub">Autonomous Trading System</div>
+      <div class="login-divider"></div>
+      <div class="login-status"><span class="status-dot"></span><span style="font-size:10px;color:#9aa0a6;letter-spacing:0.12em;">SYSTEMS ONLINE</span></div>
+    </div>
     <div class="login-box">
+      <div class="login-box-lines"></div>
       <div class="login-label">Secure access</div>
       <input type="password" id="pw" placeholder="Enter passphrase" onkeydown="if(event.key==='Enter')login()"/>
       <button class="login-btn" onclick="login()">ENTER</button>
