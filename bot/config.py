@@ -32,7 +32,7 @@ ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY")
 # US market hours in AEST: 11:30pm - 6:00am
 # Evening briefing: 9:00pm AEST
 # Morning summary:  6:30am AEST
-EVENING_BRIEFING_HOUR_AEST  = 21   # 9pm
+EVENING_BRIEFING_HOUR_AEST  = 20   # 8pm
 MORNING_SUMMARY_HOUR_AEST   = 6    # 6am
 US_MARKET_OPEN_HOUR_AEST    = 23   # 11pm (approx)
 US_MARKET_CLOSE_HOUR_AEST   = 6    # 6am
