@@ -141,84 +141,82 @@ def _call_claude(system: str, user: str, max_tokens: int = 1500) -> dict | None:
 
 def evening_briefing(positions: dict, trade_history: list, signal_weights: dict) -> dict:
     """
-    Full nightly analysis. Runs at 9pm AEST.
-    Returns approved plan for overnight execution.
+    Full nightly analysis with market scanner.
+    Scans 50+ stocks and 9 crypto for the best opportunities.
+    Claude picks trades from real movers — not a fixed list.
     """
-    market_data = get_market_data(list(PORTFOLIO.keys()))
-    news        = get_news(list(PORTFOLIO.keys()))
-    aud_usd     = get_aud_usd()
+    from bot.scanner import run_full_scan
+    aud_usd = get_aud_usd()
+    log.info("Running market scan for evening briefing...")
+    scan        = run_full_scan()
+    stock_opps  = scan["stock_opportunities"]
+    crypto_opps = scan["crypto_opportunities"]
+    news        = scan["news"]
 
-    portfolio_status = {
-        sym: {
-            "tier":          cfg["tier"],
-            "allocated_aud": cfg["allocated_aud"],
-            "held":          sym in positions,
-            "entry_price":   positions[sym].get("entry_price") if sym in positions else None,
-            "pnl_pct":       positions[sym].get("pnl_pct") if sym in positions else None,
-            "stop_loss":     cfg["stop_loss_pct"],
-            "take_profit":   cfg["take_profit_pct"],
-        }
-        for sym, cfg in PORTFOLIO.items()
+    position_context = {
+        sym: {"entry_price": pos.get("entry_price"), "pnl_pct": pos.get("pnl_pct"),
+              "aud_amount": pos.get("aud_amount"), "market": pos.get("market")}
+        for sym, pos in positions.items()
     }
-
     recent = [{"symbol": t["symbol"], "action": t["action"],
                "pnl_pct": t.get("pnl_pct"), "date": t.get("created_at", "")[:10]}
               for t in (trade_history or [])[-15:]]
 
     system = """You are RivX, an autonomous AI trading system managing a $5,000 AUD portfolio.
-You run every evening at 9pm AEST and plan tonight's autonomous trading while the owner sleeps.
-US markets trade 11:30pm-6am AEST. Crypto trades 24/7.
+You are a GENERAL MARKET SCANNER. You scan the whole market for the best opportunities tonight.
+You are NOT limited to fixed stocks. Pick the best opportunities from what is actually moving.
 
-RULES:
-- Conservative (SPY, QQQ): capital preservation first, only strong signals
-- Moderate (NVDA, TSLA, META): accept volatility for returns
-- High risk (BTC, ETH): wide swings expected, 10% stop-loss
-- Never exceed allocated amounts
-- HOLD is often right — don't overtrade
-- Consider recent trade history
+PORTFOLIO RULES:
+- Total: $5,000 AUD. Never put more than $600 in any single position.
+- ETFs (SPY, QQQ etc): max $2,500 total, 7% stop-loss, 5% take-profit
+- Individual stocks: max $1,500 total, 7% stop-loss, 8% take-profit
+- Crypto: max $1,000 total, 10% stop-loss, 12% take-profit
+- Only trade what you are confident in. Hold cash if nothing looks compelling.
+Respond ONLY with valid JSON."""
 
-Respond ONLY with valid JSON, no other text."""
+    user = f"""Date: {datetime.now().strftime('%A %d %B %Y')} -- Evening briefing
+AUD/USD: {aud_usd:.4f} | Portfolio: $5,000 AUD
+Stocks scanned: {scan['stocks_scanned']} | Crypto scanned: {scan['crypto_scanned']}
 
-    user = f"""Date: {datetime.now().strftime('%A %d %B %Y')} — Evening briefing
-AUD/USD: {aud_usd:.4f}
+TOP STOCK OPPORTUNITIES (ranked by opportunity score):
+{json.dumps(stock_opps, indent=2)}
 
-MARKET DATA:
-{json.dumps(market_data, indent=2)}
+TOP CRYPTO OPPORTUNITIES:
+{json.dumps(crypto_opps, indent=2)}
 
-NEWS:
+MARKET NEWS:
 {json.dumps(news, indent=2)}
 
-PORTFOLIO STATUS:
-{json.dumps(portfolio_status, indent=2)}
+CURRENT OPEN POSITIONS:
+{json.dumps(position_context, indent=2)}
 
-RECENT TRADES:
+RECENT TRADE HISTORY:
 {json.dumps(recent, indent=2)}
 
-SIGNAL WEIGHTS (adaptive):
+ADAPTIVE SIGNAL WEIGHTS:
 {json.dumps(signal_weights, indent=2)}
 
-Provide tonight's full trading plan.
+Select the best 3-6 trading opportunities for tonight from the scanner results.
+You can trade ANY stock or crypto from the lists. Size within portfolio rules.
 
 Return this exact JSON:
 {{
   "decisions": {{
-    "SPY":  {{"action": "BUY|HOLD|SELL", "confidence": 0.0, "reasoning": "max 2 sentences", "intraday_target_pct": 0.05}},
-    "QQQ":  {{"action": "BUY|HOLD|SELL", "confidence": 0.0, "reasoning": "max 2 sentences", "intraday_target_pct": 0.05}},
-    "NVDA": {{"action": "BUY|HOLD|SELL", "confidence": 0.0, "reasoning": "max 2 sentences", "intraday_target_pct": 0.08}},
-    "TSLA": {{"action": "BUY|HOLD|SELL", "confidence": 0.0, "reasoning": "max 2 sentences", "intraday_target_pct": 0.08}},
-    "META": {{"action": "BUY|HOLD|SELL", "confidence": 0.0, "reasoning": "max 2 sentences", "intraday_target_pct": 0.08}},
-    "BTC":  {{"action": "BUY|HOLD|SELL", "confidence": 0.0, "reasoning": "max 2 sentences", "intraday_target_pct": 0.12}},
-    "ETH":  {{"action": "BUY|HOLD|SELL", "confidence": 0.0, "reasoning": "max 2 sentences", "intraday_target_pct": 0.12}}
+    "SYMBOL": {{"action": "BUY|HOLD|SELL", "confidence": 0.0, "reasoning": "max 2 sentences",
+               "aud_amount": 500, "stop_loss_pct": 0.07, "take_profit_pct": 0.08,
+               "market": "alpaca", "type": "stock"}}
   }},
-  "market_summary": "2-3 sentence market view",
+  "market_summary": "2-3 sentence overall market view",
   "risk_level": "LOW|MEDIUM|HIGH",
   "portfolio_health": "one sentence",
-  "watch_for_overnight": "what conditions should trigger adaptation during the night"
+  "cash_held_aud": 0,
+  "watch_for_overnight": "what to watch for tonight",
+  "scanner_highlights": "2 sentences on what the scanner found most interesting"
 }}"""
 
-    result = _call_claude(system, user)
+    result = _call_claude(system, user, max_tokens=2000)
     if result:
-        result["market_data"] = market_data
+        result["scan_data"] = scan
     return result or _hold_all()
 
 
