@@ -48,11 +48,36 @@ SCAN_UNIVERSE = [
     "NFLX", "DIS", "ABNB", "UBER", "LYFT",
 ]
 
-# Crypto universe — everything CoinSpot supports
-CRYPTO_UNIVERSE = [
-    "BTC", "ETH", "SOL", "XRP", "ADA", "AVAX", "DOT",
-    "LINK", "MATIC", "DOGE", "SHIB", "LTC", "BCH",
-]
+# Crypto universe — all pairs available on Alpaca crypto data
+# Scanner will rank these by opportunity score and Claude picks the best
+# CoinSpot will execute the actual trades in AUD
+CRYPTO_UNIVERSE = {
+    "BTC": "BTC/USD",
+    "ETH": "ETH/USD",
+    "SOL": "SOL/USD",
+    "XRP": "XRP/USD",
+    "ADA": "ADA/USD",
+    "AVAX": "AVAX/USD",
+    "DOGE": "DOGE/USD",
+    "LINK": "LINK/USD",
+    "LTC":  "LTC/USD",
+    "BCH":  "BCH/USD",
+    "DOT":  "DOT/USD",
+    "UNI":  "UNI/USD",
+    "AAVE": "AAVE/USD",
+    "MATIC":"MATIC/USD",
+    "ATOM": "ATOM/USD",
+    "ALGO": "ALGO/USD",
+    "NEAR": "NEAR/USD",
+    "FTM":  "FTM/USD",
+    "SAND": "SAND/USD",
+    "MANA": "MANA/USD",
+    "CRV":  "CRV/USD",
+    "GRT":  "GRT/USD",
+    "SUSHI":"SUSHI/USD",
+    "MKR":  "MKR/USD",
+    "SNX":  "SNX/USD",
+}
 
 
 def get_stock_movers() -> list:
@@ -80,19 +105,14 @@ def get_stock_movers() -> list:
 
 def get_crypto_movers() -> list:
     """
-    Scan crypto universe for momentum and RSI opportunities.
-    Returns top 5 crypto ranked by opportunity score.
+    Scan ALL crypto pairs on Alpaca for momentum and RSI opportunities.
+    Returns top 8 crypto ranked by opportunity score.
+    No predefined winners — everything gets scanned.
     """
     opportunities = []
-    log.info(f"Scanning {len(CRYPTO_UNIVERSE)} crypto for opportunities...")
+    log.info(f"Scanning {len(CRYPTO_UNIVERSE)} crypto pairs for opportunities...")
 
-    crypto_map = {
-        "BTC": "BTC/USD", "ETH": "ETH/USD", "SOL": "SOL/USD",
-        "XRP": "XRP/USD", "ADA": "ADA/USD", "AVAX": "AVAX/USD",
-        "LINK": "LINK/USD", "DOGE": "DOGE/USD", "LTC": "LTC/USD",
-    }
-
-    for coin, pair in crypto_map.items():
+    for coin, pair in CRYPTO_UNIVERSE.items():
         try:
             score_data = _score_crypto(coin, pair)
             if score_data:
@@ -101,7 +121,7 @@ def get_crypto_movers() -> list:
             log.debug(f"Skip {coin}: {e}")
 
     opportunities.sort(key=lambda x: x["opportunity_score"], reverse=True)
-    top = opportunities[:5]
+    top = opportunities[:8]
     log.info(f"Top crypto opportunities: {[o['symbol'] for o in top]}")
     return top
 
