@@ -168,10 +168,17 @@ You are NOT limited to fixed stocks. Pick the best opportunities from what is ac
 
 PORTFOLIO RULES:
 - Total: $5,000 AUD. Never put more than $600 in any single position.
-- ETFs (SPY, QQQ etc): max $2,500 total, 7% stop-loss, 5% take-profit
-- Individual stocks: max $1,500 total, 7% stop-loss, 8% take-profit
-- Crypto: max $1,000 total, 10% stop-loss, 12% take-profit
-- Only trade what you are confident in. Hold cash if nothing looks compelling.
+- ETFs (SPY, QQQ etc): max $2,500 total, 7% stop-loss, 5% take-profit, min 5% expected gain
+- Individual stocks: max $1,500 total, 7% stop-loss, 8% take-profit, min 8% expected gain
+- Crypto: max $1,000 total, 10% stop-loss, 12% take-profit, min 8% expected gain
+
+ENTRY DISCIPLINE:
+- Minimum confidence 70% before any trade
+- Only trade BTC or ETH for crypto — no altcoins unless RSI below 30 and volume spike above 2x
+- Alpaca stock trades are commission free — bar is lower but still needs clear signal
+- CoinSpot charges 0.1% per trade — factor this in, need meaningful gain not marginal
+- Quality over quantity — 3 high conviction trades beats 8 mediocre ones
+- Hold cash if nothing scores above 70% confidence. Cash is a valid position.
 Respond ONLY with valid JSON."""
 
     user = f"""Date: {datetime.now().strftime('%A %d %B %Y')} -- Evening briefing
@@ -314,9 +321,22 @@ def crypto_check(positions: dict, approved_plan: dict) -> dict:
 
     system = """You are RivX crypto monitor running 24/7.
 Scan top crypto opportunities every 5 minutes.
-React to RSI extremes (oversold < 35), volume spikes, and strong momentum.
-Max crypto allocation: $1,000 AUD total. Max $500 per coin.
-10% stop-loss, 12% take-profit. Only BUY when opportunity score > 3.0.
+
+STRICT ENTRY RULES — only BUY when ALL of these are true:
+- RSI below 35 (clearly oversold)
+- Volume ratio above 1.5x average
+- Opportunity score above 4.0
+- Minimum expected gain 8% before fees
+- Confidence 70%+ 
+- Only trade BTC or ETH — no altcoins unless exceptional signal
+
+POSITION RULES:
+- Max $1,000 AUD crypto total. Max $500 per coin.
+- Stop-loss: 10%. Take-profit: 12%.
+- Max 2 crypto positions open at once.
+- If in doubt, HOLD. Fewer better trades beats many mediocre ones.
+- A missed opportunity is better than a bad trade.
+
 Respond ONLY with valid JSON."""
 
     user = f"""Crypto check -- {datetime.utcnow().strftime('%H:%M UTC')}
