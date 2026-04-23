@@ -490,26 +490,54 @@ async function loadData() {
 
 function updateCryptoChecks(checks) {
   const el = document.getElementById('crypto-list');
-  if (!checks.length) { el.innerHTML = '<div class="empty-state">Waiting for first crypto check...</div>'; return; }
-  el.innerHTML = checks.slice(0,8).map(c => {
+  if (!checks.length) { el.innerHTML = '<div class="empty-state">Waiting for first crypto scan...</div>'; return; }
+
+  const latest = checks[0];
+  let opps = [];
+  try { opps = JSON.parse(latest.opportunities || '[]'); } catch(e) {}
+
+  let html = '';
+
+  if (opps.length) {
+    html += '<div style="margin-bottom:10px;">';
+    html += '<div style="font-size:10px;color:#4a6a8a;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:8px;">Scanning right now</div>';
+    html += opps.slice(0,5).map(o => {
+      const rsi = o.rsi ? parseFloat(o.rsi).toFixed(0) : '—';
+      const rsiColor = o.rsi < 35 ? '#7dd3fc' : o.rsi > 65 ? '#f87171' : '#94a3b8';
+      const score = o.opportunity_score ? parseFloat(o.opportunity_score).toFixed(1) : '—';
+      const chg = o.change_1d_pct !== undefined ? (o.change_1d_pct >= 0 ? '+' : '') + parseFloat(o.change_1d_pct).toFixed(1) + '%' : '—';
+      const vol = o.volume_ratio ? parseFloat(o.volume_ratio).toFixed(1) + 'x' : '—';
+      return '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:0.5px solid #0d1f38;">' +
+        '<span style="font-size:13px;font-weight:600;min-width:55px;">' + o.symbol + '</span>' +
+        '<span style="font-size:11px;color:#4a6a8a;">RSI <span style="color:' + rsiColor + ';font-weight:500;">' + rsi + '</span></span>' +
+        '<span style="font-size:11px;color:#4a6a8a;">1d <span style="color:' + (parseFloat(o.change_1d_pct||0) >= 0 ? '#7dd3fc' : '#f87171') + ';font-weight:500;">' + chg + '</span></span>' +
+        '<span style="font-size:11px;color:#4a6a8a;">Vol <span style="color:#94a3b8;font-weight:500;">' + vol + '</span></span>' +
+        '<span style="font-size:10px;padding:2px 8px;border-radius:10px;background:rgba(125,211,252,0.08);color:#7dd3fc;border:0.5px solid rgba(125,211,252,0.15);">Score ' + score + '</span>' +
+        '</div>';
+    }).join('');
+    html += '</div>';
+  }
+
+  html += '<div style="font-size:10px;color:#4a6a8a;letter-spacing:0.1em;text-transform:uppercase;margin-top:8px;margin-bottom:8px;">Recent decisions</div>';
+  html += checks.slice(0,5).map(c => {
     const time = c.checked_at ? new Date(c.checked_at).toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'}) : '';
     let actions = [];
     try { actions = JSON.parse(c.actions || '[]'); } catch(e) {}
     const hasAction = actions.some(a => a.action !== 'HOLD');
-    const dot = hasAction ? 'dot-on' : 'dot-warn';
-    const actionText = hasAction 
-      ? actions.filter(a=>a.action!=='HOLD').map(a=>`${a.action} ${a.symbol}`).join(', ')
-      : 'HOLD';
-    return \`<div class="trade-row">
-      <div class="taction \${hasAction?'buy':'stop'}">\${actionText.split(' ')[0]}</div>
-      <div class="tbody">
-        <div class="ttitle">\${c.reasoning || 'Scanning...'}</div>
-        <div class="tdetail">\${hasAction ? actions.map(a=>\`\${a.action} \${a.symbol}: \${a.reason||''}\`).join(' · ') : 'No signal — holding cash'}</div>
-      </div>
-      <div class="ttime">\${time}</div>
-    </div>\`;
+    const bg = hasAction ? 'rgba(125,211,252,0.1)' : 'rgba(148,163,184,0.08)';
+    const col = hasAction ? '#7dd3fc' : '#94a3b8';
+    const border = hasAction ? 'rgba(125,211,252,0.2)' : '#1a3a5c';
+    const label = hasAction ? 'ACT' : 'HOLD';
+    return '<div style="display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-bottom:0.5px solid #0d1f38;">' +
+      '<div style="width:36px;height:36px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;flex-shrink:0;background:' + bg + ';color:' + col + ';border:0.5px solid ' + border + ';">' + label + '</div>' +
+      '<div style="flex:1;min-width:0;"><div style="font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + (c.reasoning || 'Scanning...') + '</div></div>' +
+      '<div style="font-size:10px;color:#2a5a8a;flex-shrink:0;padding-top:2px;">' + time + '</div>' +
+      '</div>';
   }).join('');
+
+  el.innerHTML = html;
 }
+
 
 function updateMetrics() {
   const latest = allSnapshots[0] || {};
