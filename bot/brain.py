@@ -381,7 +381,9 @@ Return this exact JSON:
   "reasoning": "one sentence on crypto market right now"
 }}"""
 
-    return _call_claude(system, user, max_tokens=600) or {"actions": [], "reasoning": "Claude unavailable"}
+    result = _call_claude(system, user, max_tokens=600) or {"actions": [], "reasoning": "Claude unavailable"}
+    result["opportunities"] = crypto_opps  # Include scan data for dashboard
+    return result
 
 
 def _hold_all() -> dict:
