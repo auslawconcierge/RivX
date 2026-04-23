@@ -1,0 +1,4 @@
+anthropic==0.40.0
+requests==2.31.0
+pandas==2.1.4
+numpy==1.26.3
