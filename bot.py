@@ -3,7 +3,7 @@ RivX AutoTrader — Main Bot
 Runs continuously on Render.
 
 Three loops:
-  1. Evening briefing  — 8pm AEST, full analysis, sends plan to Telegram for approval
+  1. Evening briefing  — 9pm AEST, full analysis, sends plan to Telegram for approval
   2. Intraday loop     — every 2 mins during US market hours (11:30pm-6am AEST)
   3. Crypto loop       — every 5 mins 24/7
 
@@ -237,6 +237,14 @@ def run_crypto_check(db: SupabaseLogger, tg: TelegramNotifier,
     actions = result.get("actions", [])
     reasoning = result.get("reasoning", "")
     log.info(f"Crypto check: {reasoning}")
+
+    # Log every check to Supabase so dashboard can show live activity
+    db._post("crypto_checks", {
+        "checked_at":    datetime.utcnow().isoformat(),
+        "reasoning":     reasoning,
+        "actions":       json.dumps(actions),
+    })
+
 
     from bot.brain import get_market_data
     market_data = get_market_data(["BTC", "ETH"])
