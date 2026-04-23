@@ -290,46 +290,42 @@ Return this exact JSON:
 
 def crypto_check(positions: dict, approved_plan: dict) -> dict:
     """
-    Runs every 5 mins, 24/7 for BTC and ETH.
-    Looks for RSI bounces, momentum, stop-loss breaches.
+    Runs every 5 mins, 24/7.
+    Scans top crypto for RSI bounces, momentum, stop-loss breaches.
     """
-    crypto_syms = ["BTC", "ETH"]
-    market_data = get_market_data(crypto_syms)
+    from bot.scanner import get_crypto_movers
+    crypto_opps = get_crypto_movers()
+    market_data = get_market_data(["BTC", "ETH"])
 
     position_summary = {}
-    for sym in crypto_syms:
-        if sym in positions:
+    for sym, pos in positions.items():
+        if pos.get("market") == "coinspot":
             current = market_data.get(sym, {}).get("price", 0)
-            entry   = positions[sym].get("entry_price", current)
+            entry   = pos.get("entry_price", current)
             pnl_pct = ((current - entry) / entry) if entry > 0 else 0
             position_summary[sym] = {
                 "held":          True,
                 "entry_price":   entry,
                 "current_price": current,
                 "pnl_pct":       round(pnl_pct * 100, 2),
-                "stop_loss":     PORTFOLIO[sym]["stop_loss_pct"] * 100,
-                "take_profit":   PORTFOLIO[sym]["take_profit_pct"] * 100,
-            }
-        else:
-            position_summary[sym] = {
-                "held":          False,
-                "current_price": market_data.get(sym, {}).get("price", 0),
-                "rsi":           market_data.get(sym, {}).get("rsi"),
-                "approved_action": approved_plan.get("decisions", {}).get(sym, {}).get("action", "HOLD"),
+                "stop_loss":     10,
+                "take_profit":   12,
             }
 
     system = """You are RivX crypto monitor running 24/7.
-Monitor BTC and ETH only. React to RSI extremes, momentum shifts, stop-loss breaches.
-Crypto is volatile — be comfortable with wider swings but protect against crashes.
-Only suggest action when there is a clear signal. Respond ONLY with valid JSON."""
+Scan top crypto opportunities every 5 minutes.
+React to RSI extremes (oversold < 35), volume spikes, and strong momentum.
+Max crypto allocation: $1,000 AUD total. Max $500 per coin.
+10% stop-loss, 12% take-profit. Only BUY when opportunity score > 3.0.
+Respond ONLY with valid JSON."""
 
-    user = f"""Crypto check — {datetime.utcnow().strftime('%H:%M UTC')}
+    user = f"""Crypto check -- {datetime.utcnow().strftime('%H:%M UTC')}
 
-CRYPTO STATUS:
+TOP CRYPTO OPPORTUNITIES:
+{json.dumps(crypto_opps, indent=2)}
+
+OPEN CRYPTO POSITIONS:
 {json.dumps(position_summary, indent=2)}
-
-MARKET DATA:
-{json.dumps(market_data, indent=2)}
 
 Return this exact JSON:
 {{
@@ -337,11 +333,12 @@ Return this exact JSON:
     {{
       "symbol": "BTC",
       "action": "BUY|SELL|HOLD",
-      "reason": "RSI at 28, oversold bounce likely",
-      "urgency": "immediate|normal"
+      "reason": "brief reason",
+      "urgency": "immediate|normal",
+      "aud_amount": 400
     }}
   ],
-  "reasoning": "one sentence summary"
+  "reasoning": "one sentence on crypto market right now"
 }}"""
 
     return _call_claude(system, user, max_tokens=600) or {"actions": [], "reasoning": "Claude unavailable"}
