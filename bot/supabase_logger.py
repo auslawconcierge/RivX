@@ -18,7 +18,7 @@ DEFAULT_WEIGHTS = {"rsi": 0.2, "macd": 0.2, "bollinger": 0.2, "volume": 0.2, "ma
 class SupabaseLogger:
 
     def __init__(self):
-        self.base    = SUPABASE_URL
+        self.base    = SUPABASE_URL.rstrip('/')
         self.headers = {
             "apikey":        SUPABASE_API_KEY,
             "Authorization": f"Bearer {SUPABASE_API_KEY}",
@@ -165,12 +165,46 @@ class SupabaseLogger:
     # ── Snapshots & portfolio value ───────────────────────────────────────────
 
     def save_snapshot(self, total_aud: float, day_pnl: float, total_pnl: float):
-        self._post("snapshots", {
-            "date":      date.today().isoformat(),
-            "total_aud": total_aud,
-            "day_pnl":   day_pnl,
-            "total_pnl": total_pnl,
-        })
+        today = date.today().isoformat()
+        existing = self._get("snapshots", {"date": f"eq.{today}"})
+        if existing:
+            self._patch("snapshots", {
+                "total_aud": total_aud,
+                "day_pnl":   day_pnl,
+                "total_pnl": total_pnl,
+            }, "date", today)
+        else:
+            self._post("snapshots", {
+                "date":      today,
+                "total_aud": total_aud,
+                "day_pnl":   day_pnl,
+                "total_pnl": total_pnl,
+            })
+
+    def get_flag(self, key: str) -> str:
+        """Get a persistent flag — survives redeploys."""
+        rows = self._get("approved_plan", {"order": "updated_at.desc", "limit": "1"})
+        if rows:
+            try:
+                plan = json.loads(rows[0].get("plan", "{}"))
+                return plan.get(f"_flag_{key}", "")
+            except Exception:
+                return ""
+        return ""
+
+    def set_flag(self, key: str, value: str):
+        """Set a persistent flag — survives redeploys."""
+        rows = self._get("approved_plan")
+        try:
+            plan = json.loads(rows[0].get("plan", "{}")) if rows else {}
+        except Exception:
+            plan = {}
+        plan[f"_flag_{key}"] = value
+        data = {"plan": json.dumps(plan), "updated_at": datetime.utcnow().isoformat()}
+        if rows:
+            self._patch("approved_plan", data, "id", str(rows[0]["id"]))
+        else:
+            self._post("approved_plan", data)
 
     def get_portfolio_value(self) -> dict:
         snaps = self._get("snapshots", {"order": "date.desc", "limit": "2"})
