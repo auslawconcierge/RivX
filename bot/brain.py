@@ -167,22 +167,35 @@ You are a GENERAL MARKET SCANNER. You scan the whole market for the best opportu
 You are NOT limited to fixed stocks. Pick the best opportunities from what is actually moving.
 
 PORTFOLIO RULES:
-- Total: $5,000 AUD. Never put more than $600 in any single position.
-- ETFs (SPY, QQQ etc): max $2,500 total, 7% stop-loss, 5% take-profit, min 5% expected gain
-- Individual stocks: max $1,500 total, 7% stop-loss, 8% take-profit, min 8% expected gain
-- Crypto: max $1,000 total, 10% stop-loss, 12% take-profit, min 8% expected gain
+- Total portfolio: $5,000 AUD
+- Size each position at 15-20% of available cash — never more than $500 per position
+- Max $2,000 deployed in stocks total. Max $2,000 deployed in crypto total.
+- Keep $1,000 cash buffer — never deploy everything
+- Stock stop-loss 7%, take-profit 5% ETFs / 8% stocks
+- Crypto stop-loss 10%, take-profit 12%
+- You are told exactly how much cash is available — only deploy from that amount
 
 ENTRY DISCIPLINE:
-- Minimum confidence 70% before any trade
-- Only trade BTC or ETH for crypto — no altcoins unless RSI below 30 and volume spike above 2x
-- Alpaca stock trades are commission free — bar is lower but still needs clear signal
-- CoinSpot charges 0.1% per trade — factor this in, need meaningful gain not marginal
-- Quality over quantity — 3 high conviction trades beats 8 mediocre ones
-- Hold cash if nothing scores above 70% confidence. Cash is a valid position.
+- Minimum confidence 60% before any trade
+- Commission free on Alpaca stocks — lower bar but still needs clear signal
+- CoinSpot charges 0.1% per trade — need at least 5% expected gain to be worth it
+- Quality over quantity — fewer high conviction trades beats many mediocre ones
+- Cash is a valid position — only trade when you see genuine opportunity
 Respond ONLY with valid JSON."""
 
+    # Calculate available cash
+    deployed_aud = sum(p.get("aud_amount", 0) for p in position_context.values())
+    available_cash = 5000 - deployed_aud
+    crypto_deployed = sum(p.get("aud_amount", 0) for p in position_context.values() if p.get("market") == "coinspot")
+    stock_deployed = sum(p.get("aud_amount", 0) for p in position_context.values() if p.get("market") == "alpaca")
+    crypto_available = max(0, 2000 - crypto_deployed)
+    stock_available = max(0, 2000 - stock_deployed)
+
     user = f"""Date: {datetime.now().strftime('%A %d %B %Y')} -- Evening briefing
-AUD/USD: {aud_usd:.4f} | Portfolio: $5,000 AUD
+AUD/USD: {aud_usd:.4f}
+Portfolio: $5,000 AUD | Available cash: ${available_cash:.0f} AUD
+Deployed: ${deployed_aud:.0f} AUD ({len(position_context)} positions)
+Available for stocks: ${stock_available:.0f} AUD | Available for crypto: ${crypto_available:.0f} AUD
 Stocks scanned: {scan['stocks_scanned']} | Crypto scanned: {scan['crypto_scanned']}
 
 TOP STOCK OPPORTUNITIES (ranked by opportunity score):
@@ -319,29 +332,36 @@ def crypto_check(positions: dict, approved_plan: dict) -> dict:
                 "take_profit":   12,
             }
 
-    system = """You are RivX crypto monitor running 24/7.
-Scan top crypto opportunities every 5 minutes.
 
-STRICT ENTRY RULES — only BUY when ALL of these are true:
-- RSI below 35 (clearly oversold)
-- Volume ratio above 1.5x average
-- Opportunity score above 4.0
-- Minimum expected gain 8% before fees
-- Confidence 70%+ 
-- Only trade BTC or ETH — no altcoins unless exceptional signal
+    system = """You are RivX crypto monitor running 24/7.
+You are an ACTIVE trader hunting crypto opportunities every 5 minutes.
+
+ENTRY RULES — BUY when you see a good setup:
+- RSI below 45 (oversold or leaning oversold)
+- OR volume ratio above 1.3x AND positive momentum
+- OR strong 1-day move with RSI not yet overbought
+- Opportunity score above 2.5
+- Minimum expected gain 5% after fees
+- Confidence 60%+
+- Prefer BTC and ETH but consider other coins with strong signals
 
 POSITION RULES:
 - Max $1,000 AUD crypto total. Max $500 per coin.
 - Stop-loss: 10%. Take-profit: 12%.
 - Max 2 crypto positions open at once.
-- If in doubt, HOLD. Fewer better trades beats many mediocre ones.
-- A missed opportunity is better than a bad trade.
+- Be active — if you see a good setup, take it.
+- Crypto moves fast — don't wait for perfect conditions.
 
 Respond ONLY with valid JSON."""
 
-    user = f"""Crypto check -- {datetime.utcnow().strftime('%H:%M UTC')}
+    crypto_deployed = sum(p.get("aud_amount", 0) for p in position_summary.values() if p.get("held"))
+    crypto_available = max(0, 2000 - crypto_deployed)
+    open_count = len([p for p in position_summary.values() if p.get("held")])
 
-TOP CRYPTO OPPORTUNITIES:
+    user = f"""Crypto check -- {datetime.utcnow().strftime('%H:%M UTC')}
+Available crypto cash: ${crypto_available:.0f} AUD | Open positions: {open_count}/5
+
+TOP CRYPTO OPPORTUNITIES RIGHT NOW:
 {json.dumps(crypto_opps, indent=2)}
 
 OPEN CRYPTO POSITIONS:
