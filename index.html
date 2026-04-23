@@ -465,11 +465,12 @@ async function sb(table, params) {
 
 async function loadData() {
   document.getElementById('last-updated').textContent = 'Loading...';
-  const [snaps, positions, trades, weights] = await Promise.all([
+  const [snaps, positions, trades, weights, cryptoChecks] = await Promise.all([
     sb('snapshots', { order: 'date.desc', limit: '400' }),
     sb('positions', { status: 'eq.open' }),
     sb('trades', { order: 'created_at.desc', limit: '50' }),
     sb('signal_weights', { order: 'updated_at.desc', limit: '1' }),
+    sb('crypto_checks', { order: 'checked_at.desc', limit: '20' }),
   ]);
   allSnapshots = snaps || [];
   allTrades = trades || [];
@@ -482,8 +483,32 @@ async function loadData() {
   updateTrades();
   updateSignals();
   updateMarketStatus();
+  updateCryptoChecks(cryptoChecks || []);
   document.getElementById('total-trades').textContent = allTrades.length;
   document.getElementById('last-updated').textContent = 'Updated ' + new Date().toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'});
+}
+
+function updateCryptoChecks(checks) {
+  const el = document.getElementById('crypto-list');
+  if (!checks.length) { el.innerHTML = '<div class="empty-state">Waiting for first crypto check...</div>'; return; }
+  el.innerHTML = checks.slice(0,8).map(c => {
+    const time = c.checked_at ? new Date(c.checked_at).toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'}) : '';
+    let actions = [];
+    try { actions = JSON.parse(c.actions || '[]'); } catch(e) {}
+    const hasAction = actions.some(a => a.action !== 'HOLD');
+    const dot = hasAction ? 'dot-on' : 'dot-warn';
+    const actionText = hasAction 
+      ? actions.filter(a=>a.action!=='HOLD').map(a=>`${a.action} ${a.symbol}`).join(', ')
+      : 'HOLD';
+    return \`<div class="trade-row">
+      <div class="taction \${hasAction?'buy':'stop'}">\${actionText.split(' ')[0]}</div>
+      <div class="tbody">
+        <div class="ttitle">\${c.reasoning || 'Scanning...'}</div>
+        <div class="tdetail">\${hasAction ? actions.map(a=>\`\${a.action} \${a.symbol}: \${a.reason||''}\`).join(' · ') : 'No signal — holding cash'}</div>
+      </div>
+      <div class="ttime">\${time}</div>
+    </div>\`;
+  }).join('');
 }
 
 function updateMetrics() {
