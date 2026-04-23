@@ -96,28 +96,28 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .refresh-btn{font-size:11px;padding:5px 12px;border:0.5px solid #1a3a5c;border-radius:6px;background:none;color:#94a3b8;cursor:pointer;}
 .logout-btn{font-size:11px;color:#2a5a8a;background:none;border:none;cursor:pointer;}
 
-.main{padding:1.25rem;max-width:1400px;margin:0 auto;}
+.main{padding:1.25rem;max-width:1400px;margin:0 auto;background:#f4f5f7;}
 .page{display:none;}
 .page.active{display:block;}
 
 /* METRICS */
 .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:1.25rem;}
-.metric{background:#071020;border:0.5px solid #1a3a5c;border-radius:10px;padding:1rem;}
-.mlabel{font-size:10px;color:#4a6a8a;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:6px;}
-.mval{font-size:22px;font-weight:600;}
+.metric{background:white;border:0.5px solid rgba(0,0,0,0.1);border-radius:10px;padding:1rem;}
+.mlabel{font-size:10px;color:#999;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:6px;}
+.mval{font-size:22px;font-weight:600;color:#1a1a2e;}
 .mval.up{color:#7dd3fc;}
 .mval.down{color:#f87171;}
-.msub{font-size:11px;color:#2a5a8a;margin-top:3px;}
+.msub{font-size:11px;color:#aaa;margin-top:3px;}
 
 /* CARDS */
-.card{background:#071020;border:0.5px solid #1a3a5c;border-radius:10px;padding:1.25rem;margin-bottom:1.25rem;}
-.ctitle{font-size:10px;color:#4a6a8a;letter-spacing:0.15em;text-transform:uppercase;margin-bottom:1rem;}
+.card{background:white;border:0.5px solid rgba(0,0,0,0.1);border-radius:10px;padding:1.25rem;margin-bottom:1.25rem;}
+.ctitle{font-size:10px;color:#999;letter-spacing:0.15em;text-transform:uppercase;margin-bottom:1rem;}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:1.25rem;}
 .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:1.25rem;}
 
 /* TIMEFRAMES */
 .pnl-header{display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:1rem;}
-.pnl-big{font-size:28px;font-weight:700;color:#7dd3fc;}
+.pnl-big{font-size:28px;font-weight:700;color:#2d7a2d;}
 .pnl-big.down{color:#f87171;}
 .pnl-breakdown{display:flex;gap:16px;margin-top:6px;}
 .pnl-item{font-size:11px;color:#4a6a8a;}
@@ -125,32 +125,32 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .pnl-item span.up{color:#7dd3fc;}
 .pnl-item span.down{color:#f87171;}
 .pnl-item span.neutral{color:#94a3b8;}
-.timeframes{display:flex;gap:3px;background:#0a1628;border:0.5px solid #1a3a5c;border-radius:8px;padding:3px;}
-.tf-btn{font-size:11px;padding:5px 10px;border-radius:5px;border:none;background:none;color:#4a6a8a;cursor:pointer;letter-spacing:0.03em;}
-.tf-btn.active{background:#1a3a5c;color:white;}
+.timeframes{display:flex;gap:3px;background:#f0f0f0;border:0.5px solid #ddd;border-radius:8px;padding:3px;}
+.tf-btn{font-size:11px;padding:5px 10px;border-radius:5px;border:none;background:none;color:#888;cursor:pointer;letter-spacing:0.03em;}
+.tf-btn.active{background:#0d1f38;color:white;}
 .chart-wrap{position:relative;height:180px;}
 
 /* POSITIONS */
-.pos-row{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:0.5px solid #0d1f38;}
+.pos-row{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:0.5px solid #eee;}
 .pos-row:last-child{border-bottom:none;}
-.pticker{font-size:14px;font-weight:600;}
-.ptier{font-size:10px;color:#2a5a8a;margin-top:1px;}
+.pticker{font-size:14px;font-weight:600;color:#1a1a2e;}
+.ptier{font-size:10px;color:#aaa;margin-top:1px;}
 .ppnl{font-size:12px;font-weight:500;padding:2px 8px;border-radius:20px;}
 .ppnl.up{background:rgba(125,211,252,0.1);color:#7dd3fc;border:0.5px solid rgba(125,211,252,0.2);}
 .ppnl.down{background:rgba(248,113,113,0.1);color:#f87171;border:0.5px solid rgba(248,113,113,0.2);}
 .ppnl.neutral{background:rgba(148,163,184,0.08);color:#94a3b8;border:0.5px solid #1a3a5c;}
 
 /* TRADES */
-.trade-row{display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-bottom:0.5px solid #0d1f38;}
+.trade-row{display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-bottom:0.5px solid #eee;}
 .trade-row:last-child{border-bottom:none;}
 .taction{width:40px;height:40px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0;}
 .taction.buy{background:rgba(125,211,252,0.1);color:#7dd3fc;border:0.5px solid rgba(125,211,252,0.2);}
 .taction.sell{background:rgba(248,113,113,0.1);color:#f87171;border:0.5px solid rgba(248,113,113,0.2);}
 .taction.stop{background:rgba(148,163,184,0.1);color:#94a3b8;border:0.5px solid #1a3a5c;}
 .tbody{flex:1;}
-.ttitle{font-size:13px;font-weight:500;}
-.tdetail{font-size:11px;color:#4a6a8a;margin-top:2px;}
-.ttime{font-size:10px;color:#2a5a8a;flex-shrink:0;padding-top:2px;}
+.ttitle{font-size:13px;font-weight:500;color:#1a1a2e;}
+.tdetail{font-size:11px;color:#999;margin-top:2px;}
+.ttime{font-size:10px;color:#bbb;flex-shrink:0;padding-top:2px;}
 .ttag{display:inline-block;font-size:10px;padding:1px 6px;border-radius:10px;margin-top:3px;margin-right:3px;}
 .ttag.intraday{background:rgba(125,211,252,0.08);color:#7dd3fc;border:0.5px solid rgba(125,211,252,0.15);}
 .ttag.swing{background:rgba(148,163,184,0.08);color:#94a3b8;border:0.5px solid #1a3a5c;}
@@ -158,16 +158,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
 /* SIGNALS */
 .sig-row{display:flex;align-items:center;gap:8px;margin-bottom:10px;}
-.sig-name{font-size:11px;color:#94a3b8;width:70px;flex-shrink:0;}
-.sig-track{flex:1;height:3px;background:#0d1f38;border-radius:2px;overflow:hidden;}
-.sig-fill{height:100%;border-radius:2px;background:#7dd3fc;transition:width 0.5s;}
-.sig-pct{font-size:11px;font-weight:500;min-width:32px;text-align:right;}
+.sig-name{font-size:11px;color:#555;width:70px;flex-shrink:0;}
+.sig-track{flex:1;height:3px;background:#eee;border-radius:2px;overflow:hidden;}
+.sig-fill{height:100%;border-radius:2px;background:#0d1f38;transition:width 0.5s;}
+.sig-pct{font-size:11px;font-weight:500;min-width:32px;text-align:right;color:#1a1a2e;}
 
 /* STATUS */
-.st-row{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:0.5px solid #0d1f38;font-size:12px;}
+.st-row{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:0.5px solid #eee;font-size:12px;}
 .st-row:last-child{border-bottom:none;}
-.slabel{color:#4a6a8a;}
-.sval{font-weight:500;display:flex;align-items:center;gap:5px;}
+.slabel{color:#999;}
+.sval{font-weight:500;display:flex;align-items:center;gap:5px;color:#1a1a2e;}
 .kill{width:100%;padding:9px;background:rgba(248,113,113,0.08);color:#f87171;border:0.5px solid rgba(248,113,113,0.2);border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;margin-top:1rem;letter-spacing:0.05em;}
 
 /* EXPORT */
@@ -219,7 +219,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .learn-text{font-size:12px;color:#94a3b8;line-height:1.6;}
 .learn-tag{display:inline-block;font-size:10px;padding:2px 8px;border-radius:20px;background:#0a1628;border:0.5px solid #1a3a5c;color:#4a6a8a;margin-top:5px;margin-right:4px;}
 
-.empty-state{text-align:center;padding:2rem;font-size:12px;color:#2a5a8a;}
+.empty-state{text-align:center;padding:2rem;font-size:12px;color:#bbb;}
 .footer{text-align:center;padding:1rem;font-size:10px;color:#1a3a5c;letter-spacing:0.15em;border-top:0.5px solid #0d1f38;margin-top:1rem;}
 
 .copied-toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#1a3a5c;color:white;padding:8px 20px;border-radius:20px;font-size:12px;display:none;z-index:999;}
