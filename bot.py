@@ -235,6 +235,8 @@ def run_crypto_check(db: SupabaseLogger, tg: TelegramNotifier,
 
     result  = crypto_check(positions, approved_plan)
     actions = result.get("actions", [])
+    reasoning = result.get("reasoning", "")
+    log.info(f"Crypto check: {reasoning}")
 
     from bot.brain import get_market_data
     market_data = get_market_data(["BTC", "ETH"])
@@ -243,6 +245,7 @@ def run_crypto_check(db: SupabaseLogger, tg: TelegramNotifier,
         sym    = act["symbol"]
         action = act["action"]
         reason = act["reason"]
+        log.info(f"Crypto decision: {action} {sym} — {reason}")
 
         if action == "HOLD":
             continue
@@ -326,8 +329,8 @@ def main():
 
     tg.send(f"RivX is online. {'PAPER trading mode.' if PAPER_MODE else 'LIVE trading mode.'}")
 
-    last_evening_briefing = None
-    last_morning_summary  = None
+    last_intraday_check   = 0
+    last_crypto_check     = 0
     last_intraday_check   = 0
     last_crypto_check     = 0
 
@@ -338,19 +341,21 @@ def main():
                 log.warning("Kill switch — bot stopped")
                 break
 
-            now  = aest_now()
-            hour = now.hour
-            date = now.date()
+            now   = aest_now()
+            hour  = now.hour
+            today = now.date().isoformat()
 
             # Evening briefing — once per day at 9pm AEST
-            if hour == EVENING_BRIEFING_HOUR_AEST and last_evening_briefing != date:
-                last_evening_briefing = date
-                run_evening_briefing(db, tg, alpaca, coinspot)
+            if hour == EVENING_BRIEFING_HOUR_AEST:
+                if db.get_flag("last_evening_briefing") != today:
+                    db.set_flag("last_evening_briefing", today)
+                    run_evening_briefing(db, tg, alpaca, coinspot)
 
             # Morning summary — once per day at 6:30am AEST
-            if hour == MORNING_SUMMARY_HOUR_AEST and now.minute >= 30 and last_morning_summary != date:
-                last_morning_summary = date
-                run_morning_summary(db, tg)
+            if hour == MORNING_SUMMARY_HOUR_AEST and now.minute >= 30:
+                if db.get_flag("last_morning_summary") != today:
+                    db.set_flag("last_morning_summary", today)
+                    run_morning_summary(db, tg)
 
             # Intraday check — every 2 mins during US market hours
             now_ts = time.time()
