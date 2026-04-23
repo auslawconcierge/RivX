@@ -255,7 +255,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 </div>
 
 <!-- DASHBOARD -->
-<div id="dashboard">
+<div id="dashboard" style="background:#f4f5f7;color:#1a1a2e;min-height:100vh;">
   <div class="topbar">
     <div style="display:flex;align-items:center;gap:12px;">
       <div class="logo">RivX</div>
@@ -473,6 +473,7 @@ function login() {
     sessionStorage.setItem('rivx_auth','1');
     document.getElementById('login-screen').style.display = 'none';
     document.getElementById('dashboard').style.display = 'block';
+    document.body.style.background = '#f4f5f7';
     loadData();
     setInterval(loadData, 60000);
   } else {
@@ -490,6 +491,7 @@ function logout() {
 if (sessionStorage.getItem('rivx_auth')) {
   document.getElementById('login-screen').style.display = 'none';
   document.getElementById('dashboard').style.display = 'block';
+  document.body.style.background = '#f4f5f7';
   loadData();
   setInterval(loadData, 60000);
 }
