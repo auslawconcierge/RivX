@@ -1,7 +1,7 @@
 """
 RivX supabase_logger.py
 Stores all bot state between loop iterations.
-Tables: trades, positions, signal_weights, snapshots, approved_plan
+Tables: trades, positions, signal_weights, snapshots, approved_plan, crypto_checks
 """
 
 import json
@@ -32,6 +32,10 @@ class SupabaseLogger:
                              headers=self.headers, params=params, timeout=10)
             r.raise_for_status()
             return r.json()
+        except requests.HTTPError as e:
+            body = e.response.text[:500] if e.response is not None else ""
+            log.error(f"DB GET {table}: {e} — body: {body}")
+            return []
         except Exception as e:
             log.error(f"DB GET {table}: {e}")
             return []
@@ -43,6 +47,10 @@ class SupabaseLogger:
             r.raise_for_status()
             result = r.json()
             return result[0] if isinstance(result, list) else result
+        except requests.HTTPError as e:
+            body = e.response.text[:500] if e.response is not None else ""
+            log.error(f"DB POST {table}: {e} — body: {body}")
+            return None
         except Exception as e:
             log.error(f"DB POST {table}: {e}")
             return None
@@ -54,6 +62,10 @@ class SupabaseLogger:
                                params={col: f"eq.{val}"}, timeout=10)
             r.raise_for_status()
             return True
+        except requests.HTTPError as e:
+            body = e.response.text[:500] if e.response is not None else ""
+            log.error(f"DB PATCH {table}: {e} — body: {body}")
+            return False
         except Exception as e:
             log.error(f"DB PATCH {table}: {e}")
             return False
