@@ -124,7 +124,7 @@ def execute_action(symbol, action, reason, alpaca, coinspot, db, tg,
 
 
 def run_evening_briefing(db, tg, alpaca, coinspot):
-    """9pm AEST — Full analysis, send plan to Telegram, wait for approval."""
+    """8pm AEST — Full analysis, send plan to Telegram, wait for approval."""
     log.info("Running evening briefing...")
     tg.send("RivX is analysing the market for tonight. Give me a moment...")
 
@@ -476,7 +476,7 @@ def main():
             hour  = now.hour
             today = now.date().isoformat()
 
-            # Evening briefing — once per day at 9pm AEST
+            # Evening briefing — once per day at 8pm AEST
             if hour == EVENING_BRIEFING_HOUR_AEST:
                 if db.get_flag("last_evening_briefing") != today:
                     db.set_flag("last_evening_briefing", today)
