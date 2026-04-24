@@ -1,5 +1,5 @@
 """
-coinspot_trader.py — Executes BTC and ETH trades via CoinSpot API.
+coinspot_trader.py — Executes crypto trades via CoinSpot API.
 CoinSpot is Australian so trades are natively in AUD — no FX conversion needed.
 Uses HMAC-SHA512 signature authentication as required by CoinSpot.
 """
@@ -59,14 +59,26 @@ class CoinSpotTrader:
             return None
 
     def get_balance(self) -> dict:
-        """Returns your CoinSpot AUD and crypto balances."""
+        """Returns your CoinSpot AUD and crypto balances. Always a dict."""
+        if PAPER_MODE:
+            return {}  # paper mode: no live balance to read
         result = self._post("/api/v2/ro/my/balances", {})
-        return result.get("balances", {}) if result else {}
+        if not result:
+            return {}
+        balances = result.get("balances", {})
+        # CoinSpot sometimes returns balances as list-of-single-key-dicts; normalise.
+        if isinstance(balances, list):
+            flat = {}
+            for entry in balances:
+                if isinstance(entry, dict):
+                    flat.update(entry)
+            return flat
+        return balances if isinstance(balances, dict) else {}
 
     def get_latest_price(self, coin: str) -> float:
         """
         Get latest buy price for a coin in AUD.
-        coin: 'btc' | 'eth'
+        Works for any symbol CoinSpot lists.
         """
         try:
             resp = requests.get(
@@ -82,7 +94,7 @@ class CoinSpotTrader:
 
     def buy(self, symbol: str, aud_amount: float) -> dict | None:
         """
-        Buy `aud_amount` AUD worth of `symbol` (BTC or ETH).
+        Buy `aud_amount` AUD worth of `symbol`.
         CoinSpot requires the coin amount, so we calculate it from the AUD amount.
         """
         coin  = symbol.lower()
@@ -106,60 +118,71 @@ class CoinSpotTrader:
             }
 
         return self._post("/api/v2/my/buy/now", {
-            "cointype": symbol.upper(),
-            "amount":   coin_amount,
-            "rate":     price,
+            "cointype":   symbol.upper(),
+            "amount":     coin_amount,
+            "rate":       price,
             "markettype": "AUD",
         })
 
     def sell(self, symbol: str, coin_amount: float = None, aud_amount: float = None) -> dict | None:
         """
         Sell crypto. Provide either coin_amount or aud_amount — not both.
-        If neither provided, attempts to sell full balance.
+        In PAPER mode we skip the balance lookup and trust the position record.
         """
         coin = symbol.lower()
 
-        if coin_amount is None and aud_amount is not None:
-            price       = self.get_latest_price(coin)
-            coin_amount = round(aud_amount / price, 8) if price > 0 else None
-
-        if coin_amount is None:
-            # Get full balance
-            balances    = self.get_balance()
-            coin_amount = float(balances.get(symbol.upper(), {}).get("balance", 0))
-
-        if coin_amount == 0:
-            log.warning(f"No {symbol} balance to sell")
-            return None
-
-        log.info(f"[{self.mode}] SELL {coin_amount} {symbol}")
-
+        # Paper mode: quote current price, simulate the sell. No API call, no balance
+        # lookup. The bot passes no coin_amount — that's expected; we'll use a
+        # symbolic "1.0" amount just for the result record. The actual P&L is tracked
+        # by the position record, not this return shape.
         if PAPER_MODE:
             price = self.get_latest_price(coin)
             return {
                 "status":      "ok",
                 "paper_mode":  True,
                 "symbol":      symbol,
-                "coin_amount": coin_amount,
+                "coin_amount": coin_amount or 1.0,
                 "price":       price,
-                "aud_value":   round(coin_amount * price, 2),
+                "aud_value":   round((coin_amount or 0) * price, 2) if coin_amount else None,
             }
 
+        # Live mode below — only runs if PAPER_MODE is off
+        if coin_amount is None and aud_amount is not None:
+            price       = self.get_latest_price(coin)
+            coin_amount = round(aud_amount / price, 8) if price > 0 else None
+
+        if coin_amount is None:
+            balances    = self.get_balance()  # always a dict now
+            entry       = balances.get(symbol.upper(), {})
+            if isinstance(entry, dict):
+                coin_amount = float(entry.get("balance", 0) or 0)
+            else:
+                coin_amount = 0.0
+
+        if not coin_amount or coin_amount == 0:
+            log.warning(f"No {symbol} balance to sell")
+            return None
+
+        log.info(f"[{self.mode}] SELL {coin_amount} {symbol}")
+
         return self._post("/api/v2/my/sell/now", {
-            "cointype": symbol.upper(),
-            "amount":   coin_amount,
+            "cointype":   symbol.upper(),
+            "amount":     coin_amount,
             "markettype": "AUD",
         })
 
     def get_holdings(self) -> dict:
         """
-        Returns current BTC/ETH holdings and their AUD value.
-        Used to calculate unrealised P&L.
+        Returns current holdings and their AUD value. Live-mode only.
         """
+        if PAPER_MODE:
+            return {}
         balances = self.get_balance()
         holdings = {}
-        for coin in ["BTC", "ETH"]:
-            bal = float(balances.get(coin, {}).get("balance", 0))
+        for coin, entry in balances.items():
+            if not isinstance(entry, dict):
+                continue
+            bal = float(entry.get("balance", 0) or 0)
             if bal > 0:
                 price = self.get_latest_price(coin)
                 holdings[coin] = {
