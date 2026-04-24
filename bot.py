@@ -52,11 +52,15 @@ def is_us_market_hours() -> bool:
 
 def execute_action(symbol, action, reason, alpaca, coinspot, db, tg,
                    positions, market_data, confidence=1.0, notify=True):
-    """Execute a single trade action. Returns True if executed."""
+    """Execute a single trade action. Returns True if executed.
+
+    Trader resolution is defensive: we never call .buy or .sell on None.
+    """
+    # Resolve config for this symbol
     if symbol in PORTFOLIO:
         config    = PORTFOLIO[symbol]
-        market    = config["market"]
-        allocated = config["allocated_aud"]
+        market    = config.get("market", "coinspot")
+        allocated = config.get("allocated_aud", 400)
     else:
         crypto_coins = ["BTC","ETH","SOL","XRP","ADA","DOGE","AVAX","LINK","LTC",
                         "BCH","DOT","UNI","AAVE","MATIC","ATOM","ALGO","NEAR",
@@ -67,9 +71,32 @@ def execute_action(symbol, action, reason, alpaca, coinspot, db, tg,
         config    = {"stop_loss_pct": 0.10 if market == "coinspot" else 0.07,
                      "take_profit_pct": 0.12 if market == "coinspot" else 0.08}
 
+    # Pick the right trader object for this market
+    trader = alpaca if market == "alpaca" else coinspot
+
+    # If the chosen trader isn't available in this loop (e.g. alpaca is None
+    # during the crypto-only loop), try to fall back to coinspot for crypto.
+    if trader is None:
+        if market == "alpaca" and coinspot is not None:
+            log.info(f"Rerouting {symbol} from alpaca to coinspot (this loop is crypto-only)")
+            market = "coinspot"
+            trader = coinspot
+        else:
+            log.warning(f"Skip {symbol} — no {market} trader available in this loop")
+            return False
+
+    # Belt-and-braces — should never fire, but guarantees we never call .buy on None
+    if trader is None:
+        log.error(f"Skip {symbol} — trader resolved to None unexpectedly (market={market})")
+        return False
+
     if action == "BUY" and symbol not in positions:
-        log.info(f"Executing BUY {symbol} — {reason}")
-        order = alpaca.buy(symbol, allocated) if market == "alpaca" else coinspot.buy(symbol, allocated)
+        log.info(f"Executing BUY {symbol} on {market} — {reason}")
+        try:
+            order = trader.buy(symbol, allocated)
+        except Exception as e:
+            log.error(f"BUY call failed for {symbol} on {market}: {e}")
+            return False
         if order:
             price = market_data.get(symbol, {}).get("price", 0)
             db.log_trade(symbol, "BUY", allocated, order, confidence, reason)
@@ -78,8 +105,12 @@ def execute_action(symbol, action, reason, alpaca, coinspot, db, tg,
                 tg.send(f"{'[PAPER] ' if PAPER_MODE else ''}Bought {symbol} — {reason}")
             return True
     elif action == "SELL" and symbol in positions:
-        log.info(f"Executing SELL {symbol} — {reason}")
-        order = alpaca.sell(symbol) if market == "alpaca" else coinspot.sell(symbol)
+        log.info(f"Executing SELL {symbol} on {market} — {reason}")
+        try:
+            order = trader.sell(symbol)
+        except Exception as e:
+            log.error(f"SELL call failed for {symbol} on {market}: {e}")
+            return False
         if order:
             pos   = positions[symbol]
             price = market_data.get(symbol, {}).get("price", 0)
