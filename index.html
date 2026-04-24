@@ -57,6 +57,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .metric-sub{font-size:11px;color:#9aa0a6;margin-top:4px;}
 
 .pulse-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;}
+.alloc-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px;}
+.alloc-row{background:#f5f6f8;border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:2px;}
+.alloc-label{font-size:10px;color:#9aa0a6;text-transform:uppercase;letter-spacing:0.4px;}
+.alloc-val{font-size:16px;font-weight:600;color:#0d1f38;}
+.alloc-pct{font-size:10px;color:#9aa0a6;}
+.alloc-bar{display:flex;height:6px;border-radius:3px;overflow:hidden;background:#eeeef0;}
+.alloc-bar-fill{height:100%;transition:width 0.3s;}
 .pulse-card{background:#fafbfc;border:1px solid #e8eaed;border-radius:8px;padding:12px;}
 .pulse-card-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px;}
 .pulse-sym{font-size:12px;font-weight:700;color:#1a1a2e;}
@@ -258,10 +265,24 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
     <div id="page-overview" class="page active">
       <div class="metrics">
-        <div class="metric"><div class="metric-label">Portfolio</div><div class="metric-value" id="m-port">$5,000</div><div class="metric-sub">AUD total</div></div>
+        <div class="metric"><div class="metric-label">Portfolio</div><div class="metric-value" id="m-port">$5,000</div><div class="metric-sub" id="m-port-sub">AUD total</div></div>
         <div class="metric"><div class="metric-label">Net P&L</div><div class="metric-value" id="m-pnl">$0.00</div><div class="metric-sub">after all fees</div></div>
         <div class="metric"><div class="metric-label">Fees paid</div><div class="metric-value" id="m-fees">$0.00</div><div class="metric-sub">trading costs</div></div>
         <div class="metric"><div class="metric-label">Win rate</div><div class="metric-value" id="m-win">—</div><div class="metric-sub">profitable trades</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
+          <span>Allocation</span>
+          <span style="font-size:9px;color:#c4c7cc;text-transform:none;letter-spacing:0;" id="alloc-sub">live value at current prices</span>
+        </div>
+        <div class="alloc-grid" id="alloc-grid">
+          <div class="alloc-row"><span class="alloc-label">Cash</span><span class="alloc-val" id="a-cash">$5,000.00</span><span class="alloc-pct" id="a-cash-pct">100%</span></div>
+          <div class="alloc-row"><span class="alloc-label">Crypto</span><span class="alloc-val" id="a-crypto">$0.00</span><span class="alloc-pct" id="a-crypto-pct">0%</span></div>
+          <div class="alloc-row"><span class="alloc-label">US stocks</span><span class="alloc-val" id="a-stocks">$0.00</span><span class="alloc-pct" id="a-stocks-pct">0%</span></div>
+          <div class="alloc-row"><span class="alloc-label">Derivatives</span><span class="alloc-val" id="a-derivs">$0.00</span><span class="alloc-pct" id="a-derivs-pct">0%</span></div>
+        </div>
+        <div class="alloc-bar"><div class="alloc-bar-fill" id="bar-cash" style="background:#9aa0a6;"></div><div class="alloc-bar-fill" id="bar-crypto" style="background:#f59e0b;"></div><div class="alloc-bar-fill" id="bar-stocks" style="background:#0d1f38;"></div><div class="alloc-bar-fill" id="bar-derivs" style="background:#8b5cf6;"></div></div>
       </div>
 
       <div class="card">
@@ -581,17 +602,59 @@ function renderAll(){
 function renderMetrics(){
   const latestIntra=allIntraday[0]||{};
   const latestDaily=allSnapshots[0]||{};
-  const total=Number(latestIntra.total_aud)||Number(latestDaily.total_aud)||5000;
+
+  // Compute live portfolio breakdown from open positions + current prices.
+  // This gives a real-time number even if the bot's last snapshot is a few min old.
+  let cryptoVal=0, stocksVal=0, derivsVal=0;
+  let entryCost=0;
+  (allPositions||[]).forEach(p=>{
+    const entry=Number(p.entry_price)||0;
+    const amt=Number(p.aud_amount)||0;
+    entryCost+=amt;
+    const cgId=SYM_TO_CG[p.symbol];
+    const livePrice=cgId && pulseData[cgId] ? Number(pulseData[cgId].aud) : 0;
+    const currentVal = (entry>0 && livePrice>0) ? amt*(livePrice/entry) : amt;
+    const market=(p.market||'').toLowerCase();
+    if(market==='coinspot') cryptoVal+=currentVal;
+    else if(market==='alpaca') stocksVal+=currentVal;
+    else if(market==='derivatives'||market==='options') derivsVal+=currentVal;
+    else cryptoVal+=currentVal; // default fallback
+  });
+  const cash=Math.max(0, 5000-entryCost);
+  const totalLive=cash+cryptoVal+stocksVal+derivsVal;
+
+  // Prefer bot snapshot if fresher, fallback to live client compute
+  const total=Number(latestIntra.total_aud)||totalLive||Number(latestDaily.total_aud)||5000;
   const fees=allTrades.reduce((a,t)=>a+(t.fee_aud||0),0);
   const net=total-5000;
   const wins=allTrades.filter(t=>t.pnl_pct>0).length;
   const winRate=allTrades.length>0?Math.round(wins/allTrades.length*100)+'%':'—';
+
   document.getElementById('m-port').textContent='$'+total.toLocaleString('en-AU',{minimumFractionDigits:2,maximumFractionDigits:2});
+  document.getElementById('m-port-sub').textContent=allPositions.length?`${allPositions.length} position${allPositions.length>1?'s':''} · live`:'AUD total';
   const pnlEl=document.getElementById('m-pnl');
   pnlEl.textContent=(net>=0?'+':'')+'$'+Math.abs(net).toFixed(2);
   pnlEl.className='metric-value '+(net>0?'up':net<0?'down':'');
   document.getElementById('m-fees').textContent='$'+fees.toFixed(2);
   document.getElementById('m-win').textContent=winRate;
+
+  // Allocation breakdown
+  const fmt=v=>'$'+v.toLocaleString('en-AU',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const pct=v=>totalLive>0?Math.round(v/totalLive*100)+'%':'0%';
+  document.getElementById('a-cash').textContent=fmt(cash);
+  document.getElementById('a-cash-pct').textContent=pct(cash);
+  document.getElementById('a-crypto').textContent=fmt(cryptoVal);
+  document.getElementById('a-crypto-pct').textContent=pct(cryptoVal);
+  document.getElementById('a-stocks').textContent=fmt(stocksVal);
+  document.getElementById('a-stocks-pct').textContent=pct(stocksVal);
+  document.getElementById('a-derivs').textContent=fmt(derivsVal);
+  document.getElementById('a-derivs-pct').textContent=pct(derivsVal);
+  const pctN=v=>totalLive>0?(v/totalLive*100):0;
+  document.getElementById('bar-cash').style.width=pctN(cash)+'%';
+  document.getElementById('bar-crypto').style.width=pctN(cryptoVal)+'%';
+  document.getElementById('bar-stocks').style.width=pctN(stocksVal)+'%';
+  document.getElementById('bar-derivs').style.width=pctN(derivsVal)+'%';
+
   const cp=document.getElementById('chart-pnl');
   cp.textContent=(net>=0?'+':'')+'$'+Math.abs(net).toFixed(2);
   cp.className='pnl-amount '+(net>0?'':net<0?'down':'neutral');
