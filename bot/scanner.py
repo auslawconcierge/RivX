@@ -233,7 +233,8 @@ def _score_stock(symbol: str) -> dict | None:
 
     # Indicators
     rsi        = _calc_rsi(closes)
-    change_1d  = float((closes.iloc[-1] - closes.iloc[-2]) / closes.iloc[-2] * 100) if len(closes) >= 2 else 0
+    raw_change_1d = float((closes.iloc[-1] - closes.iloc[-2]) / closes.iloc[-2] * 100) if len(closes) >= 2 else 0
+    change_1d  = raw_change_1d if abs(raw_change_1d) <= 15 else 0  # Cap bad data
     change_5d  = float((closes.iloc[-1] - closes.iloc[-5]) / closes.iloc[-5] * 100) if len(closes) >= 5 else 0
     avg_vol    = float(volumes.rolling(10).mean().iloc[-1]) if len(volumes) >= 10 else float(volumes.mean())
     vol_ratio  = float(volumes.iloc[-1] / avg_vol) if avg_vol > 0 else 1
@@ -307,7 +308,9 @@ def _score_crypto(coin: str, pair: str) -> dict | None:
     price   = float(closes.iloc[-1])
 
     rsi       = _calc_rsi(closes)
-    change_1d = float((closes.iloc[-1] - closes.iloc[-2]) / closes.iloc[-2] * 100) if len(closes) >= 2 else 0
+    # Validate price changes - discard if data looks wrong (>15% in a day is suspicious for daily bars)
+    raw_change_1d = float((closes.iloc[-1] - closes.iloc[-2]) / closes.iloc[-2] * 100) if len(closes) >= 2 else 0
+    change_1d = raw_change_1d if abs(raw_change_1d) <= 15 else 0  # Cap at 15% - anything more is bad data
     change_7d = float((closes.iloc[-1] - closes.iloc[-7]) / closes.iloc[-7] * 100) if len(closes) >= 7 else 0
     avg_vol   = float(volumes.rolling(7).mean().iloc[-1]) if len(volumes) >= 7 else float(volumes.mean())
     vol_ratio = float(volumes.iloc[-1] / avg_vol) if avg_vol > 0 else 1
