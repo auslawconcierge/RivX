@@ -266,10 +266,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
       <div class="card">
         <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
-          <span>Market pulse — live</span>
+          <span>My holdings</span>
           <span style="font-size:9px;color:#c4c7cc;text-transform:none;letter-spacing:0;" id="pulse-updated">updating...</span>
         </div>
-        <div class="pulse-grid" id="pulse-grid"><div class="empty" style="grid-column:span 4;">Loading live prices...</div></div>
+        <div class="pulse-grid" id="pulse-grid"><div class="empty" style="grid-column:span 4;">No holdings yet — first position will appear after 8pm briefing</div></div>
       </div>
 
       <div class="card">
@@ -294,7 +294,19 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
           </div>
         </div>
         <div class="chart-wrap"><canvas id="perfChart"></canvas></div>
-        <div class="chart-note" id="chart-note">Intraday portfolio value · 5-min snapshots from the bot</div>
+        <div class="chart-note" id="chart-note">Portfolio value · 5-min snapshots from the bot</div>
+      </div>
+
+      <div class="card" id="holding-detail-card" style="display:none;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;">
+          <div>
+            <div class="card-title" style="margin-bottom:4px;" id="holding-title">Holding detail</div>
+            <div id="holding-sub" style="font-size:12px;color:#9aa0a6;">Select a holding above to see its intraday chart</div>
+          </div>
+          <div id="holding-price" style="text-align:right;"></div>
+        </div>
+        <div class="chart-wrap" style="height:220px;"><canvas id="holdingChart"></canvas></div>
+        <div class="chart-note">Live 24h price · source CoinGecko</div>
       </div>
 
       <div class="grid2">
@@ -457,7 +469,24 @@ const PULSE_COINS = [
   {id:'chainlink',sym:'LINK',name:'Chainlink'},
 ];
 
+// Full symbol → CoinGecko id map so any holding can be looked up
+const SYM_TO_CG = {
+  BTC:'bitcoin', ETH:'ethereum', SOL:'solana', XRP:'ripple', ADA:'cardano',
+  DOGE:'dogecoin', AVAX:'avalanche-2', LINK:'chainlink', LTC:'litecoin',
+  BCH:'bitcoin-cash', DOT:'polkadot', UNI:'uniswap', AAVE:'aave',
+  MATIC:'matic-network', ATOM:'cosmos', ALGO:'algorand', NEAR:'near',
+  FTM:'fantom', SAND:'the-sandbox', MANA:'decentraland', CRV:'curve-dao-token',
+  GRT:'the-graph', SUSHI:'sushi', MKR:'maker', SNX:'havven', PEPE:'pepe',
+  SHIB:'shiba-inu', FLOKI:'floki', WIF:'dogwifcoin', BONK:'bonk',
+  FET:'fetch-ai', RNDR:'render-token', TAO:'bittensor', TON:'the-open-network',
+  TRX:'tron', ICP:'internet-computer', HBAR:'hedera-hashgraph',
+  FIL:'filecoin', VET:'vechain', INJ:'injective-protocol', STX:'blockstack',
+  IMX:'immutable-x', ARB:'arbitrum', OP:'optimism', SEI:'sei-network',
+  TIA:'celestia', SUI:'sui', APT:'aptos', RUNE:'thorchain'
+};
+
 let perfChart=null, currentTf='1D';
+let holdingChart=null, selectedHolding=null, holdingPrices={};
 let allSnapshots=[], allIntraday=[], allTrades=[], allPositions=[], allWeights={}, allChecks=[], allQuestions=[], pulseData={};
 
 function login(){
@@ -502,7 +531,9 @@ async function sb(table,params,method='GET',body=null){
 
 async function cgSimplePrice(){
   try {
-    const ids=PULSE_COINS.map(c=>c.id).join(',');
+    const defaultIds=PULSE_COINS.map(c=>c.id);
+    const ownedIds=(allPositions||[]).map(p=>SYM_TO_CG[p.symbol]).filter(Boolean);
+    const ids=[...new Set([...defaultIds,...ownedIds])].join(',');
     const r=await fetch(`${CG_BASE}/simple/price?ids=${ids}&vs_currencies=aud&include_24hr_change=true`);
     if(!r.ok) return {};
     return await r.json();
@@ -511,7 +542,8 @@ async function cgSimplePrice(){
 
 async function loadAll(){
   document.getElementById('last-updated').textContent='Loading...';
-  await Promise.all([loadSupabase(),loadPulse()]);
+  await loadSupabase();
+  await loadPulse();
   renderAll();
   document.getElementById('last-updated').textContent='Updated '+new Date().toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'});
 }
@@ -572,14 +604,73 @@ function renderMetrics(){
 
 function renderPulse(){
   const el=document.getElementById('pulse-grid');
-  if(!Object.keys(pulseData).length){ el.innerHTML='<div class="empty" style="grid-column:span 4;">Waiting for market data...</div>'; return; }
-  el.innerHTML=PULSE_COINS.map(c=>{
-    const d=pulseData[c.id]||{};
-    if(d.aud===undefined) return '';
+  const owned=(allPositions||[]).map(p=>p.symbol).filter(s=>SYM_TO_CG[s]);
+  if(!owned.length){
+    el.innerHTML='<div class="empty" style="grid-column:span 4;">No holdings yet — first position appears after 8pm briefing</div>';
+    document.getElementById('holding-detail-card').style.display='none';
+    return;
+  }
+  el.innerHTML=owned.map(sym=>{
+    const cgId=SYM_TO_CG[sym];
+    const d=pulseData[cgId]||{};
+    const chg=d.aud_24h_change||0;
+    const hasPrice=d.aud!==undefined;
+    const priceFmt=hasPrice?(d.aud>=100?d.aud.toLocaleString('en-AU',{maximumFractionDigits:0}):d.aud<1?d.aud.toFixed(4):d.aud.toFixed(2)):'…';
+    const active=selectedHolding===sym?'style="border-color:#0d1f38;box-shadow:0 0 0 1px #0d1f38;"':'';
+    return `<div class="pulse-card" ${active} onclick="selectHolding('${sym}')" role="button" tabindex="0"><div class="pulse-card-header"><span class="pulse-sym">${sym}</span><span class="pulse-chg ${chg>=0?'up':'down'}">${chg>=0?'+':''}${chg.toFixed(2)}%</span></div><div class="pulse-price">$${priceFmt}</div><div class="pulse-label">AUD · 24H</div></div>`;
+  }).join('');
+  document.getElementById('holding-detail-card').style.display='block';
+  if(!selectedHolding || !owned.includes(selectedHolding)){
+    selectHolding(owned[0]);
+  }
+}
+
+async function selectHolding(sym){
+  selectedHolding=sym;
+  renderPulse();
+  const cgId=SYM_TO_CG[sym];
+  if(!cgId) return;
+  const d=pulseData[cgId]||{};
+  document.getElementById('holding-title').textContent=sym+' · 24h';
+  document.getElementById('holding-sub').textContent='Live price from CoinGecko';
+  if(d.aud!==undefined){
     const chg=d.aud_24h_change||0;
     const priceFmt=d.aud>=100?d.aud.toLocaleString('en-AU',{maximumFractionDigits:0}):d.aud<1?d.aud.toFixed(4):d.aud.toFixed(2);
-    return `<div class="pulse-card"><div class="pulse-card-header"><span class="pulse-sym">${c.sym}</span><span class="pulse-chg ${chg>=0?'up':'down'}">${chg>=0?'+':''}${chg.toFixed(2)}%</span></div><div class="pulse-price">$${priceFmt}</div><div class="pulse-label">AUD · 24H</div></div>`;
-  }).join('');
+    document.getElementById('holding-price').innerHTML=`<div style="font-size:20px;font-weight:600;">$${priceFmt}</div><div class="${chg>=0?'up':'down'}" style="font-size:12px;">${chg>=0?'+':''}${chg.toFixed(2)}%</div>`;
+  } else {
+    document.getElementById('holding-price').innerHTML='';
+  }
+  if(holdingPrices[sym]){
+    drawHoldingChart(sym, holdingPrices[sym]);
+  } else {
+    const prices=await cgMarketChart(cgId);
+    if(prices){ holdingPrices[sym]=prices; drawHoldingChart(sym, prices); }
+  }
+}
+
+async function cgMarketChart(cgId){
+  try {
+    const r=await fetch(`${CG_BASE}/coins/${cgId}/market_chart?vs_currency=aud&days=1`);
+    if(!r.ok) return null;
+    const data=await r.json();
+    return data.prices||null;
+  } catch(e){ return null; }
+}
+
+function drawHoldingChart(sym, prices){
+  const canvas=document.getElementById('holdingChart');
+  if(!canvas||!prices) return;
+  if(holdingChart){ holdingChart.destroy(); holdingChart=null; }
+  const labels=prices.map(p=>new Date(p[0]).toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'}));
+  const values=prices.map(p=>p[1]);
+  const first=values[0]||0;
+  const last=values[values.length-1]||0;
+  const color=last>=first?'#1a7340':'#c4302b';
+  holdingChart=new Chart(canvas,{
+    type:'line',
+    data:{labels,datasets:[{data:values,borderColor:color,backgroundColor:color==='#1a7340'?'rgba(26,115,64,0.06)':'rgba(196,48,43,0.06)',fill:true,tension:0.3,pointRadius:0,pointHoverRadius:4,borderWidth:2}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>'$'+ctx.parsed.y.toLocaleString('en-AU',{maximumFractionDigits:ctx.parsed.y<1?4:2})}}},scales:{x:{ticks:{color:'#9aa0a6',font:{size:10},maxTicksLimit:6,autoSkip:true},grid:{color:'rgba(0,0,0,0.04)'}},y:{ticks:{color:'#9aa0a6',font:{size:10},callback:v=>'$'+(v<1?v.toFixed(4):v.toLocaleString('en-AU',{maximumFractionDigits:2}))},grid:{color:'rgba(0,0,0,0.04)'}}}}
+  });
 }
 
 function setTf(btn,tf){
@@ -636,7 +727,8 @@ function renderPositions(){
   el.innerHTML=allPositions.map(p=>{
     const pnl=p.pnl_pct||0;
     const cls=pnl>0?'up':pnl<0?'down':'neutral';
-    return `<div class="pos-row"><div><div class="pos-ticker">${p.symbol}</div><div class="pos-tier">${p.market||''} · $${(p.aud_amount||0).toFixed(0)}</div></div><span class="pos-badge ${cls}">${pnl>=0?'+':''}${(pnl*100).toFixed(1)}%</span></div>`;
+    const clickable=SYM_TO_CG[p.symbol]?`onclick="selectHolding('${p.symbol}');document.getElementById('holding-detail-card').scrollIntoView({behavior:'smooth',block:'center'});" style="cursor:pointer;"`:'';
+    return `<div class="pos-row" ${clickable}><div><div class="pos-ticker">${p.symbol}</div><div class="pos-tier">${p.market||''} · $${(p.aud_amount||0).toFixed(0)}</div></div><span class="pos-badge ${cls}">${pnl>=0?'+':''}${(pnl*100).toFixed(1)}%</span></div>`;
   }).join('');
 }
 
