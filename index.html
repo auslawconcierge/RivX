@@ -4,12 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>RivX</title>
-
 <style>
 *{margin:0;padding:0;box-sizing:border-box;}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#ffffff;color:#1a1a2e;min-height:100vh;}
 
-/* LOGIN */
 #login-screen{display:flex;align-items:center;justify-content:center;min-height:100vh;background:#f5f6f8;position:relative;overflow:hidden;}
 #login-screen::before{content:'';position:absolute;top:-200px;right:-200px;width:600px;height:600px;border-radius:50%;border:1px solid rgba(13,31,56,0.06);pointer-events:none;}
 #login-screen::after{content:'';position:absolute;top:-150px;right:-150px;width:450px;height:450px;border-radius:50%;border:1px solid rgba(13,31,56,0.08);pointer-events:none;}
@@ -19,16 +17,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .login-sub{font-size:10px;color:#9aa0a6;letter-spacing:0.25em;text-transform:uppercase;margin-top:6px;}
 .login-status{display:flex;align-items:center;justify-content:center;gap:6px;margin-top:12px;}
 .status-dot{width:6px;height:6px;border-radius:50%;background:#4ade80;animation:pulse 2s infinite;}
-.login-box{background:#0d1f38;border-radius:16px;padding:32px;position:relative;overflow:hidden;box-shadow:0 24px 48px rgba(13,31,56,0.2);}
-.login-box::before{content:'';position:absolute;top:-60px;right:-60px;width:200px;height:200px;border-radius:50%;border:1px solid rgba(255,255,255,0.06);}
-.login-box::after{content:'';position:absolute;top:-30px;right:-30px;width:140px;height:140px;border-radius:50%;border:1px solid rgba(255,255,255,0.04);}
+.login-box{background:#0d1f38;border-radius:16px;padding:32px;box-shadow:0 24px 48px rgba(13,31,56,0.2);}
 .login-label{font-size:10px;color:rgba(255,255,255,0.4);letter-spacing:0.2em;text-transform:uppercase;text-align:center;margin-bottom:16px;}
-.login-box input{width:100%;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:13px 16px;color:white;font-size:14px;font-family:monospace;margin-bottom:12px;outline:none;transition:border-color 0.2s;}
-.login-box input::placeholder{color:rgba(255,255,255,0.25);}
-.login-box input:focus{border-color:rgba(255,255,255,0.35);background:rgba(255,255,255,0.08);}
-.login-btn{width:100%;background:white;color:#0d1f38;border:none;border-radius:8px;padding:13px;font-size:13px;font-weight:700;cursor:pointer;letter-spacing:0.1em;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;transition:background 0.2s,transform 0.1s;}
-.login-btn:hover{background:#f0f4ff;}
-.login-btn:active{transform:scale(0.99);}
+.login-box input{width:100%;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:13px 16px;color:white;font-size:14px;font-family:monospace;margin-bottom:12px;outline:none;}
+.login-box input:focus{border-color:rgba(255,255,255,0.35);}
+.login-btn{width:100%;background:white;color:#0d1f38;border:none;border-radius:8px;padding:13px;font-size:13px;font-weight:700;cursor:pointer;letter-spacing:0.1em;}
 .login-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:16px;}
 .login-stat{background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:10px;text-align:center;}
 .login-stat-val{font-size:16px;font-weight:600;color:white;}
@@ -36,9 +29,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .login-error{color:#f87171;font-size:12px;text-align:center;margin-top:10px;display:none;}
 .login-footer{text-align:center;margin-top:20px;font-size:10px;color:#c4c7cc;letter-spacing:0.15em;}
 
-/* DASHBOARD */
 #dashboard{display:none;background:#f5f6f8;min-height:100vh;}
-
 .topbar{background:#0d1f38;padding:0 24px;display:flex;align-items:center;justify-content:space-between;height:54px;position:sticky;top:0;z-index:100;}
 .topbar-logo{font-size:18px;font-weight:600;color:white;letter-spacing:-0.5px;}
 .topbar-badge{font-size:10px;padding:3px 10px;border-radius:20px;background:rgba(255,255,255,0.08);color:#94a3b8;border:0.5px solid rgba(255,255,255,0.1);letter-spacing:0.08em;margin-left:10px;}
@@ -46,62 +37,51 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .topbar-live .dot{width:6px;height:6px;border-radius:50%;background:#4ade80;animation:pulse 2s infinite;}
 @keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.3;}}
 .nav{display:flex;gap:2px;}
-.nav-btn{font-size:12px;padding:6px 16px;border-radius:6px;border:none;background:none;color:#94a3b8;cursor:pointer;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;}
+.nav-btn{font-size:12px;padding:6px 16px;border-radius:6px;border:none;background:none;color:#94a3b8;cursor:pointer;}
 .nav-btn.active{background:rgba(255,255,255,0.1);color:white;}
 .topbar-right{display:flex;align-items:center;gap:10px;}
 .topbar-countdown{font-size:11px;color:#94a3b8;font-family:monospace;}
 .topbar-time{font-size:11px;color:#4a6a8a;}
-.topbar-refresh{font-size:11px;padding:5px 12px;border:0.5px solid rgba(255,255,255,0.1);border-radius:6px;background:none;color:#94a3b8;cursor:pointer;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;}
-.topbar-logout{font-size:11px;color:#4a6a8a;background:none;border:none;cursor:pointer;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;}
+.topbar-refresh{font-size:11px;padding:5px 12px;border:0.5px solid rgba(255,255,255,0.1);border-radius:6px;background:none;color:#94a3b8;cursor:pointer;}
+.topbar-logout{font-size:11px;color:#4a6a8a;background:none;border:none;cursor:pointer;}
 
 .main{padding:24px;max-width:1400px;margin:0 auto;}
 .page{display:none;}
 .page.active{display:block;}
 
-/* METRICS ROW */
 .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px;}
 .metric{background:white;border:1px solid #e8eaed;border-radius:10px;padding:16px 18px;}
 .metric-label{font-size:11px;color:#9aa0a6;letter-spacing:0.05em;text-transform:uppercase;margin-bottom:8px;}
 .metric-value{font-size:24px;font-weight:600;color:#1a1a2e;letter-spacing:-0.5px;}
-.metric-value.up{color:#1a7340;}
-.metric-value.down{color:#c0392b;}
+.metric-value.up{color:#1a7340;} .metric-value.down{color:#c0392b;}
 .metric-sub{font-size:11px;color:#9aa0a6;margin-top:4px;}
 
-/* MARKET PULSE */
 .pulse-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;}
-.pulse-card{background:#fafbfc;border:1px solid #e8eaed;border-radius:8px;padding:12px;position:relative;overflow:hidden;}
+.pulse-card{background:#fafbfc;border:1px solid #e8eaed;border-radius:8px;padding:12px;}
 .pulse-card-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px;}
-.pulse-sym{font-size:12px;font-weight:700;color:#1a1a2e;letter-spacing:0.02em;}
+.pulse-sym{font-size:12px;font-weight:700;color:#1a1a2e;}
 .pulse-chg{font-size:11px;font-weight:600;}
-.pulse-chg.up{color:#1a7340;}
-.pulse-chg.down{color:#c0392b;}
+.pulse-chg.up{color:#1a7340;} .pulse-chg.down{color:#c0392b;}
 .pulse-price{font-size:18px;font-weight:600;color:#1a1a2e;letter-spacing:-0.3px;}
 .pulse-label{font-size:9px;color:#9aa0a6;letter-spacing:0.08em;margin-top:2px;}
-.pulse-spark{margin-top:6px;height:24px;}
 
-/* CARDS */
 .card{background:white;border:1px solid #e8eaed;border-radius:10px;padding:20px;margin-bottom:16px;}
 .card-title{font-size:10px;color:#9aa0a6;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:16px;font-weight:500;}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px;}
-.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-bottom:16px;}
 
-/* P&L CHART */
 .pnl-header{display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:16px;}
 .pnl-amount{font-size:30px;font-weight:600;color:#1a7340;letter-spacing:-1px;}
-.pnl-amount.down{color:#c0392b;}
-.pnl-amount.neutral{color:#1a1a2e;}
+.pnl-amount.down{color:#c0392b;} .pnl-amount.neutral{color:#1a1a2e;}
 .pnl-breakdown{display:flex;gap:16px;margin-top:6px;}
 .pnl-item{font-size:11px;color:#9aa0a6;}
 .pnl-item span{font-weight:500;color:#1a1a2e;}
-.pnl-item span.up{color:#1a7340;}
-.pnl-item span.down{color:#c0392b;}
+.pnl-item span.up{color:#1a7340;} .pnl-item span.down{color:#c0392b;}
 .timeframes{display:flex;gap:2px;background:#f5f6f8;border:1px solid #e8eaed;border-radius:8px;padding:3px;}
-.tf-btn{font-size:11px;padding:5px 10px;border-radius:5px;border:none;background:none;color:#9aa0a6;cursor:pointer;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;}
+.tf-btn{font-size:11px;padding:5px 10px;border-radius:5px;border:none;background:none;color:#9aa0a6;cursor:pointer;}
 .tf-btn.active{background:white;color:#1a1a2e;box-shadow:0 1px 3px rgba(0,0,0,0.08);}
-.chart-wrap{position:relative;height:220px;}
+.chart-wrap{position:relative;height:240px;}
 .chart-note{font-size:10px;color:#c4c7cc;text-align:center;margin-top:8px;letter-spacing:0.05em;}
 
-/* POSITIONS */
 .pos-row{display:flex;align-items:center;justify-content:space-between;padding:9px 0;border-bottom:1px solid #f0f0f0;}
 .pos-row:last-child{border-bottom:none;}
 .pos-ticker{font-size:14px;font-weight:600;color:#1a1a2e;}
@@ -111,7 +91,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .pos-badge.down{background:#fdecea;color:#c0392b;}
 .pos-badge.neutral{background:#f5f6f8;color:#9aa0a6;}
 
-/* TRADES */
 .trade-row{display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-bottom:1px solid #f0f0f0;}
 .trade-row:last-child{border-bottom:none;}
 .trade-icon{width:38px;height:38px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0;font-family:monospace;}
@@ -123,41 +102,67 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .trade-detail{font-size:11px;color:#9aa0a6;margin-top:2px;}
 .trade-time{font-size:10px;color:#c4c7cc;flex-shrink:0;padding-top:2px;}
 
-/* SIGNALS */
 .sig-row{display:flex;align-items:center;gap:10px;margin-bottom:10px;}
 .sig-name{font-size:12px;color:#555;width:72px;flex-shrink:0;}
 .sig-track{flex:1;height:3px;background:#f0f0f0;border-radius:2px;overflow:hidden;}
 .sig-fill{height:100%;border-radius:2px;background:#0d1f38;transition:width 0.5s;}
 .sig-pct{font-size:11px;font-weight:500;color:#1a1a2e;min-width:34px;text-align:right;}
 
-/* STATUS */
 .st-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #f0f0f0;font-size:12px;}
 .st-row:last-child{border-bottom:none;}
 .st-label{color:#9aa0a6;}
 .st-val{font-weight:500;color:#1a1a2e;display:flex;align-items:center;gap:5px;}
 .dot{width:6px;height:6px;border-radius:50%;display:inline-block;}
-.dot-on{background:#4ade80;}
-.dot-warn{background:#f59e0b;}
-.dot-off{background:#f87171;}
-.kill-btn{width:100%;padding:10px;background:#fdecea;color:#c0392b;border:1px solid #ef9a9a;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;margin-top:14px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;letter-spacing:0.05em;}
+.dot-on{background:#4ade80;} .dot-warn{background:#f59e0b;} .dot-off{background:#f87171;}
+.kill-btn{width:100%;padding:10px;background:#fdecea;color:#c0392b;border:1px solid #ef9a9a;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;margin-top:14px;}
 
-/* EXPORT */
-.export-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px;}
-.export-card{background:white;border:1px solid #e8eaed;border-radius:8px;padding:14px;cursor:pointer;transition:border-color 0.15s,box-shadow 0.15s;}
-.export-card:hover{border-color:#0d1f38;box-shadow:0 2px 8px rgba(13,31,56,0.08);}
-.export-card-title{font-size:13px;font-weight:500;color:#1a1a2e;margin-bottom:4px;}
-.export-card-desc{font-size:11px;color:#9aa0a6;}
-.export-preview{background:#f5f6f8;border:1px solid #e8eaed;border-radius:8px;padding:14px;margin-top:14px;font-family:monospace;font-size:11px;color:#555;line-height:1.7;display:none;white-space:pre-wrap;}
-.copy-btn{width:100%;margin-top:8px;padding:9px;background:#0d1f38;color:white;border:none;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;display:none;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;}
+.intel-split{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+@media(max-width:900px){.intel-split{grid-template-columns:1fr;}}
+.intel-col-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid #f0f0f0;}
+.intel-col-title{font-size:13px;font-weight:600;color:#1a1a2e;}
+.intel-col-sub{font-size:10px;color:#9aa0a6;letter-spacing:0.08em;text-transform:uppercase;}
+.intel-entry{padding:10px 0;border-bottom:1px solid #f8f8f8;}
+.intel-entry:last-child{border-bottom:none;}
+.intel-entry-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;}
+.intel-sym{font-size:13px;font-weight:600;color:#1a1a2e;}
+.intel-tier{font-size:9px;padding:2px 6px;border-radius:10px;background:#f5f6f8;color:#9aa0a6;border:1px solid #e8eaed;letter-spacing:0.05em;text-transform:uppercase;}
+.intel-tier.blue{background:#eff6ff;color:#1d4ed8;border-color:#bfdbfe;}
+.intel-tier.large{background:#ecfdf5;color:#047857;border-color:#a7f3d0;}
+.intel-tier.mid{background:#fef3c7;color:#92400e;border-color:#fde68a;}
+.intel-tier.small{background:#fed7aa;color:#9a3412;border-color:#fdba74;}
+.intel-tier.micro{background:#fecaca;color:#991b1b;border-color:#fca5a5;}
+.intel-metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:6px;}
+.intel-metric{font-size:10px;color:#9aa0a6;}
+.intel-metric strong{display:block;font-size:12px;color:#1a1a2e;font-weight:600;margin-top:2px;}
+.intel-metric strong.up{color:#1a7340;} .intel-metric strong.down{color:#c0392b;}
+.intel-reasons{font-size:11px;color:#555;line-height:1.5;margin-top:6px;}
+.intel-score{font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px;background:#0d1f38;color:white;}
 
-/* INTELLIGENCE */
+.qa-box{background:#f5f6f8;border:1px solid #e8eaed;border-radius:10px;padding:14px;margin-bottom:14px;}
+.qa-input-row{display:flex;gap:8px;}
+.qa-input{flex:1;padding:10px 12px;border:1px solid #e8eaed;border-radius:8px;font-size:13px;font-family:inherit;outline:none;background:white;}
+.qa-input:focus{border-color:#0d1f38;}
+.qa-submit{padding:10px 18px;background:#0d1f38;color:white;border:none;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;}
+.qa-submit:disabled{opacity:0.5;cursor:not-allowed;}
+.qa-hint{font-size:10px;color:#9aa0a6;margin-top:6px;}
+.qa-thread{margin-top:14px;max-height:400px;overflow-y:auto;}
+.qa-item{padding:12px 0;border-bottom:1px solid #f0f0f0;}
+.qa-item:last-child{border-bottom:none;}
+.qa-q{font-size:12px;font-weight:600;color:#1a1a2e;margin-bottom:6px;display:flex;justify-content:space-between;gap:10px;}
+.qa-q-time{font-size:10px;color:#c4c7cc;font-weight:normal;flex-shrink:0;}
+.qa-a{font-size:12px;color:#555;line-height:1.6;background:white;border-left:3px solid #0d1f38;padding:10px 12px;border-radius:0 8px 8px 0;white-space:pre-wrap;}
+.qa-a.pending{color:#9aa0a6;font-style:italic;border-left-color:#f59e0b;}
+.qa-a.failed{color:#c0392b;border-left-color:#c0392b;}
+.qa-actions{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;}
+.qa-action-btn{font-size:10px;padding:4px 10px;border:1px solid #e8eaed;background:white;border-radius:6px;cursor:pointer;color:#555;}
+.qa-action-btn:hover{border-color:#0d1f38;}
+
 .risk-badge{font-size:10px;padding:3px 10px;border-radius:20px;font-weight:500;letter-spacing:0.08em;}
 .risk-low{background:#e8f5e9;color:#1a7340;}
 .risk-med{background:#fff3e0;color:#e65100;}
 .risk-high{background:#fdecea;color:#c0392b;}
 .market-summary{font-size:13px;color:#555;line-height:1.7;padding:14px;background:#f5f6f8;border-radius:8px;border-left:3px solid #0d1f38;margin-bottom:14px;}
 
-/* DECISION STREAM */
 .stream-group{margin-bottom:18px;}
 .stream-group-label{font-size:10px;color:#9aa0a6;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:8px;font-weight:500;display:flex;align-items:center;gap:8px;}
 .stream-group-label::after{content:'';flex:1;height:1px;background:#f0f0f0;}
@@ -170,12 +175,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .stream-badge.sell{background:#fdecea;color:#c0392b;border:1px solid #ef9a9a;}
 .stream-text{flex:1;font-size:12px;color:#555;line-height:1.5;}
 
-/* SCANNER TABLE */
 .scan-row{display:grid;grid-template-columns:60px 1fr 60px 60px 50px 60px;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid #f8f8f8;font-size:11px;}
 .scan-row:last-child{border-bottom:none;}
 .scan-row.header{font-size:9px;color:#9aa0a6;letter-spacing:0.08em;text-transform:uppercase;padding-bottom:6px;border-bottom:1px solid #e8eaed;margin-bottom:4px;}
 .scan-sym{font-size:12px;font-weight:600;color:#1a1a2e;}
-.scan-rsi{font-weight:600;}
 .scan-chg{font-weight:500;text-align:right;}
 .scan-vol{color:#555;text-align:right;}
 .scan-score{font-weight:500;padding:2px 8px;border-radius:10px;background:#f5f6f8;color:#555;font-size:10px;text-align:center;}
@@ -191,15 +194,23 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .footer{text-align:center;padding:16px;font-size:10px;color:#c4c7cc;letter-spacing:0.12em;border-top:1px solid #f0f0f0;margin-top:8px;}
 .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#0d1f38;color:white;padding:8px 20px;border-radius:20px;font-size:12px;display:none;z-index:999;}
 
+.export-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px;}
+.export-card{background:white;border:1px solid #e8eaed;border-radius:8px;padding:14px;cursor:pointer;}
+.export-card:hover{border-color:#0d1f38;box-shadow:0 2px 8px rgba(13,31,56,0.08);}
+.export-card-title{font-size:13px;font-weight:500;color:#1a1a2e;margin-bottom:4px;}
+.export-card-desc{font-size:11px;color:#9aa0a6;}
+.export-preview{background:#f5f6f8;border:1px solid #e8eaed;border-radius:8px;padding:14px;margin-top:14px;font-family:monospace;font-size:11px;color:#555;line-height:1.7;display:none;white-space:pre-wrap;}
+.copy-btn{width:100%;margin-top:8px;padding:9px;background:#0d1f38;color:white;border:none;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;display:none;}
+
 @media(max-width:720px){
-  .metrics,.pulse-grid,.grid2,.grid3{grid-template-columns:1fr 1fr;}
+  .metrics,.pulse-grid,.grid2{grid-template-columns:1fr 1fr;}
   .main{padding:14px;}
+  .intel-metrics{grid-template-columns:repeat(2,1fr);}
 }
 </style>
 </head>
-<body style="background:white;color:#1a1a2e;">
+<body>
 
-<!-- LOGIN -->
 <div id="login-screen">
   <div class="login-wrap">
     <div class="login-header">
@@ -222,12 +233,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   </div>
 </div>
 
-<!-- DASHBOARD -->
 <div id="dashboard">
   <div class="topbar">
     <div style="display:flex;align-items:center;">
       <span class="topbar-logo">RivX</span>
-      <span class="topbar-badge" id="mode-badge">PAPER MODE</span>
+      <span class="topbar-badge">PAPER MODE</span>
       <span class="topbar-live"><span class="dot"></span>LIVE</span>
     </div>
     <div class="nav">
@@ -246,7 +256,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
   <div class="main">
 
-    <!-- OVERVIEW -->
     <div id="page-overview" class="page active">
       <div class="metrics">
         <div class="metric"><div class="metric-label">Portfolio</div><div class="metric-value" id="m-port">$5,000</div><div class="metric-sub">AUD total</div></div>
@@ -260,15 +269,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
           <span>Market pulse — live</span>
           <span style="font-size:9px;color:#c4c7cc;text-transform:none;letter-spacing:0;" id="pulse-updated">updating...</span>
         </div>
-        <div class="pulse-grid" id="pulse-grid">
-          <div class="empty" style="grid-column:span 4;">Loading live prices...</div>
-        </div>
+        <div class="pulse-grid" id="pulse-grid"><div class="empty" style="grid-column:span 4;">Loading live prices...</div></div>
       </div>
 
       <div class="card">
         <div class="pnl-header">
           <div>
-            <div class="card-title" style="margin-bottom:6px;" id="chart-title">P&L after trading costs</div>
+            <div class="card-title" style="margin-bottom:6px;" id="chart-title">Portfolio value</div>
             <div class="pnl-amount neutral" id="chart-pnl">+$0.00</div>
             <div class="pnl-breakdown">
               <div class="pnl-item">Gross: <span id="gross-val">$0.00</span></div>
@@ -287,7 +294,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
           </div>
         </div>
         <div class="chart-wrap"><canvas id="perfChart"></canvas></div>
-        <div class="chart-note" id="chart-note">Intraday view — BTC/AUD price throughout today (market context)</div>
+        <div class="chart-note" id="chart-note">Intraday portfolio value · 5-min snapshots from the bot</div>
       </div>
 
       <div class="grid2">
@@ -303,7 +310,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       </div>
     </div>
 
-    <!-- TRADING -->
     <div id="page-trading" class="page">
       <div class="grid2">
         <div class="card" style="margin-bottom:0;">
@@ -327,14 +333,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
             <div class="card-title" style="margin-bottom:0;">Crypto — 24/7 market pulse</div>
             <span style="font-size:9px;color:#9aa0a6;" id="scan-updated"></span>
           </div>
-          <div id="crypto-scanner">
-            <div class="empty">Loading live scanner data...</div>
-          </div>
+          <div id="crypto-scanner"><div class="empty">Loading...</div></div>
         </div>
         <div class="card" style="margin-bottom:0;">
           <div class="card-title">Bot status</div>
           <div class="st-row"><span class="st-label">Status</span><span class="st-val"><span class="dot dot-on"></span>Running</span></div>
-          <div class="st-row"><span class="st-label">Mode</span><span class="st-val" id="status-mode">Paper trading</span></div>
+          <div class="st-row"><span class="st-label">Mode</span><span class="st-val">Paper trading</span></div>
           <div class="st-row"><span class="st-label">US market</span><span class="st-val" id="market-status">Checking...</span></div>
           <div class="st-row"><span class="st-label">Crypto loop</span><span class="st-val"><span class="dot dot-on"></span>Active 24/7</span></div>
           <div class="st-row"><span class="st-label">Intraday loop</span><span class="st-val" id="intraday-status"><span class="dot dot-warn"></span>Standby</span></div>
@@ -348,8 +352,26 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       </div>
     </div>
 
-    <!-- INTELLIGENCE -->
     <div id="page-intelligence" class="page">
+
+      <div class="card">
+        <div class="card-title">Ask RivX</div>
+        <div class="qa-box">
+          <div class="qa-input-row">
+            <input class="qa-input" id="qa-input" placeholder="Ask anything — e.g. 'why are you holding XRP?' or 'what's your view tonight?'" onkeydown="if(event.key==='Enter')askQuestion()" />
+            <button class="qa-submit" id="qa-submit" onclick="askQuestion()">Ask</button>
+          </div>
+          <div class="qa-hint">Answer appears below in 30–60 seconds. Uses your bot's Claude API key securely on the server.</div>
+          <div class="qa-actions">
+            <button class="qa-action-btn" onclick="exportThread()">Export thread (JSON)</button>
+            <button class="qa-action-btn" onclick="fillQ('Summarise your current reasoning and open positions')">Suggest: summary</button>
+            <button class="qa-action-btn" onclick="fillQ('What would you trade if I told you to go harder?')">Suggest: go harder</button>
+            <button class="qa-action-btn" onclick="fillQ('Any small-cap or alt opportunities you are watching?')">Suggest: alts</button>
+          </div>
+        </div>
+        <div class="qa-thread" id="qa-thread"></div>
+      </div>
+
       <div class="card">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px;">
           <div class="card-title" style="margin-bottom:0;">Latest market view</div>
@@ -362,11 +384,31 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       </div>
 
       <div class="card">
+        <div class="card-title">Split view — US markets · Crypto</div>
+        <div class="intel-split">
+          <div>
+            <div class="intel-col-header">
+              <div class="intel-col-title">US stocks / ETFs</div>
+              <div class="intel-col-sub">Alpaca · via briefing</div>
+            </div>
+            <div id="intel-stocks"><div class="empty">Stock analysis appears after 8pm briefing</div></div>
+          </div>
+          <div>
+            <div class="intel-col-header">
+              <div class="intel-col-title">Crypto</div>
+              <div class="intel-col-sub">CoinSpot · 5-min scan</div>
+            </div>
+            <div id="intel-crypto"><div class="empty">Loading latest crypto scan...</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
           <div class="card-title" style="margin-bottom:0;">Decision stream — every 5 min</div>
           <span style="font-size:9px;color:#9aa0a6;" id="stream-count">0 decisions</span>
         </div>
-        <div id="decision-stream"><div class="empty">Loading decision history...</div></div>
+        <div id="decision-stream"><div class="empty">Decisions will appear here as the bot runs</div></div>
       </div>
 
       <div class="card">
@@ -375,7 +417,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       </div>
     </div>
 
-    <!-- EXPORT -->
     <div id="page-export" class="page">
       <div class="card">
         <div class="card-title">Export & share</div>
@@ -385,7 +426,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
           <div class="export-card" onclick="generateExport('weekly')"><div class="export-card-title">Weekly summary</div><div class="export-card-desc">7-day performance, win rate</div></div>
           <div class="export-card" onclick="generateExport('trades')"><div class="export-card-title">Trade activity</div><div class="export-card-desc">All recent trades with P&L</div></div>
           <div class="export-card" onclick="generateExport('intelligence')"><div class="export-card-title">Claude's briefing</div><div class="export-card-desc">Last evening market view</div></div>
-          <div class="export-card" onclick="generateExport('learning')"><div class="export-card-title">Learning report</div><div class="export-card-desc">Signal weights and patterns</div></div>
+          <div class="export-card" onclick="generateExport('qa')"><div class="export-card-title">Q&A thread</div><div class="export-card-desc">Your questions + Claude's answers</div></div>
           <div class="export-card" onclick="generateExport('full')"><div class="export-card-title">Full report</div><div class="export-card-desc">Everything in one message</div></div>
         </div>
         <div class="export-preview" id="export-preview"></div>
@@ -401,540 +442,428 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <script>
-// ─── Config ────────────────────────────────────────────────────────────────
 const SUPABASE_URL = 'https://fsbnhrfipzmulbypheyl.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_k12zd-TEPlpGJDC5DkxsUA_w8-fN3p5';
 const PASSWORD = 'RivX@Boat2026!';
 const CG_BASE = 'https://api.coingecko.com/api/v3';
-
-// Coins to show in live market pulse
 const PULSE_COINS = [
-  {id:'bitcoin',       sym:'BTC',  name:'Bitcoin'},
-  {id:'ethereum',      sym:'ETH',  name:'Ethereum'},
-  {id:'solana',        sym:'SOL',  name:'Solana'},
-  {id:'ripple',        sym:'XRP',  name:'Ripple'},
-  {id:'cardano',       sym:'ADA',  name:'Cardano'},
-  {id:'dogecoin',      sym:'DOGE', name:'Dogecoin'},
-  {id:'avalanche-2',   sym:'AVAX', name:'Avalanche'},
-  {id:'chainlink',     sym:'LINK', name:'Chainlink'},
+  {id:'bitcoin',sym:'BTC',name:'Bitcoin'},
+  {id:'ethereum',sym:'ETH',name:'Ethereum'},
+  {id:'solana',sym:'SOL',name:'Solana'},
+  {id:'ripple',sym:'XRP',name:'Ripple'},
+  {id:'cardano',sym:'ADA',name:'Cardano'},
+  {id:'dogecoin',sym:'DOGE',name:'Dogecoin'},
+  {id:'avalanche-2',sym:'AVAX',name:'Avalanche'},
+  {id:'chainlink',sym:'LINK',name:'Chainlink'},
 ];
 
-// ─── State ─────────────────────────────────────────────────────────────────
-let perfChart = null;
-let currentTf = '1D';
-let allSnapshots = [];
-let allTrades = [];
-let allPositions = [];
-let allWeights = {};
-let allChecks = [];
-let pulseData = {};
-let btcHistory = [];   // [[ts, price], ...] for 1D chart
-let btcHistoryRange = '1D';
+let perfChart=null, currentTf='1D';
+let allSnapshots=[], allIntraday=[], allTrades=[], allPositions=[], allWeights={}, allChecks=[], allQuestions=[], pulseData={};
 
-// ─── Auth ──────────────────────────────────────────────────────────────────
 function login(){
-  if(document.getElementById('pw').value === PASSWORD){
+  if(document.getElementById('pw').value===PASSWORD){
     sessionStorage.setItem('rivx_auth','1');
-    document.getElementById('login-screen').style.display = 'none';
-    document.getElementById('dashboard').style.display = 'block';
+    document.getElementById('login-screen').style.display='none';
+    document.getElementById('dashboard').style.display='block';
     startApp();
-  } else {
-    document.getElementById('login-error').style.display = 'block';
-  }
+  } else document.getElementById('login-error').style.display='block';
 }
 function logout(){
   sessionStorage.removeItem('rivx_auth');
-  document.getElementById('login-screen').style.display = 'flex';
-  document.getElementById('dashboard').style.display = 'none';
-  document.getElementById('pw').value = '';
+  document.getElementById('login-screen').style.display='flex';
+  document.getElementById('dashboard').style.display='none';
+  document.getElementById('pw').value='';
 }
 if(sessionStorage.getItem('rivx_auth')){
-  document.getElementById('login-screen').style.display = 'none';
-  document.getElementById('dashboard').style.display = 'block';
+  document.getElementById('login-screen').style.display='none';
+  document.getElementById('dashboard').style.display='block';
   startApp();
 }
 
-function showPage(name, btn){
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-  document.getElementById('page-' + name).classList.add('active');
+function showPage(name,btn){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
+  document.getElementById('page-'+name).classList.add('active');
   btn.classList.add('active');
 }
+function fillQ(text){ document.getElementById('qa-input').value=text; document.getElementById('qa-input').focus(); }
 
-// ─── Supabase ──────────────────────────────────────────────────────────────
-async function sb(table, params){
+async function sb(table,params,method='GET',body=null){
   try {
-    const url = new URL(SUPABASE_URL + '/rest/v1/' + table);
-    Object.entries(params||{}).forEach(([k,v]) => url.searchParams.set(k,v));
-    const r = await fetch(url, {headers:{'apikey':SUPABASE_KEY, 'Authorization':'Bearer '+SUPABASE_KEY}});
-    if(!r.ok) return [];
+    const url=new URL(SUPABASE_URL+'/rest/v1/'+table);
+    Object.entries(params||{}).forEach(([k,v])=>url.searchParams.set(k,v));
+    const opts={method,headers:{'apikey':SUPABASE_KEY,'Authorization':'Bearer '+SUPABASE_KEY,'Content-Type':'application/json','Prefer':'return=representation'}};
+    if(body) opts.body=JSON.stringify(body);
+    const r=await fetch(url,opts);
+    if(!r.ok) return null;
     return await r.json();
-  } catch(e){ return []; }
+  } catch(e){ return null; }
 }
 
-// ─── CoinGecko (public, no auth) ───────────────────────────────────────────
 async function cgSimplePrice(){
   try {
-    const ids = PULSE_COINS.map(c => c.id).join(',');
-    const url = `${CG_BASE}/simple/price?ids=${ids}&vs_currencies=aud&include_24hr_change=true`;
-    const r = await fetch(url);
+    const ids=PULSE_COINS.map(c=>c.id).join(',');
+    const r=await fetch(`${CG_BASE}/simple/price?ids=${ids}&vs_currencies=aud&include_24hr_change=true`);
     if(!r.ok) return {};
     return await r.json();
   } catch(e){ return {}; }
 }
 
-async function cgMarketChart(coinId, days){
-  try {
-    const url = `${CG_BASE}/coins/${coinId}/market_chart?vs_currency=aud&days=${days}`;
-    const r = await fetch(url);
-    if(!r.ok) return [];
-    const data = await r.json();
-    return data.prices || [];
-  } catch(e){ return []; }
-}
-
-// ─── Main loaders ──────────────────────────────────────────────────────────
 async function loadAll(){
-  document.getElementById('last-updated').textContent = 'Loading...';
-  await Promise.all([loadSupabase(), loadPulse(), loadBtcHistory(currentTf)]);
+  document.getElementById('last-updated').textContent='Loading...';
+  await Promise.all([loadSupabase(),loadPulse()]);
   renderAll();
-  document.getElementById('last-updated').textContent = 'Updated ' + new Date().toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'});
+  document.getElementById('last-updated').textContent='Updated '+new Date().toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'});
 }
 
 async function loadSupabase(){
-  const [snaps, positions, trades, weights, checks] = await Promise.all([
-    sb('snapshots', {order:'date.desc', limit:'400'}),
-    sb('positions', {status:'eq.open'}),
-    sb('trades', {order:'created_at.desc', limit:'50'}),
-    sb('signal_weights', {order:'updated_at.desc', limit:'10'}),
-    sb('crypto_checks', {order:'checked_at.desc', limit:'100'}),
+  const [snaps,intraday,positions,trades,weights,checks,questions]=await Promise.all([
+    sb('snapshots',{order:'date.desc',limit:'400'}),
+    sb('intraday_snapshots',{order:'recorded_at.desc',limit:'500'}),
+    sb('positions',{status:'eq.open'}),
+    sb('trades',{order:'created_at.desc',limit:'50'}),
+    sb('signal_weights',{order:'updated_at.desc',limit:'1'}),
+    sb('crypto_checks',{order:'checked_at.desc',limit:'100'}),
+    sb('user_questions',{order:'asked_at.desc',limit:'30'}),
   ]);
-  allSnapshots = snaps || [];
-  allTrades = trades || [];
-  allPositions = positions || [];
-  allWeights = (weights && weights[0]) || {};
-  allChecks = checks || [];
+  allSnapshots=snaps||[];
+  allIntraday=intraday||[];
+  allTrades=trades||[];
+  allPositions=positions||[];
+  allWeights=(weights&&weights[0])||{};
+  allChecks=checks||[];
+  allQuestions=questions||[];
 }
-
 async function loadPulse(){
-  const data = await cgSimplePrice();
-  pulseData = data;
-  document.getElementById('pulse-updated').textContent = 'live · ' + new Date().toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  pulseData=await cgSimplePrice();
+  document.getElementById('pulse-updated').textContent='live · '+new Date().toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
 }
 
-async function loadBtcHistory(tf){
-  const daysMap = {'1D':1, '1W':7, '1M':30, '3M':90, '6M':180, '1Y':365, 'ALL':365};
-  const days = daysMap[tf] || 1;
-  btcHistory = await cgMarketChart('bitcoin', days);
-  btcHistoryRange = tf;
-}
-
-// ─── Renderers ─────────────────────────────────────────────────────────────
 function renderAll(){
-  renderMetrics();
-  renderPulse();
-  renderChart(currentTf);
-  renderPositions();
-  renderSignals();
-  renderTrades();
-  renderScanner();
-  renderMarketStatus();
-  renderIntelligence();
-  renderLearningLog();
-  renderBotStats();
+  renderMetrics(); renderPulse(); renderChart(currentTf);
+  renderPositions(); renderSignals(); renderTrades(); renderScanner();
+  renderMarketStatus(); renderIntelligence(); renderLearningLog();
+  renderBotStats(); renderQAThread();
 }
 
 function renderMetrics(){
-  const latest = allSnapshots[0] || {};
-  const total = latest.total_aud || 5000;
-  const fees = allTrades.reduce((a,t) => a + (t.fee_aud || 0), 0);
-  const net = total - 5000;
-  const wins = allTrades.filter(t => t.pnl_pct > 0).length;
-  const winRate = allTrades.length > 0 ? Math.round(wins/allTrades.length*100) + '%' : '—';
-
-  const pEl = document.getElementById('m-port');
-  pEl.textContent = '$' + total.toLocaleString('en-AU',{minimumFractionDigits:2,maximumFractionDigits:2});
-  const pnlEl = document.getElementById('m-pnl');
-  pnlEl.textContent = (net>=0?'+':'') + '$' + Math.abs(net).toFixed(2);
-  pnlEl.className = 'metric-value ' + (net>0?'up':net<0?'down':'');
-  document.getElementById('m-fees').textContent = '$' + fees.toFixed(2);
-  document.getElementById('m-win').textContent = winRate;
-
-  const chartPnlEl = document.getElementById('chart-pnl');
-  chartPnlEl.textContent = (net>=0?'+':'') + '$' + Math.abs(net).toFixed(2);
-  chartPnlEl.className = 'pnl-amount ' + (net>0?'':net<0?'down':'neutral');
-  document.getElementById('gross-val').textContent = '$' + (net + fees).toFixed(2);
-  document.getElementById('fee-val').textContent = '-$' + fees.toFixed(2);
-  const netEl = document.getElementById('net-val');
-  netEl.textContent = (net>=0?'+':'') + '$' + net.toFixed(2);
-  netEl.className = net>0?'up':net<0?'down':'';
+  const latestIntra=allIntraday[0]||{};
+  const latestDaily=allSnapshots[0]||{};
+  const total=Number(latestIntra.total_aud)||Number(latestDaily.total_aud)||5000;
+  const fees=allTrades.reduce((a,t)=>a+(t.fee_aud||0),0);
+  const net=total-5000;
+  const wins=allTrades.filter(t=>t.pnl_pct>0).length;
+  const winRate=allTrades.length>0?Math.round(wins/allTrades.length*100)+'%':'—';
+  document.getElementById('m-port').textContent='$'+total.toLocaleString('en-AU',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const pnlEl=document.getElementById('m-pnl');
+  pnlEl.textContent=(net>=0?'+':'')+'$'+Math.abs(net).toFixed(2);
+  pnlEl.className='metric-value '+(net>0?'up':net<0?'down':'');
+  document.getElementById('m-fees').textContent='$'+fees.toFixed(2);
+  document.getElementById('m-win').textContent=winRate;
+  const cp=document.getElementById('chart-pnl');
+  cp.textContent=(net>=0?'+':'')+'$'+Math.abs(net).toFixed(2);
+  cp.className='pnl-amount '+(net>0?'':net<0?'down':'neutral');
+  document.getElementById('gross-val').textContent='$'+(net+fees).toFixed(2);
+  document.getElementById('fee-val').textContent='-$'+fees.toFixed(2);
+  const nv=document.getElementById('net-val');
+  nv.textContent=(net>=0?'+':'')+'$'+net.toFixed(2);
+  nv.className=net>0?'up':net<0?'down':'';
 }
 
 function renderPulse(){
-  const el = document.getElementById('pulse-grid');
-  if(!Object.keys(pulseData).length){
-    el.innerHTML = '<div class="empty" style="grid-column:span 4;">Waiting for market data...</div>';
-    return;
-  }
-  el.innerHTML = PULSE_COINS.map(c => {
-    const d = pulseData[c.id] || {};
-    const price = d.aud;
-    const chg = d.aud_24h_change;
-    if(price === undefined) return '';
-    const chgCls = chg >= 0 ? 'up' : 'down';
-    const chgTxt = (chg >= 0 ? '+' : '') + (chg || 0).toFixed(2) + '%';
-    const priceFmt = price >= 100 ? price.toLocaleString('en-AU',{maximumFractionDigits:0}) : price < 1 ? price.toFixed(4) : price.toFixed(2);
-    return `<div class="pulse-card">
-      <div class="pulse-card-header">
-        <span class="pulse-sym">${c.sym}</span>
-        <span class="pulse-chg ${chgCls}">${chgTxt}</span>
-      </div>
-      <div class="pulse-price">$${priceFmt}</div>
-      <div class="pulse-label">AUD · 24H</div>
-    </div>`;
+  const el=document.getElementById('pulse-grid');
+  if(!Object.keys(pulseData).length){ el.innerHTML='<div class="empty" style="grid-column:span 4;">Waiting for market data...</div>'; return; }
+  el.innerHTML=PULSE_COINS.map(c=>{
+    const d=pulseData[c.id]||{};
+    if(d.aud===undefined) return '';
+    const chg=d.aud_24h_change||0;
+    const priceFmt=d.aud>=100?d.aud.toLocaleString('en-AU',{maximumFractionDigits:0}):d.aud<1?d.aud.toFixed(4):d.aud.toFixed(2);
+    return `<div class="pulse-card"><div class="pulse-card-header"><span class="pulse-sym">${c.sym}</span><span class="pulse-chg ${chg>=0?'up':'down'}">${chg>=0?'+':''}${chg.toFixed(2)}%</span></div><div class="pulse-price">$${priceFmt}</div><div class="pulse-label">AUD · 24H</div></div>`;
   }).join('');
 }
 
-function setTf(btn, tf){
-  document.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
+function setTf(btn,tf){
+  document.querySelectorAll('.tf-btn').forEach(b=>b.classList.remove('active'));
   btn.classList.add('active');
-  currentTf = tf;
-  // Fetch new BTC history for this timeframe, then render
-  loadBtcHistory(tf).then(() => renderChart(tf));
+  currentTf=tf;
+  renderChart(tf);
 }
 
 function renderChart(tf){
-  const canvas = document.getElementById('perfChart');
+  const canvas=document.getElementById('perfChart');
   if(!canvas) return;
-  if(perfChart){ perfChart.destroy(); perfChart = null; }
-
-  let labels, values, title, note, color, isPortfolio;
-
-  if(tf === '1D'){
-    // Show intraday BTC/AUD — portfolio has no intraday data yet
-    if(btcHistory && btcHistory.length){
-      const points = btcHistory;
-      labels = points.map(p => new Date(p[0]).toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'}));
-      values = points.map(p => p[1]);
-      title = 'BTC/AUD — today (5-min intervals)';
-      note = 'Intraday market context · portfolio chart will show here once the bot builds intraday history from trades.';
-      color = '#f59e0b';
-      isPortfolio = false;
+  if(perfChart){ perfChart.destroy(); perfChart=null; }
+  let labels,values,title,note;
+  if(tf==='1D'){
+    const today=new Date().toDateString();
+    const todays=allIntraday.filter(s=>new Date(s.recorded_at).toDateString()===today).reverse();
+    if(todays.length){
+      labels=todays.map(s=>new Date(s.recorded_at).toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'}));
+      values=todays.map(s=>Number(s.total_aud));
+      title='Portfolio value — today';
+      note=`Intraday · ${todays.length} snapshots · updates every 5 min`;
     } else {
-      labels = ['Now'];
-      values = [5000];
-      title = 'Intraday view loading...';
-      note = 'Waiting for live market data.';
-      color = '#0d1f38';
-      isPortfolio = true;
+      labels=['Now']; values=[5000];
+      title='Portfolio value — today';
+      note='First 5-min snapshot arrives shortly after the new bot.py deploys.';
     }
   } else {
-    // Portfolio value from snapshots
-    let filtered = allSnapshots.slice().reverse();
-    const limits = {'1W':7, '1M':30, '3M':90, '6M':180, '1Y':365, 'ALL':9999};
-    if(limits[tf]) filtered = filtered.slice(-limits[tf]);
+    const limits={'1W':7,'1M':30,'3M':90,'6M':180,'1Y':365,'ALL':9999};
+    let filtered=allSnapshots.slice().reverse();
+    if(limits[tf]) filtered=filtered.slice(-limits[tf]);
     if(!filtered.length){
-      labels = ['Start'];
-      values = [5000];
-      note = 'Portfolio snapshots begin tomorrow after first morning summary.';
+      labels=['Start']; values=[5000];
+      note='Daily snapshots begin after first 6:30am morning summary.';
     } else {
-      labels = filtered.map(s => { try { return new Date(s.date).toLocaleDateString('en-AU',{month:'short',day:'numeric'}); } catch(e){ return s.date||''; }});
-      values = filtered.map(s => s.total_aud || 5000);
-      note = 'Portfolio value (AUD) · daily snapshots';
+      labels=filtered.map(s=>{try{return new Date(s.date).toLocaleDateString('en-AU',{month:'short',day:'numeric'});}catch(e){return s.date||'';}});
+      values=filtered.map(s=>Number(s.total_aud)||5000);
+      note='Portfolio value · daily snapshots';
     }
-    title = 'Portfolio value';
-    color = '#0d1f38';
-    isPortfolio = true;
+    title='Portfolio value';
   }
-
-  document.getElementById('chart-title').textContent = title;
-  document.getElementById('chart-note').textContent = note;
-
-  perfChart = new Chart(canvas, {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [{
-        data: values,
-        borderColor: color,
-        backgroundColor: color === '#f59e0b' ? 'rgba(245,158,11,0.08)' : 'rgba(13,31,56,0.05)',
-        fill: true,
-        tension: 0.3,
-        pointRadius: values.length > 60 ? 0 : 2,
-        pointHoverRadius: 5,
-        pointBackgroundColor: color,
-        borderWidth: 2,
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: { legend: { display: false }, tooltip: {
-        callbacks: { label: ctx => '$' + ctx.parsed.y.toLocaleString('en-AU',{maximumFractionDigits:2}) }
-      }},
-      scales: {
-        x: {
-          ticks: { color:'#9aa0a6', font:{size:10}, maxTicksLimit: 8, autoSkip: true },
-          grid: { color:'rgba(0,0,0,0.04)' }
-        },
-        y: {
-          ticks: { color:'#9aa0a6', font:{size:10}, callback: v => '$' + v.toLocaleString('en-AU',{maximumFractionDigits:0}) },
-          grid: { color:'rgba(0,0,0,0.04)' }
-        }
-      }
-    }
+  document.getElementById('chart-title').textContent=title;
+  document.getElementById('chart-note').textContent=note;
+  perfChart=new Chart(canvas,{
+    type:'line',
+    data:{labels,datasets:[{data:values,borderColor:'#0d1f38',backgroundColor:'rgba(13,31,56,0.05)',fill:true,tension:0.3,pointRadius:values.length>60?0:2,pointHoverRadius:5,pointBackgroundColor:'#0d1f38',borderWidth:2}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>'$'+ctx.parsed.y.toLocaleString('en-AU',{maximumFractionDigits:2})}}},scales:{x:{ticks:{color:'#9aa0a6',font:{size:10},maxTicksLimit:8,autoSkip:true},grid:{color:'rgba(0,0,0,0.04)'}},y:{ticks:{color:'#9aa0a6',font:{size:10},callback:v=>'$'+v.toLocaleString('en-AU',{maximumFractionDigits:0})},grid:{color:'rgba(0,0,0,0.04)'}}}}
   });
 }
 
 function renderPositions(){
-  const el = document.getElementById('positions-list');
-  if(!allPositions.length){ el.innerHTML = '<div class="empty">No open positions yet</div>'; return; }
-  el.innerHTML = allPositions.map(p => {
-    const pnl = p.pnl_pct || 0;
-    const cls = pnl > 0 ? 'up' : pnl < 0 ? 'down' : 'neutral';
+  const el=document.getElementById('positions-list');
+  if(!allPositions.length){ el.innerHTML='<div class="empty">No open positions yet</div>'; return; }
+  el.innerHTML=allPositions.map(p=>{
+    const pnl=p.pnl_pct||0;
+    const cls=pnl>0?'up':pnl<0?'down':'neutral';
     return `<div class="pos-row"><div><div class="pos-ticker">${p.symbol}</div><div class="pos-tier">${p.market||''} · $${(p.aud_amount||0).toFixed(0)}</div></div><span class="pos-badge ${cls}">${pnl>=0?'+':''}${(pnl*100).toFixed(1)}%</span></div>`;
   }).join('');
 }
 
 function renderSignals(){
-  const signals = [
-    {name:'RSI',       val:allWeights.rsi       ?? 0.2},
-    {name:'MACD',      val:allWeights.macd      ?? 0.2},
-    {name:'Bollinger', val:allWeights.bollinger ?? 0.2},
-    {name:'Volume',    val:allWeights.volume    ?? 0.2},
-    {name:'MA cross',  val:allWeights.ma_cross  ?? 0.2},
-  ];
-  document.getElementById('signals-list').innerHTML = signals.map(s => {
-    const pct = Math.round(s.val * 100);
+  const signals=[{name:'RSI',val:allWeights.rsi??0.2},{name:'MACD',val:allWeights.macd??0.2},{name:'Bollinger',val:allWeights.bollinger??0.2},{name:'Volume',val:allWeights.volume??0.2},{name:'MA cross',val:allWeights.ma_cross??0.2}];
+  document.getElementById('signals-list').innerHTML=signals.map(s=>{
+    const pct=Math.round(s.val*100);
     return `<div class="sig-row"><span class="sig-name">${s.name}</span><div class="sig-track"><div class="sig-fill" style="width:${pct}%"></div></div><span class="sig-pct">${pct}%</span></div>`;
   }).join('');
 }
 
 function renderTrades(){
-  const crypto = ['BTC','ETH','SOL','XRP','ADA','DOGE','AVAX','LINK','LTC','BCH','DOT','UNI','AAVE','MATIC','ATOM'];
-  const swing = allTrades.filter(t => !t.intraday && !crypto.includes(t.symbol));
-  const intra = allTrades.filter(t => t.intraday);
-
-  function render(list, empty){
+  const crypto=['BTC','ETH','SOL','XRP','ADA','DOGE','AVAX','LINK','LTC','BCH','DOT','UNI','AAVE','MATIC','ATOM','PEPE','SHIB','FLOKI','WIF','BONK'];
+  const swing=allTrades.filter(t=>!t.intraday&&!crypto.includes(t.symbol));
+  const intra=allTrades.filter(t=>t.intraday);
+  function render(list,empty){
     if(!list.length) return `<div class="empty">${empty}</div>`;
-    return list.slice(0,6).map(t => {
-      const ac = t.action === 'BUY' ? 'buy' : t.action === 'SELL' ? 'sell' : 'stop';
-      const pnl = t.pnl_pct ? ' · ' + (t.pnl_pct*100>=0?'+':'') + (t.pnl_pct*100).toFixed(1) + '%' : '';
-      const time = t.created_at ? new Date(t.created_at).toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'}) : '';
-      const det = (t.details || '').substring(0,60);
+    return list.slice(0,6).map(t=>{
+      const ac=t.action==='BUY'?'buy':t.action==='SELL'?'sell':'stop';
+      const pnl=t.pnl_pct?' · '+(t.pnl_pct*100>=0?'+':'')+(t.pnl_pct*100).toFixed(1)+'%':'';
+      const time=t.created_at?new Date(t.created_at).toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'}):'';
+      const det=(t.details||'').substring(0,60);
       return `<div class="trade-row"><div class="trade-icon ${ac}">${t.action}</div><div class="trade-body"><div class="trade-title">${t.symbol}${pnl}</div><div class="trade-detail">${det}</div></div><div class="trade-time">${time}</div></div>`;
     }).join('');
   }
-  document.getElementById('swing-list').innerHTML = render(swing, 'No swing trades yet — first briefing 8pm AEST');
-  document.getElementById('intraday-list').innerHTML = render(intra, 'Active 11:30pm–6am AEST');
+  document.getElementById('swing-list').innerHTML=render(swing,'No swing trades yet — first briefing 8pm AEST');
+  document.getElementById('intraday-list').innerHTML=render(intra,'Active 11:30pm–6am AEST');
 }
 
 function renderScanner(){
-  const el = document.getElementById('crypto-scanner');
-  // Merge CoinGecko live prices with tracked coins for the "scanner" view.
-  if(!Object.keys(pulseData).length){
-    el.innerHTML = '<div class="empty">Loading...</div>';
-    return;
-  }
-  let html = `<div class="scan-row header"><span>Coin</span><span></span><span>24h %</span><span>Price</span><span></span><span></span></div>`;
-  // Rank by absolute 24h change so movers float to top
-  const ranked = PULSE_COINS.map(c => ({...c, data: pulseData[c.id] || {}}))
-    .filter(x => x.data.aud !== undefined)
-    .sort((a,b) => Math.abs(b.data.aud_24h_change||0) - Math.abs(a.data.aud_24h_change||0));
-  html += ranked.map(c => {
-    const chg = c.data.aud_24h_change || 0;
-    const chgCls = chg >= 0 ? 'up' : 'down';
-    const chgTxt = (chg>=0?'+':'') + chg.toFixed(2) + '%';
-    const price = c.data.aud;
-    const priceFmt = price >= 100 ? '$' + price.toLocaleString('en-AU',{maximumFractionDigits:0}) : price < 1 ? '$' + price.toFixed(4) : '$' + price.toFixed(2);
-    const mover = Math.abs(chg) > 3 ? 'hot' : '';
-    return `<div class="scan-row">
-      <span class="scan-sym">${c.sym}</span>
-      <span style="color:#9aa0a6;font-size:10px;">${c.name}</span>
-      <span class="scan-chg" style="color:${chg>=0?'#1a7340':'#c0392b'};">${chgTxt}</span>
-      <span class="scan-vol">${priceFmt}</span>
-      <span class="scan-score ${mover}">${Math.abs(chg)>3?'MOVER':'—'}</span>
-      <span></span>
-    </div>`;
+  const el=document.getElementById('crypto-scanner');
+  if(!Object.keys(pulseData).length){ el.innerHTML='<div class="empty">Loading...</div>'; return; }
+  let html=`<div class="scan-row header"><span>Coin</span><span></span><span>24h %</span><span>Price</span><span></span><span></span></div>`;
+  const ranked=PULSE_COINS.map(c=>({...c,data:pulseData[c.id]||{}})).filter(x=>x.data.aud!==undefined).sort((a,b)=>Math.abs(b.data.aud_24h_change||0)-Math.abs(a.data.aud_24h_change||0));
+  html+=ranked.map(c=>{
+    const chg=c.data.aud_24h_change||0;
+    const chgTxt=(chg>=0?'+':'')+chg.toFixed(2)+'%';
+    const price=c.data.aud;
+    const priceFmt=price>=100?'$'+price.toLocaleString('en-AU',{maximumFractionDigits:0}):price<1?'$'+price.toFixed(4):'$'+price.toFixed(2);
+    const mover=Math.abs(chg)>3?'hot':'';
+    return `<div class="scan-row"><span class="scan-sym">${c.sym}</span><span style="color:#9aa0a6;font-size:10px;">${c.name}</span><span class="scan-chg" style="color:${chg>=0?'#1a7340':'#c0392b'};">${chgTxt}</span><span class="scan-vol">${priceFmt}</span><span class="scan-score ${mover}">${Math.abs(chg)>3?'MOVER':'—'}</span><span></span></div>`;
   }).join('');
-  el.innerHTML = html;
-  document.getElementById('scan-updated').textContent = 'Updated ' + new Date().toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'});
+  el.innerHTML=html;
+  document.getElementById('scan-updated').textContent='Updated '+new Date().toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'});
 }
 
 function renderMarketStatus(){
-  const now = new Date();
-  const aestHour = (now.getUTCHours() + 10) % 24;
-  const day = now.getUTCDay(); // 0=Sun
-  // Rough: US market open ~23:30 AEST weekdays to 06:00 AEST next day
-  const isWeekday = day >= 1 && day <= 5;
-  const isOpen = isWeekday && (aestHour >= 23 || aestHour < 6);
-  const ms = document.getElementById('market-status');
-  const is = document.getElementById('intraday-status');
-  if(isOpen){
-    ms.innerHTML = '<span class="dot dot-on"></span>Open';
-    is.innerHTML = '<span class="dot dot-on"></span>Active';
-  } else {
-    ms.innerHTML = '<span class="dot dot-warn"></span>Closed';
-    is.innerHTML = '<span class="dot dot-warn"></span>Standby';
-  }
+  const now=new Date();
+  const aestHour=(now.getUTCHours()+10)%24;
+  const day=now.getUTCDay();
+  const isWeekday=day>=1&&day<=5;
+  const isOpen=isWeekday&&(aestHour>=23||aestHour<6);
+  document.getElementById('market-status').innerHTML=isOpen?'<span class="dot dot-on"></span>Open':'<span class="dot dot-warn"></span>Closed';
+  document.getElementById('intraday-status').innerHTML=isOpen?'<span class="dot dot-on"></span>Active':'<span class="dot dot-warn"></span>Standby';
 }
 
 function renderIntelligence(){
-  const latest = allChecks[0];
+  const latest=allChecks[0];
   if(latest){
-    const time = new Date(latest.checked_at).toLocaleString('en-AU',{hour:'2-digit',minute:'2-digit',day:'numeric',month:'short'});
-    document.getElementById('market-summary').textContent = latest.reasoning || 'Claude returned no reasoning for the latest check.';
-    document.getElementById('intel-date').textContent = 'Last check: ' + time;
+    const time=new Date(latest.checked_at).toLocaleString('en-AU',{hour:'2-digit',minute:'2-digit',day:'numeric',month:'short'});
+    document.getElementById('market-summary').textContent=latest.reasoning||'No reasoning returned.';
+    document.getElementById('intel-date').textContent='Last check: '+time;
   } else {
-    document.getElementById('market-summary').textContent = 'RivX is online. First briefing 8pm AEST. Crypto monitoring every 5 minutes.';
-    document.getElementById('intel-date').textContent = 'Awaiting first check';
+    document.getElementById('market-summary').textContent='RivX is online. First briefing 8pm AEST. Crypto monitoring every 5 minutes.';
+    document.getElementById('intel-date').textContent='Awaiting first check';
   }
+  const cryptoEl=document.getElementById('intel-crypto');
+  let latestOpps=[];
+  try { latestOpps=JSON.parse(latest&&latest.opportunities||'[]'); } catch(e) {}
+  if(latestOpps.length){
+    cryptoEl.innerHTML=latestOpps.slice(0,8).map(o=>{
+      const tier=o.tier||'large_cap';
+      const tierCls=tier.includes('blue')?'blue':tier.includes('large')?'large':tier.includes('mid')?'mid':tier.includes('small')?'small':'micro';
+      const chg=o.change_1d_pct||0;
+      const rsi=o.rsi||'—';
+      const vol=o.volume_24h_usd?'$'+(o.volume_24h_usd/1e6).toFixed(1)+'M':'—';
+      return `<div class="intel-entry"><div class="intel-entry-head"><div style="display:flex;align-items:center;gap:8px;"><span class="intel-sym">${o.symbol}</span><span class="intel-tier ${tierCls}">${tier.replace('_',' ')}</span></div><span class="intel-score">${o.opportunity_score||0}</span></div><div class="intel-metrics"><div class="intel-metric">24h %<strong class="${chg>=0?'up':'down'}">${chg>=0?'+':''}${chg.toFixed(2)}%</strong></div><div class="intel-metric">RSI<strong>${rsi}</strong></div><div class="intel-metric">Volume<strong>${vol}</strong></div><div class="intel-metric">Price<strong>$${(o.price_usd||0).toFixed(o.price_usd<1?4:2)}</strong></div></div><div class="intel-reasons">${(o.reasons||[]).join(' · ')||'Monitoring.'}</div></div>`;
+    }).join('');
+  } else {
+    cryptoEl.innerHTML='<div class="empty">Waiting for next crypto scan cycle (5 min).</div>';
+  }
+  document.getElementById('intel-stocks').innerHTML='<div class="empty">Stock analysis appears after 8pm briefing when Claude scans the US universe.</div>';
 
-  // Decision stream grouped by hour
-  const streamEl = document.getElementById('decision-stream');
+  const streamEl=document.getElementById('decision-stream');
   if(!allChecks.length){
-    streamEl.innerHTML = '<div class="empty">Decisions will appear here as the bot runs</div>';
-    document.getElementById('stream-count').textContent = '0 decisions';
+    streamEl.innerHTML='<div class="empty">Decisions will appear here as the bot runs</div>';
+    document.getElementById('stream-count').textContent='0 decisions';
     return;
   }
-  document.getElementById('stream-count').textContent = allChecks.length + ' decisions';
-
-  // Group by "last hour", "earlier today", "yesterday", "older"
-  const now = Date.now();
-  const groups = { 'Last hour': [], 'Earlier today': [], 'Yesterday': [], 'Older': [] };
-  const today = new Date().toDateString();
-  const yDate = new Date(now - 86400000).toDateString();
-  allChecks.forEach(c => {
-    const ts = new Date(c.checked_at).getTime();
-    const d = new Date(c.checked_at).toDateString();
-    if(now - ts <= 3600000) groups['Last hour'].push(c);
-    else if(d === today) groups['Earlier today'].push(c);
-    else if(d === yDate) groups['Yesterday'].push(c);
+  document.getElementById('stream-count').textContent=allChecks.length+' decisions';
+  const now=Date.now();
+  const groups={'Last hour':[],'Earlier today':[],'Yesterday':[],'Older':[]};
+  const today=new Date().toDateString();
+  const yDate=new Date(now-86400000).toDateString();
+  allChecks.forEach(c=>{
+    const ts=new Date(c.checked_at).getTime();
+    const d=new Date(c.checked_at).toDateString();
+    if(now-ts<=3600000) groups['Last hour'].push(c);
+    else if(d===today) groups['Earlier today'].push(c);
+    else if(d===yDate) groups['Yesterday'].push(c);
     else groups['Older'].push(c);
   });
-
-  let html = '';
-  Object.entries(groups).forEach(([label, items]) => {
+  let html='';
+  Object.entries(groups).forEach(([label,items])=>{
     if(!items.length) return;
-    html += `<div class="stream-group"><div class="stream-group-label">${label} · ${items.length}</div>`;
-    html += items.slice(0, 20).map(c => {
-      const time = new Date(c.checked_at).toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'});
-      let actions = [];
-      try { actions = JSON.parse(c.actions || '[]'); } catch(e) {}
-      const hasAction = actions.some(a => a.action && a.action !== 'HOLD');
-      const firstAction = actions.find(a => a.action) || {action:'HOLD'};
-      const badge = hasAction ? (firstAction.action === 'BUY' ? 'buy' : 'sell') : 'hold';
-      const badgeTxt = hasAction ? firstAction.action : 'HOLD';
-      return `<div class="stream-row">
-        <span class="stream-time">${time}</span>
-        <span class="stream-badge ${badge}">${badgeTxt}</span>
-        <span class="stream-text">${c.reasoning || '(no reasoning returned)'}</span>
-      </div>`;
+    html+=`<div class="stream-group"><div class="stream-group-label">${label} · ${items.length}</div>`;
+    html+=items.slice(0,20).map(c=>{
+      const time=new Date(c.checked_at).toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'});
+      let actions=[];
+      try { actions=JSON.parse(c.actions||'[]'); } catch(e) {}
+      const hasAction=actions.some(a=>a.action&&a.action!=='HOLD');
+      const firstAction=actions.find(a=>a.action)||{action:'HOLD'};
+      const badge=hasAction?(firstAction.action==='BUY'?'buy':'sell'):'hold';
+      const badgeTxt=hasAction?firstAction.action:'HOLD';
+      return `<div class="stream-row"><span class="stream-time">${time}</span><span class="stream-badge ${badge}">${badgeTxt}</span><span class="stream-text">${c.reasoning||'(no reasoning returned)'}</span></div>`;
     }).join('');
-    html += '</div>';
+    html+='</div>';
   });
-  streamEl.innerHTML = html;
+  streamEl.innerHTML=html;
 }
 
 function renderLearningLog(){
-  const el = document.getElementById('learning-log');
-  const entries = [];
-
-  // Signal weight history
-  // (allWeights comes back with limit 10 above — we need to re-fetch for the full log)
-  // We already have at least the first row; show a system-start entry
-  entries.push({
-    date: '24 APR 2026 · SYSTEM INITIALISED',
-    text: 'RivX is online. Signal weights initialised equally at 20% each. The bot will adapt weights after trades close, rewarding signals that predicted profitable moves.',
-    tags: ['System start', 'Paper mode']
-  });
-
-  // Add entries for each weight history row beyond the first
-  // (sb returned up to 10 rows, ordered desc)
-  // Skip in this simple version — can extend later
-
-  // Recent trades become learning events
-  allTrades.slice(0,5).forEach(t => {
+  const el=document.getElementById('learning-log');
+  const entries=[{date:'24 APR 2026 · SYSTEM INITIALISED',text:'RivX is online. Signal weights initialised equally at 20% each.',tags:['System start','Paper mode']}];
+  allTrades.slice(0,5).forEach(t=>{
     if(!t.created_at) return;
-    const d = new Date(t.created_at);
-    const ds = d.toLocaleDateString('en-AU',{day:'numeric',month:'short',year:'numeric'}).toUpperCase();
-    const time = d.toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'});
-    const pnl = t.pnl_pct ? ` P&L ${(t.pnl_pct*100>=0?'+':'')}${(t.pnl_pct*100).toFixed(1)}%` : '';
-    entries.push({
-      date: `${ds} · ${time} · ${t.action} ${t.symbol}${pnl}`,
-      text: t.details || '(no details)',
-      tags: [t.action === 'BUY' ? 'Entry' : 'Exit', pnl ? 'Realised' : 'Open']
-    });
+    const d=new Date(t.created_at);
+    const ds=d.toLocaleDateString('en-AU',{day:'numeric',month:'short',year:'numeric'}).toUpperCase();
+    const time=d.toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'});
+    const pnl=t.pnl_pct?` P&L ${(t.pnl_pct*100>=0?'+':'')}${(t.pnl_pct*100).toFixed(1)}%`:'';
+    entries.push({date:`${ds} · ${time} · ${t.action} ${t.symbol}${pnl}`,text:t.details||'(no details)',tags:[t.action==='BUY'?'Entry':'Exit',pnl?'Realised':'Open']});
   });
-
-  el.innerHTML = entries.map(e => `
-    <div class="learn-entry">
-      <div class="learn-date">${e.date}</div>
-      <div class="learn-text">${e.text}</div>
-      ${e.tags.map(t => `<span class="learn-tag">${t}</span>`).join('')}
-    </div>
-  `).join('');
+  el.innerHTML=entries.map(e=>`<div class="learn-entry"><div class="learn-date">${e.date}</div><div class="learn-text">${e.text}</div>${e.tags.map(t=>`<span class="learn-tag">${t}</span>`).join('')}</div>`).join('');
 }
 
 function renderBotStats(){
-  document.getElementById('total-trades').textContent = allTrades.length;
+  document.getElementById('total-trades').textContent=allTrades.length;
   if(allChecks.length){
-    const last = allChecks[0];
-    document.getElementById('last-check').textContent = new Date(last.checked_at).toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'});
-    const today = new Date().toDateString();
-    const todayCount = allChecks.filter(c => new Date(c.checked_at).toDateString() === today).length;
-    document.getElementById('checks-today').textContent = todayCount;
+    document.getElementById('last-check').textContent=new Date(allChecks[0].checked_at).toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'});
+    const today=new Date().toDateString();
+    document.getElementById('checks-today').textContent=allChecks.filter(c=>new Date(c.checked_at).toDateString()===today).length;
+  }
+}
+
+function renderQAThread(){
+  const el=document.getElementById('qa-thread');
+  if(!allQuestions.length){ el.innerHTML='<div class="empty">Ask your first question above.</div>'; return; }
+  el.innerHTML=allQuestions.map(q=>{
+    const time=new Date(q.asked_at).toLocaleString('en-AU',{hour:'2-digit',minute:'2-digit',day:'numeric',month:'short'});
+    let cls='qa-a'; let txt=q.answer||'Thinking...';
+    if(q.status==='pending'){ cls+=' pending'; txt='Thinking... (answers arrive in 30-60s)'; }
+    else if(q.status==='failed'){ cls+=' failed'; }
+    return `<div class="qa-item"><div class="qa-q"><span>${q.question}</span><span class="qa-q-time">${time}</span></div><div class="${cls}">${txt}</div></div>`;
+  }).join('');
+}
+
+async function askQuestion(){
+  const input=document.getElementById('qa-input');
+  const btn=document.getElementById('qa-submit');
+  const q=input.value.trim();
+  if(!q) return;
+  btn.disabled=true; btn.textContent='Sending...';
+  const result=await sb('user_questions',{},'POST',{question:q});
+  if(result){
+    input.value='';
+    await loadSupabase(); renderQAThread();
+    let tries=0;
+    const poll=setInterval(async()=>{
+      tries++;
+      await loadSupabase(); renderQAThread();
+      const latest=allQuestions[0];
+      if((latest&&latest.status!=='pending')||tries>24) clearInterval(poll);
+    },5000);
   } else {
-    document.getElementById('last-check').textContent = '—';
-    document.getElementById('checks-today').textContent = '0';
+    alert('Could not submit question. Did you run the SQL to create the user_questions table?');
   }
+  btn.disabled=false; btn.textContent='Ask';
 }
 
-// ─── Countdown ─────────────────────────────────────────────────────────────
-// Bot runs crypto check every 5 mins. Estimate next run from last check timestamp.
+function exportThread(){
+  if(!allQuestions.length){ alert('No questions yet.'); return; }
+  const data=allQuestions.map(q=>({question:q.question,answer:q.answer,asked_at:q.asked_at,status:q.status}));
+  const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url; a.download=`rivx-qa-${new Date().toISOString().slice(0,10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 function tickCountdown(){
-  if(!allChecks.length){
-    document.getElementById('countdown').textContent = 'Next scan —:—';
-    return;
-  }
-  const lastTs = new Date(allChecks[0].checked_at).getTime();
-  const nextTs = lastTs + 5 * 60 * 1000;
-  const secs = Math.max(0, Math.floor((nextTs - Date.now()) / 1000));
-  const m = Math.floor(secs / 60);
-  const s = secs % 60;
-  document.getElementById('countdown').textContent = `Next scan ${m}:${String(s).padStart(2,'0')}`;
+  if(!allChecks.length){ document.getElementById('countdown').textContent='Next scan —:—'; return; }
+  const lastTs=new Date(allChecks[0].checked_at).getTime();
+  const nextTs=lastTs+5*60*1000;
+  const secs=Math.max(0,Math.floor((nextTs-Date.now())/1000));
+  const m=Math.floor(secs/60); const s=secs%60;
+  document.getElementById('countdown').textContent=`Next scan ${m}:${String(s).padStart(2,'0')}`;
 }
 
-// ─── Export ────────────────────────────────────────────────────────────────
 function generateExport(type){
-  const latest = allSnapshots[0] || {};
-  const total = latest.total_aud || 5000;
-  const net = total - 5000;
-  const now = new Date().toLocaleDateString('en-AU',{weekday:'short',day:'numeric',month:'short',year:'numeric'});
-  const wins = allTrades.filter(t => t.pnl_pct > 0).length;
-  const wr = allTrades.length ? Math.round(wins/allTrades.length*100) + '%' : 'N/A';
-  const w = allWeights;
-  const hr = '─'.repeat(30);
-  let text = '';
-  if(type==='daily') text = `RivX Daily — ${now}\n${hr}\nPortfolio: $${total.toFixed(2)}\nNet P&L: ${(net>=0?'+':'')}$${Math.abs(net).toFixed(2)}\nOpen positions: ${allPositions.length}\nTotal trades: ${allTrades.length}\nChecks today: ${document.getElementById('checks-today').textContent}\n${hr}\nPowered by RivX`;
-  else if(type==='weekly') text = `RivX Weekly — ${now}\n${hr}\nPortfolio: $${total.toFixed(2)}\nNet P&L: ${(net>=0?'+':'')}$${Math.abs(net).toFixed(2)}\nTrades: ${allTrades.length} · Win rate: ${wr}\n${hr}\nPowered by RivX`;
-  else if(type==='trades') text = `RivX Trades — ${now}\n${hr}\n${allTrades.slice(0,10).map(t => `${t.action} ${t.symbol}${t.pnl_pct?' '+(t.pnl_pct*100>=0?'+':'')+(t.pnl_pct*100).toFixed(1)+'%':''}`).join('\n')||'No trades yet'}\n${hr}\nPowered by RivX`;
-  else if(type==='intelligence') text = `RivX Intelligence — ${now}\n${hr}\n${document.getElementById('market-summary').textContent.trim()}\n${hr}\nPowered by RivX`;
-  else if(type==='learning') text = `RivX Learning — ${now}\n${hr}\nRSI ${Math.round((w.rsi||0.2)*100)}% · MACD ${Math.round((w.macd||0.2)*100)}% · BB ${Math.round((w.bollinger||0.2)*100)}% · Vol ${Math.round((w.volume||0.2)*100)}% · MA ${Math.round((w.ma_cross||0.2)*100)}%\n${hr}\nPowered by RivX`;
-  else text = `RivX Full Report — ${now}\n${hr}\nPortfolio: $${total.toFixed(2)}\nNet P&L: ${(net>=0?'+':'')}$${Math.abs(net).toFixed(2)}\nTrades: ${allTrades.length} · Win rate: ${wr}\nChecks today: ${document.getElementById('checks-today').textContent}\n\nLatest view:\n${document.getElementById('market-summary').textContent.trim().substring(0,240)}\n${hr}\nPowered by RivX`;
-  const preview = document.getElementById('export-preview');
-  const copyBtn = document.getElementById('copy-btn');
-  preview.textContent = text;
-  preview.style.display = 'block';
-  copyBtn.style.display = 'block';
-  copyBtn.dataset.text = text;
+  const latest=allIntraday[0]||allSnapshots[0]||{};
+  const total=Number(latest.total_aud)||5000;
+  const net=total-5000;
+  const now=new Date().toLocaleDateString('en-AU',{weekday:'short',day:'numeric',month:'short',year:'numeric'});
+  const wins=allTrades.filter(t=>t.pnl_pct>0).length;
+  const wr=allTrades.length?Math.round(wins/allTrades.length*100)+'%':'N/A';
+  const hr='─'.repeat(30);
+  let text='';
+  if(type==='daily') text=`RivX Daily — ${now}\n${hr}\nPortfolio: $${total.toFixed(2)}\nNet: ${(net>=0?'+':'')}$${Math.abs(net).toFixed(2)}\nPositions: ${allPositions.length}\nTrades: ${allTrades.length}\n${hr}\nPowered by RivX`;
+  else if(type==='weekly') text=`RivX Weekly — ${now}\n${hr}\nPortfolio: $${total.toFixed(2)}\nNet: ${(net>=0?'+':'')}$${Math.abs(net).toFixed(2)}\nTrades: ${allTrades.length} · Win: ${wr}\n${hr}\nPowered by RivX`;
+  else if(type==='trades') text=`RivX Trades — ${now}\n${hr}\n${allTrades.slice(0,10).map(t=>`${t.action} ${t.symbol}${t.pnl_pct?' '+(t.pnl_pct*100>=0?'+':'')+(t.pnl_pct*100).toFixed(1)+'%':''}`).join('\n')||'No trades yet'}\n${hr}\nPowered by RivX`;
+  else if(type==='intelligence') text=`RivX Intelligence — ${now}\n${hr}\n${document.getElementById('market-summary').textContent.trim()}\n${hr}\nPowered by RivX`;
+  else if(type==='qa') text=`RivX Q&A — ${now}\n${hr}\n${allQuestions.slice(0,10).map(q=>`Q: ${q.question}\nA: ${q.answer||'(pending)'}\n`).join('\n')}\n${hr}\nPowered by RivX`;
+  else text=`RivX Full — ${now}\n${hr}\nPortfolio: $${total.toFixed(2)}\nNet: ${(net>=0?'+':'')}$${Math.abs(net).toFixed(2)}\nTrades: ${allTrades.length} · Win: ${wr}\n\nLatest:\n${document.getElementById('market-summary').textContent.trim().substring(0,240)}\n${hr}\nPowered by RivX`;
+  const preview=document.getElementById('export-preview');
+  const copyBtn=document.getElementById('copy-btn');
+  preview.textContent=text;
+  preview.style.display='block';
+  copyBtn.style.display='block';
+  copyBtn.dataset.text=text;
 }
 
 function copyExport(){
-  navigator.clipboard.writeText(document.getElementById('copy-btn').dataset.text).then(() => {
-    const t = document.getElementById('toast');
-    t.style.display = 'block';
-    setTimeout(() => t.style.display = 'none', 2000);
+  navigator.clipboard.writeText(document.getElementById('copy-btn').dataset.text).then(()=>{
+    const t=document.getElementById('toast');
+    t.style.display='block';
+    setTimeout(()=>t.style.display='none',2000);
   });
 }
 
@@ -944,13 +873,12 @@ function killSwitch(){
   }
 }
 
-// ─── Boot ──────────────────────────────────────────────────────────────────
 function startApp(){
   loadAll();
-  setInterval(loadAll, 60000);           // Full refresh every minute
-  setInterval(loadPulse, 30000);         // Pulse every 30s (faster feel)
-  setInterval(tickCountdown, 1000);      // Countdown tick
-  setInterval(renderMarketStatus, 60000);
+  setInterval(loadAll,60000);
+  setInterval(loadPulse,30000);
+  setInterval(tickCountdown,1000);
+  setInterval(renderMarketStatus,60000);
 }
 </script>
 </body>
