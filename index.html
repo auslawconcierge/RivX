@@ -18,11 +18,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .login-logo{font-size:52px;font-weight:700;color:#0d1f38;letter-spacing:-3px;line-height:1;}
 .login-sub{font-size:10px;color:#9aa0a6;letter-spacing:0.25em;text-transform:uppercase;margin-top:6px;}
 .login-status{display:flex;align-items:center;justify-content:center;gap:6px;margin-top:12px;}
-.status-dot{width:6px;height:6px;border-radius:50%;background:#4ade80;}
+.status-dot{width:6px;height:6px;border-radius:50%;background:#4ade80;animation:pulse 2s infinite;}
 .login-box{background:#0d1f38;border-radius:16px;padding:32px;position:relative;overflow:hidden;box-shadow:0 24px 48px rgba(13,31,56,0.2);}
 .login-box::before{content:'';position:absolute;top:-60px;right:-60px;width:200px;height:200px;border-radius:50%;border:1px solid rgba(255,255,255,0.06);}
 .login-box::after{content:'';position:absolute;top:-30px;right:-30px;width:140px;height:140px;border-radius:50%;border:1px solid rgba(255,255,255,0.04);}
-.login-box-lines{position:absolute;bottom:0;left:0;right:0;height:3px;background:linear-gradient(90deg,transparent,rgba(255,255,255,0.1),transparent);}
 .login-label{font-size:10px;color:rgba(255,255,255,0.4);letter-spacing:0.2em;text-transform:uppercase;text-align:center;margin-bottom:16px;}
 .login-box input{width:100%;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:13px 16px;color:white;font-size:14px;font-family:monospace;margin-bottom:12px;outline:none;transition:border-color 0.2s;}
 .login-box input::placeholder{color:rgba(255,255,255,0.25);}
@@ -43,10 +42,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .topbar{background:#0d1f38;padding:0 24px;display:flex;align-items:center;justify-content:space-between;height:54px;position:sticky;top:0;z-index:100;}
 .topbar-logo{font-size:18px;font-weight:600;color:white;letter-spacing:-0.5px;}
 .topbar-badge{font-size:10px;padding:3px 10px;border-radius:20px;background:rgba(255,255,255,0.08);color:#94a3b8;border:0.5px solid rgba(255,255,255,0.1);letter-spacing:0.08em;margin-left:10px;}
+.topbar-live{display:flex;align-items:center;gap:6px;font-size:10px;color:#4ade80;letter-spacing:0.12em;margin-left:10px;font-weight:600;}
+.topbar-live .dot{width:6px;height:6px;border-radius:50%;background:#4ade80;animation:pulse 2s infinite;}
+@keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.3;}}
 .nav{display:flex;gap:2px;}
 .nav-btn{font-size:12px;padding:6px 16px;border-radius:6px;border:none;background:none;color:#94a3b8;cursor:pointer;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;}
 .nav-btn.active{background:rgba(255,255,255,0.1);color:white;}
 .topbar-right{display:flex;align-items:center;gap:10px;}
+.topbar-countdown{font-size:11px;color:#94a3b8;font-family:monospace;}
 .topbar-time{font-size:11px;color:#4a6a8a;}
 .topbar-refresh{font-size:11px;padding:5px 12px;border:0.5px solid rgba(255,255,255,0.1);border-radius:6px;background:none;color:#94a3b8;cursor:pointer;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;}
 .topbar-logout{font-size:11px;color:#4a6a8a;background:none;border:none;cursor:pointer;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;}
@@ -56,13 +59,25 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .page.active{display:block;}
 
 /* METRICS ROW */
-.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px;}
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px;}
 .metric{background:white;border:1px solid #e8eaed;border-radius:10px;padding:16px 18px;}
 .metric-label{font-size:11px;color:#9aa0a6;letter-spacing:0.05em;text-transform:uppercase;margin-bottom:8px;}
 .metric-value{font-size:24px;font-weight:600;color:#1a1a2e;letter-spacing:-0.5px;}
 .metric-value.up{color:#1a7340;}
 .metric-value.down{color:#c0392b;}
 .metric-sub{font-size:11px;color:#9aa0a6;margin-top:4px;}
+
+/* MARKET PULSE */
+.pulse-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;}
+.pulse-card{background:#fafbfc;border:1px solid #e8eaed;border-radius:8px;padding:12px;position:relative;overflow:hidden;}
+.pulse-card-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px;}
+.pulse-sym{font-size:12px;font-weight:700;color:#1a1a2e;letter-spacing:0.02em;}
+.pulse-chg{font-size:11px;font-weight:600;}
+.pulse-chg.up{color:#1a7340;}
+.pulse-chg.down{color:#c0392b;}
+.pulse-price{font-size:18px;font-weight:600;color:#1a1a2e;letter-spacing:-0.3px;}
+.pulse-label{font-size:9px;color:#9aa0a6;letter-spacing:0.08em;margin-top:2px;}
+.pulse-spark{margin-top:6px;height:24px;}
 
 /* CARDS */
 .card{background:white;border:1px solid #e8eaed;border-radius:10px;padding:20px;margin-bottom:16px;}
@@ -74,6 +89,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .pnl-header{display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:16px;}
 .pnl-amount{font-size:30px;font-weight:600;color:#1a7340;letter-spacing:-1px;}
 .pnl-amount.down{color:#c0392b;}
+.pnl-amount.neutral{color:#1a1a2e;}
 .pnl-breakdown{display:flex;gap:16px;margin-top:6px;}
 .pnl-item{font-size:11px;color:#9aa0a6;}
 .pnl-item span{font-weight:500;color:#1a1a2e;}
@@ -82,7 +98,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .timeframes{display:flex;gap:2px;background:#f5f6f8;border:1px solid #e8eaed;border-radius:8px;padding:3px;}
 .tf-btn{font-size:11px;padding:5px 10px;border-radius:5px;border:none;background:none;color:#9aa0a6;cursor:pointer;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;}
 .tf-btn.active{background:white;color:#1a1a2e;box-shadow:0 1px 3px rgba(0,0,0,0.08);}
-.chart-wrap{position:relative;height:180px;}
+.chart-wrap{position:relative;height:220px;}
+.chart-note{font-size:10px;color:#c4c7cc;text-align:center;margin-top:8px;letter-spacing:0.05em;}
 
 /* POSITIONS */
 .pos-row{display:flex;align-items:center;justify-content:space-between;padding:9px 0;border-bottom:1px solid #f0f0f0;}
@@ -139,27 +156,31 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .risk-med{background:#fff3e0;color:#e65100;}
 .risk-high{background:#fdecea;color:#c0392b;}
 .market-summary{font-size:13px;color:#555;line-height:1.7;padding:14px;background:#f5f6f8;border-radius:8px;border-left:3px solid #0d1f38;margin-bottom:14px;}
-.asset-tabs{display:flex;gap:4px;margin-bottom:14px;flex-wrap:wrap;}
-.atab{font-size:11px;padding:5px 12px;border-radius:6px;border:1px solid #e8eaed;background:white;color:#9aa0a6;cursor:pointer;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;}
-.atab.active{background:#0d1f38;color:white;border-color:#0d1f38;}
-.asset-panel{background:#f5f6f8;border-radius:8px;padding:14px;}
-.asset-ticker{font-size:16px;font-weight:600;color:#1a1a2e;}
-.asset-action{font-size:11px;padding:3px 12px;border-radius:20px;font-weight:600;}
-.asset-action.buy{background:#e8f5e9;color:#1a7340;}
-.asset-action.sell{background:#fdecea;color:#c0392b;}
-.asset-action.hold{background:#f5f6f8;color:#9aa0a6;}
-.asset-reasoning{font-size:13px;color:#555;line-height:1.7;margin:10px 0;}
-.sig-pills{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}
-.sig-pill{background:white;border:1px solid #e8eaed;border-radius:6px;padding:8px;text-align:center;}
-.sig-pill-name{font-size:10px;color:#9aa0a6;margin-bottom:3px;}
-.sig-pill-val{font-size:12px;font-weight:500;color:#1a1a2e;}
-.sig-pill-val.bull{color:#1a7340;}
-.sig-pill-val.bear{color:#c0392b;}
-.conf-row{display:flex;align-items:center;gap:8px;margin-top:10px;}
-.conf-label{font-size:11px;color:#9aa0a6;width:80px;flex-shrink:0;}
-.conf-track{flex:1;height:4px;background:#f0f0f0;border-radius:2px;overflow:hidden;}
-.conf-fill{height:100%;border-radius:2px;background:#0d1f38;}
-.conf-val{font-size:11px;font-weight:500;color:#1a1a2e;min-width:32px;text-align:right;}
+
+/* DECISION STREAM */
+.stream-group{margin-bottom:18px;}
+.stream-group-label{font-size:10px;color:#9aa0a6;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:8px;font-weight:500;display:flex;align-items:center;gap:8px;}
+.stream-group-label::after{content:'';flex:1;height:1px;background:#f0f0f0;}
+.stream-row{display:flex;align-items:flex-start;gap:12px;padding:10px 0;border-bottom:1px solid #f8f8f8;}
+.stream-row:last-child{border-bottom:none;}
+.stream-time{font-size:10px;color:#c4c7cc;font-family:monospace;min-width:52px;padding-top:3px;}
+.stream-badge{font-size:9px;font-weight:700;padding:3px 8px;border-radius:20px;letter-spacing:0.05em;min-width:48px;text-align:center;}
+.stream-badge.hold{background:#f5f6f8;color:#9aa0a6;border:1px solid #e8eaed;}
+.stream-badge.buy{background:#e8f5e9;color:#1a7340;border:1px solid #a5d6a7;}
+.stream-badge.sell{background:#fdecea;color:#c0392b;border:1px solid #ef9a9a;}
+.stream-text{flex:1;font-size:12px;color:#555;line-height:1.5;}
+
+/* SCANNER TABLE */
+.scan-row{display:grid;grid-template-columns:60px 1fr 60px 60px 50px 60px;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid #f8f8f8;font-size:11px;}
+.scan-row:last-child{border-bottom:none;}
+.scan-row.header{font-size:9px;color:#9aa0a6;letter-spacing:0.08em;text-transform:uppercase;padding-bottom:6px;border-bottom:1px solid #e8eaed;margin-bottom:4px;}
+.scan-sym{font-size:12px;font-weight:600;color:#1a1a2e;}
+.scan-rsi{font-weight:600;}
+.scan-chg{font-weight:500;text-align:right;}
+.scan-vol{color:#555;text-align:right;}
+.scan-score{font-weight:500;padding:2px 8px;border-radius:10px;background:#f5f6f8;color:#555;font-size:10px;text-align:center;}
+.scan-score.hot{background:#e8f5e9;color:#1a7340;}
+
 .learn-entry{padding:12px 0;border-bottom:1px solid #f0f0f0;}
 .learn-entry:last-child{border-bottom:none;}
 .learn-date{font-size:10px;color:#9aa0a6;margin-bottom:4px;letter-spacing:0.05em;font-family:monospace;}
@@ -169,9 +190,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .empty{text-align:center;padding:28px;font-size:12px;color:#c4c7cc;}
 .footer{text-align:center;padding:16px;font-size:10px;color:#c4c7cc;letter-spacing:0.12em;border-top:1px solid #f0f0f0;margin-top:8px;}
 .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#0d1f38;color:white;padding:8px 20px;border-radius:20px;font-size:12px;display:none;z-index:999;}
+
+@media(max-width:720px){
+  .metrics,.pulse-grid,.grid2,.grid3{grid-template-columns:1fr 1fr;}
+  .main{padding:14px;}
+}
 </style>
 </head>
-<body style="background:white !important;color:#1a1a2e !important;">
+<body style="background:white;color:#1a1a2e;">
 
 <!-- LOGIN -->
 <div id="login-screen">
@@ -179,11 +205,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     <div class="login-header">
       <div class="login-logo">RivX</div>
       <div class="login-sub">Autonomous Trading System</div>
-      <div class="login-divider"></div>
       <div class="login-status"><span class="status-dot"></span><span style="font-size:10px;color:#9aa0a6;letter-spacing:0.12em;">SYSTEMS ONLINE</span></div>
     </div>
     <div class="login-box">
-      <div class="login-box-lines"></div>
       <div class="login-label">Secure access</div>
       <input type="password" id="pw" placeholder="Enter passphrase" onkeydown="if(event.key==='Enter')login()"/>
       <button class="login-btn" onclick="login()">ENTER</button>
@@ -199,11 +223,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 </div>
 
 <!-- DASHBOARD -->
-<div id="dashboard" style="background:#f5f6f8 !important;min-height:100vh;">
+<div id="dashboard">
   <div class="topbar">
     <div style="display:flex;align-items:center;">
       <span class="topbar-logo">RivX</span>
       <span class="topbar-badge" id="mode-badge">PAPER MODE</span>
+      <span class="topbar-live"><span class="dot"></span>LIVE</span>
     </div>
     <div class="nav">
       <button class="nav-btn active" onclick="showPage('overview',this)">Overview</button>
@@ -212,8 +237,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       <button class="nav-btn" onclick="showPage('export',this)">Export</button>
     </div>
     <div class="topbar-right">
+      <span class="topbar-countdown" id="countdown">Next scan —:—</span>
       <span class="topbar-time" id="last-updated">Loading...</span>
-      <button class="topbar-refresh" onclick="loadData()">Refresh</button>
+      <button class="topbar-refresh" onclick="loadAll()">Refresh</button>
       <button class="topbar-logout" onclick="logout()">Sign out</button>
     </div>
   </div>
@@ -228,15 +254,26 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
         <div class="metric"><div class="metric-label">Fees paid</div><div class="metric-value" id="m-fees">$0.00</div><div class="metric-sub">trading costs</div></div>
         <div class="metric"><div class="metric-label">Win rate</div><div class="metric-value" id="m-win">—</div><div class="metric-sub">profitable trades</div></div>
       </div>
+
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
+          <span>Market pulse — live</span>
+          <span style="font-size:9px;color:#c4c7cc;text-transform:none;letter-spacing:0;" id="pulse-updated">updating...</span>
+        </div>
+        <div class="pulse-grid" id="pulse-grid">
+          <div class="empty" style="grid-column:span 4;">Loading live prices...</div>
+        </div>
+      </div>
+
       <div class="card">
         <div class="pnl-header">
           <div>
-            <div class="card-title" style="margin-bottom:6px;">P&L after trading costs</div>
-            <div class="pnl-amount" id="chart-pnl">+$0.00</div>
+            <div class="card-title" style="margin-bottom:6px;" id="chart-title">P&L after trading costs</div>
+            <div class="pnl-amount neutral" id="chart-pnl">+$0.00</div>
             <div class="pnl-breakdown">
               <div class="pnl-item">Gross: <span id="gross-val">$0.00</span></div>
               <div class="pnl-item">Fees: <span class="down" id="fee-val">-$0.00</span></div>
-              <div class="pnl-item">Net: <span class="up" id="net-val">$0.00</span></div>
+              <div class="pnl-item">Net: <span id="net-val">$0.00</span></div>
             </div>
           </div>
           <div class="timeframes">
@@ -249,8 +286,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
             <button class="tf-btn" onclick="setTf(this,'ALL')">All</button>
           </div>
         </div>
-        <div class="chart-wrap"><canvas id="perfChart" role="img" aria-label="Portfolio performance">Performance chart</canvas></div>
+        <div class="chart-wrap"><canvas id="perfChart"></canvas></div>
+        <div class="chart-note" id="chart-note">Intraday view — BTC/AUD price throughout today (market context)</div>
       </div>
+
       <div class="grid2">
         <div class="card" style="margin-bottom:0;">
           <div class="card-title">Open positions</div>
@@ -258,13 +297,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
         </div>
         <div class="card" style="margin-bottom:0;">
           <div class="card-title">Signal weights — learning</div>
-          <div id="signals-list">
-            <div class="sig-row"><span class="sig-name">RSI</span><div class="sig-track"><div class="sig-fill" style="width:20%"></div></div><span class="sig-pct">20%</span></div>
-            <div class="sig-row"><span class="sig-name">MACD</span><div class="sig-track"><div class="sig-fill" style="width:20%"></div></div><span class="sig-pct">20%</span></div>
-            <div class="sig-row"><span class="sig-name">Bollinger</span><div class="sig-track"><div class="sig-fill" style="width:20%"></div></div><span class="sig-pct">20%</span></div>
-            <div class="sig-row"><span class="sig-name">Volume</span><div class="sig-track"><div class="sig-fill" style="width:20%"></div></div><span class="sig-pct">20%</span></div>
-            <div class="sig-row"><span class="sig-name">MA cross</span><div class="sig-track"><div class="sig-fill" style="width:20%"></div></div><span class="sig-pct">20%</span></div>
-          </div>
+          <div id="signals-list"></div>
           <div style="font-size:10px;color:#c4c7cc;margin-top:10px;">Adapts daily as signals are proven</div>
         </div>
       </div>
@@ -290,8 +323,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       </div>
       <div class="grid2" style="margin-top:14px;">
         <div class="card" style="margin-bottom:0;">
-          <div class="card-title">Crypto — 24/7 scanner</div>
-          <div id="crypto-list"><div class="empty">Waiting for first crypto scan...</div></div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+            <div class="card-title" style="margin-bottom:0;">Crypto — 24/7 market pulse</div>
+            <span style="font-size:9px;color:#9aa0a6;" id="scan-updated"></span>
+          </div>
+          <div id="crypto-scanner">
+            <div class="empty">Loading live scanner data...</div>
+          </div>
         </div>
         <div class="card" style="margin-bottom:0;">
           <div class="card-title">Bot status</div>
@@ -300,6 +338,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
           <div class="st-row"><span class="st-label">US market</span><span class="st-val" id="market-status">Checking...</span></div>
           <div class="st-row"><span class="st-label">Crypto loop</span><span class="st-val"><span class="dot dot-on"></span>Active 24/7</span></div>
           <div class="st-row"><span class="st-label">Intraday loop</span><span class="st-val" id="intraday-status"><span class="dot dot-warn"></span>Standby</span></div>
+          <div class="st-row"><span class="st-label">Last check</span><span class="st-val" id="last-check">—</span></div>
+          <div class="st-row"><span class="st-label">Checks today</span><span class="st-val" id="checks-today">0</span></div>
           <div class="st-row"><span class="st-label">Evening briefing</span><span class="st-val">8:00pm AEST</span></div>
           <div class="st-row"><span class="st-label">Morning summary</span><span class="st-val">6:30am AEST</span></div>
           <div class="st-row"><span class="st-label">Total trades</span><span class="st-val" id="total-trades">0</span></div>
@@ -312,37 +352,26 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     <div id="page-intelligence" class="page">
       <div class="card">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px;">
-          <div class="card-title" style="margin-bottom:0;">Claude's market intelligence</div>
+          <div class="card-title" style="margin-bottom:0;">Latest market view</div>
           <div style="display:flex;align-items:center;gap:8px;">
-            <span style="font-size:11px;color:#9aa0a6;" id="intel-date">Awaiting first briefing</span>
-            <span class="risk-badge risk-med" id="intel-risk">MEDIUM RISK</span>
+            <span style="font-size:11px;color:#9aa0a6;" id="intel-date">—</span>
+            <span class="risk-badge risk-med" id="intel-risk">MONITORING</span>
           </div>
         </div>
-        <div class="market-summary" id="market-summary">RivX is online and monitoring markets. The first evening briefing will be sent to your Telegram at 8pm AEST tonight.</div>
-        <div class="card-title">Asset by asset reasoning</div>
-        <div class="asset-tabs" id="asset-tabs">
-          <button class="atab active" onclick="showAsset(this,'spy')">SPY</button>
-          <button class="atab" onclick="showAsset(this,'qqq')">QQQ</button>
-          <button class="atab" onclick="showAsset(this,'nvda')">NVDA</button>
-          <button class="atab" onclick="showAsset(this,'tsla')">TSLA</button>
-          <button class="atab" onclick="showAsset(this,'meta')">META</button>
-          <button class="atab" onclick="showAsset(this,'btc')">BTC</button>
-          <button class="atab" onclick="showAsset(this,'eth')">ETH</button>
-        </div>
-        <div id="asset-panel" class="asset-panel">
-          <div class="empty">Awaiting first evening briefing at 8pm AEST</div>
-        </div>
+        <div class="market-summary" id="market-summary">Loading latest Claude reasoning...</div>
       </div>
+
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+          <div class="card-title" style="margin-bottom:0;">Decision stream — every 5 min</div>
+          <span style="font-size:9px;color:#9aa0a6;" id="stream-count">0 decisions</span>
+        </div>
+        <div id="decision-stream"><div class="empty">Loading decision history...</div></div>
+      </div>
+
       <div class="card">
         <div class="card-title">Learning log</div>
-        <div id="learning-log">
-          <div class="learn-entry">
-            <div class="learn-date">SYSTEM INITIALISED · 24 APR 2026</div>
-            <div class="learn-text">RivX is online. Signal weights initialised equally at 20% each. The bot will begin adapting weights after the first trading session based on signal accuracy.</div>
-            <span class="learn-tag">System start</span>
-            <span class="learn-tag">Paper mode</span>
-          </div>
-        </div>
+        <div id="learning-log"><div class="empty">Loading...</div></div>
       </div>
     </div>
 
@@ -372,256 +401,527 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <script>
+// ─── Config ────────────────────────────────────────────────────────────────
 const SUPABASE_URL = 'https://fsbnhrfipzmulbypheyl.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_k12zd-TEPlpGJDC5DkxsUA_w8-fN3p5';
 const PASSWORD = 'RivX@Boat2026!';
+const CG_BASE = 'https://api.coingecko.com/api/v3';
 
+// Coins to show in live market pulse
+const PULSE_COINS = [
+  {id:'bitcoin',       sym:'BTC',  name:'Bitcoin'},
+  {id:'ethereum',      sym:'ETH',  name:'Ethereum'},
+  {id:'solana',        sym:'SOL',  name:'Solana'},
+  {id:'ripple',        sym:'XRP',  name:'Ripple'},
+  {id:'cardano',       sym:'ADA',  name:'Cardano'},
+  {id:'dogecoin',      sym:'DOGE', name:'Dogecoin'},
+  {id:'avalanche-2',   sym:'AVAX', name:'Avalanche'},
+  {id:'chainlink',     sym:'LINK', name:'Chainlink'},
+];
+
+// ─── State ─────────────────────────────────────────────────────────────────
 let perfChart = null;
+let currentTf = '1D';
 let allSnapshots = [];
 let allTrades = [];
 let allPositions = [];
 let allWeights = {};
+let allChecks = [];
+let pulseData = {};
+let btcHistory = [];   // [[ts, price], ...] for 1D chart
+let btcHistoryRange = '1D';
 
-function login() {
-  if (document.getElementById('pw').value === PASSWORD) {
+// ─── Auth ──────────────────────────────────────────────────────────────────
+function login(){
+  if(document.getElementById('pw').value === PASSWORD){
     sessionStorage.setItem('rivx_auth','1');
     document.getElementById('login-screen').style.display = 'none';
     document.getElementById('dashboard').style.display = 'block';
-    loadData();
-    setInterval(loadData, 60000);
+    startApp();
   } else {
     document.getElementById('login-error').style.display = 'block';
   }
 }
-
-function logout() {
+function logout(){
   sessionStorage.removeItem('rivx_auth');
   document.getElementById('login-screen').style.display = 'flex';
   document.getElementById('dashboard').style.display = 'none';
   document.getElementById('pw').value = '';
 }
-
-if (sessionStorage.getItem('rivx_auth')) {
+if(sessionStorage.getItem('rivx_auth')){
   document.getElementById('login-screen').style.display = 'none';
   document.getElementById('dashboard').style.display = 'block';
-  loadData();
-  setInterval(loadData, 60000);
+  startApp();
 }
 
-function showPage(name, btn) {
+function showPage(name, btn){
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('page-' + name).classList.add('active');
   btn.classList.add('active');
 }
 
-async function sb(table, params) {
+// ─── Supabase ──────────────────────────────────────────────────────────────
+async function sb(table, params){
   try {
     const url = new URL(SUPABASE_URL + '/rest/v1/' + table);
     Object.entries(params||{}).forEach(([k,v]) => url.searchParams.set(k,v));
-    const r = await fetch(url, { headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }});
+    const r = await fetch(url, {headers:{'apikey':SUPABASE_KEY, 'Authorization':'Bearer '+SUPABASE_KEY}});
+    if(!r.ok) return [];
     return await r.json();
-  } catch(e) { return []; }
+  } catch(e){ return []; }
 }
 
-async function loadData() {
+// ─── CoinGecko (public, no auth) ───────────────────────────────────────────
+async function cgSimplePrice(){
+  try {
+    const ids = PULSE_COINS.map(c => c.id).join(',');
+    const url = `${CG_BASE}/simple/price?ids=${ids}&vs_currencies=aud&include_24hr_change=true`;
+    const r = await fetch(url);
+    if(!r.ok) return {};
+    return await r.json();
+  } catch(e){ return {}; }
+}
+
+async function cgMarketChart(coinId, days){
+  try {
+    const url = `${CG_BASE}/coins/${coinId}/market_chart?vs_currency=aud&days=${days}`;
+    const r = await fetch(url);
+    if(!r.ok) return [];
+    const data = await r.json();
+    return data.prices || [];
+  } catch(e){ return []; }
+}
+
+// ─── Main loaders ──────────────────────────────────────────────────────────
+async function loadAll(){
   document.getElementById('last-updated').textContent = 'Loading...';
-  const [snaps, positions, trades, weights, cryptoChecks] = await Promise.all([
-    sb('snapshots', { order: 'date.desc', limit: '400' }),
-    sb('positions', { status: 'eq.open' }),
-    sb('trades', { order: 'created_at.desc', limit: '50' }),
-    sb('signal_weights', { order: 'updated_at.desc', limit: '1' }),
-    sb('crypto_checks', { order: 'checked_at.desc', limit: '20' }),
+  await Promise.all([loadSupabase(), loadPulse(), loadBtcHistory(currentTf)]);
+  renderAll();
+  document.getElementById('last-updated').textContent = 'Updated ' + new Date().toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'});
+}
+
+async function loadSupabase(){
+  const [snaps, positions, trades, weights, checks] = await Promise.all([
+    sb('snapshots', {order:'date.desc', limit:'400'}),
+    sb('positions', {status:'eq.open'}),
+    sb('trades', {order:'created_at.desc', limit:'50'}),
+    sb('signal_weights', {order:'updated_at.desc', limit:'10'}),
+    sb('crypto_checks', {order:'checked_at.desc', limit:'100'}),
   ]);
   allSnapshots = snaps || [];
   allTrades = trades || [];
   allPositions = positions || [];
-  allWeights = weights[0] || {};
-  updateMetrics();
-  updateChart('1D');
-  updatePositions();
-  updateTrades();
-  updateSignals();
-  updateMarketStatus();
-  updateCryptoChecks(cryptoChecks || []);
-  document.getElementById('total-trades').textContent = allTrades.length;
-  document.getElementById('last-updated').textContent = 'Updated ' + new Date().toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'});
+  allWeights = (weights && weights[0]) || {};
+  allChecks = checks || [];
 }
 
-function updateMetrics() {
+async function loadPulse(){
+  const data = await cgSimplePrice();
+  pulseData = data;
+  document.getElementById('pulse-updated').textContent = 'live · ' + new Date().toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+}
+
+async function loadBtcHistory(tf){
+  const daysMap = {'1D':1, '1W':7, '1M':30, '3M':90, '6M':180, '1Y':365, 'ALL':365};
+  const days = daysMap[tf] || 1;
+  btcHistory = await cgMarketChart('bitcoin', days);
+  btcHistoryRange = tf;
+}
+
+// ─── Renderers ─────────────────────────────────────────────────────────────
+function renderAll(){
+  renderMetrics();
+  renderPulse();
+  renderChart(currentTf);
+  renderPositions();
+  renderSignals();
+  renderTrades();
+  renderScanner();
+  renderMarketStatus();
+  renderIntelligence();
+  renderLearningLog();
+  renderBotStats();
+}
+
+function renderMetrics(){
   const latest = allSnapshots[0] || {};
-  const prev = allSnapshots[1] || {};
   const total = latest.total_aud || 5000;
   const fees = allTrades.reduce((a,t) => a + (t.fee_aud || 0), 0);
   const net = total - 5000;
   const wins = allTrades.filter(t => t.pnl_pct > 0).length;
   const winRate = allTrades.length > 0 ? Math.round(wins/allTrades.length*100) + '%' : '—';
+
   const pEl = document.getElementById('m-port');
   pEl.textContent = '$' + total.toLocaleString('en-AU',{minimumFractionDigits:2,maximumFractionDigits:2});
   const pnlEl = document.getElementById('m-pnl');
   pnlEl.textContent = (net>=0?'+':'') + '$' + Math.abs(net).toFixed(2);
-  pnlEl.className = 'metric-value ' + (net>=0?'up':'down');
+  pnlEl.className = 'metric-value ' + (net>0?'up':net<0?'down':'');
   document.getElementById('m-fees').textContent = '$' + fees.toFixed(2);
   document.getElementById('m-win').textContent = winRate;
-  document.getElementById('chart-pnl').textContent = (net>=0?'+':'') + '$' + Math.abs(net).toFixed(2);
-  document.getElementById('chart-pnl').className = 'pnl-amount' + (net<0?' down':'');
+
+  const chartPnlEl = document.getElementById('chart-pnl');
+  chartPnlEl.textContent = (net>=0?'+':'') + '$' + Math.abs(net).toFixed(2);
+  chartPnlEl.className = 'pnl-amount ' + (net>0?'':net<0?'down':'neutral');
   document.getElementById('gross-val').textContent = '$' + (net + fees).toFixed(2);
   document.getElementById('fee-val').textContent = '-$' + fees.toFixed(2);
-  document.getElementById('net-val').textContent = (net>=0?'+':'') + '$' + net.toFixed(2);
+  const netEl = document.getElementById('net-val');
+  netEl.textContent = (net>=0?'+':'') + '$' + net.toFixed(2);
+  netEl.className = net>0?'up':net<0?'down':'';
 }
 
-function setTf(btn, tf) {
+function renderPulse(){
+  const el = document.getElementById('pulse-grid');
+  if(!Object.keys(pulseData).length){
+    el.innerHTML = '<div class="empty" style="grid-column:span 4;">Waiting for market data...</div>';
+    return;
+  }
+  el.innerHTML = PULSE_COINS.map(c => {
+    const d = pulseData[c.id] || {};
+    const price = d.aud;
+    const chg = d.aud_24h_change;
+    if(price === undefined) return '';
+    const chgCls = chg >= 0 ? 'up' : 'down';
+    const chgTxt = (chg >= 0 ? '+' : '') + (chg || 0).toFixed(2) + '%';
+    const priceFmt = price >= 100 ? price.toLocaleString('en-AU',{maximumFractionDigits:0}) : price < 1 ? price.toFixed(4) : price.toFixed(2);
+    return `<div class="pulse-card">
+      <div class="pulse-card-header">
+        <span class="pulse-sym">${c.sym}</span>
+        <span class="pulse-chg ${chgCls}">${chgTxt}</span>
+      </div>
+      <div class="pulse-price">$${priceFmt}</div>
+      <div class="pulse-label">AUD · 24H</div>
+    </div>`;
+  }).join('');
+}
+
+function setTf(btn, tf){
   document.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
-  updateChart(tf);
+  currentTf = tf;
+  // Fetch new BTC history for this timeframe, then render
+  loadBtcHistory(tf).then(() => renderChart(tf));
 }
 
-function updateChart(tf) {
-  let filtered = allSnapshots.slice().reverse();
-  if (tf==='1D') filtered = filtered.slice(-2);
-  else if (tf==='1W') filtered = filtered.slice(-7);
-  else if (tf==='1M') filtered = filtered.slice(-30);
-  else if (tf==='3M') filtered = filtered.slice(-90);
-  else if (tf==='6M') filtered = filtered.slice(-180);
-  else if (tf==='1Y') filtered = filtered.slice(-365);
-  if (!filtered.length) filtered = [{date:'Start',total_aud:5000}];
-  const labels = filtered.map(s => { try { return new Date(s.date).toLocaleDateString('en-AU',{month:'short',day:'numeric'}); } catch(e) { return s.date||''; }});
-  const values = filtered.map(s => s.total_aud || 5000);
-  if (perfChart) perfChart.destroy();
-  perfChart = new Chart(document.getElementById('perfChart'), {
+function renderChart(tf){
+  const canvas = document.getElementById('perfChart');
+  if(!canvas) return;
+  if(perfChart){ perfChart.destroy(); perfChart = null; }
+
+  let labels, values, title, note, color, isPortfolio;
+
+  if(tf === '1D'){
+    // Show intraday BTC/AUD — portfolio has no intraday data yet
+    if(btcHistory && btcHistory.length){
+      const points = btcHistory;
+      labels = points.map(p => new Date(p[0]).toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'}));
+      values = points.map(p => p[1]);
+      title = 'BTC/AUD — today (5-min intervals)';
+      note = 'Intraday market context · portfolio chart will show here once the bot builds intraday history from trades.';
+      color = '#f59e0b';
+      isPortfolio = false;
+    } else {
+      labels = ['Now'];
+      values = [5000];
+      title = 'Intraday view loading...';
+      note = 'Waiting for live market data.';
+      color = '#0d1f38';
+      isPortfolio = true;
+    }
+  } else {
+    // Portfolio value from snapshots
+    let filtered = allSnapshots.slice().reverse();
+    const limits = {'1W':7, '1M':30, '3M':90, '6M':180, '1Y':365, 'ALL':9999};
+    if(limits[tf]) filtered = filtered.slice(-limits[tf]);
+    if(!filtered.length){
+      labels = ['Start'];
+      values = [5000];
+      note = 'Portfolio snapshots begin tomorrow after first morning summary.';
+    } else {
+      labels = filtered.map(s => { try { return new Date(s.date).toLocaleDateString('en-AU',{month:'short',day:'numeric'}); } catch(e){ return s.date||''; }});
+      values = filtered.map(s => s.total_aud || 5000);
+      note = 'Portfolio value (AUD) · daily snapshots';
+    }
+    title = 'Portfolio value';
+    color = '#0d1f38';
+    isPortfolio = true;
+  }
+
+  document.getElementById('chart-title').textContent = title;
+  document.getElementById('chart-note').textContent = note;
+
+  perfChart = new Chart(canvas, {
     type: 'line',
-    data: { labels, datasets: [{ data: values, borderColor: '#0d1f38', backgroundColor: 'rgba(13,31,56,0.05)', fill: true, tension: 0.4, pointRadius: 3, pointBackgroundColor: '#0d1f38', borderWidth: 2 }] },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { ticks: { color: '#9aa0a6', font: { size: 10 } }, grid: { color: 'rgba(0,0,0,0.04)' } }, y: { ticks: { color: '#9aa0a6', font: { size: 10 }, callback: v => '$' + v.toLocaleString() }, grid: { color: 'rgba(0,0,0,0.04)' } } } }
+    data: {
+      labels,
+      datasets: [{
+        data: values,
+        borderColor: color,
+        backgroundColor: color === '#f59e0b' ? 'rgba(245,158,11,0.08)' : 'rgba(13,31,56,0.05)',
+        fill: true,
+        tension: 0.3,
+        pointRadius: values.length > 60 ? 0 : 2,
+        pointHoverRadius: 5,
+        pointBackgroundColor: color,
+        borderWidth: 2,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: {
+        callbacks: { label: ctx => '$' + ctx.parsed.y.toLocaleString('en-AU',{maximumFractionDigits:2}) }
+      }},
+      scales: {
+        x: {
+          ticks: { color:'#9aa0a6', font:{size:10}, maxTicksLimit: 8, autoSkip: true },
+          grid: { color:'rgba(0,0,0,0.04)' }
+        },
+        y: {
+          ticks: { color:'#9aa0a6', font:{size:10}, callback: v => '$' + v.toLocaleString('en-AU',{maximumFractionDigits:0}) },
+          grid: { color:'rgba(0,0,0,0.04)' }
+        }
+      }
+    }
   });
 }
 
-function updatePositions() {
+function renderPositions(){
   const el = document.getElementById('positions-list');
-  if (!allPositions.length) { el.innerHTML = '<div class="empty">No open positions yet</div>'; return; }
+  if(!allPositions.length){ el.innerHTML = '<div class="empty">No open positions yet</div>'; return; }
   el.innerHTML = allPositions.map(p => {
     const pnl = p.pnl_pct || 0;
     const cls = pnl > 0 ? 'up' : pnl < 0 ? 'down' : 'neutral';
-    return '<div class="pos-row"><div><div class="pos-ticker">' + p.symbol + '</div><div class="pos-tier">' + (p.market||'') + ' · $' + (p.aud_amount||0).toFixed(0) + '</div></div><span class="pos-badge ' + cls + '">' + (pnl>=0?'+':'') + (pnl*100).toFixed(1) + '%</span></div>';
+    return `<div class="pos-row"><div><div class="pos-ticker">${p.symbol}</div><div class="pos-tier">${p.market||''} · $${(p.aud_amount||0).toFixed(0)}</div></div><span class="pos-badge ${cls}">${pnl>=0?'+':''}${(pnl*100).toFixed(1)}%</span></div>`;
   }).join('');
 }
 
-function updateTrades() {
-  const swing = allTrades.filter(t => !t.intraday && t.symbol !== 'BTC' && t.symbol !== 'ETH' && t.symbol !== 'SOL' && t.symbol !== 'XRP');
+function renderSignals(){
+  const signals = [
+    {name:'RSI',       val:allWeights.rsi       ?? 0.2},
+    {name:'MACD',      val:allWeights.macd      ?? 0.2},
+    {name:'Bollinger', val:allWeights.bollinger ?? 0.2},
+    {name:'Volume',    val:allWeights.volume    ?? 0.2},
+    {name:'MA cross',  val:allWeights.ma_cross  ?? 0.2},
+  ];
+  document.getElementById('signals-list').innerHTML = signals.map(s => {
+    const pct = Math.round(s.val * 100);
+    return `<div class="sig-row"><span class="sig-name">${s.name}</span><div class="sig-track"><div class="sig-fill" style="width:${pct}%"></div></div><span class="sig-pct">${pct}%</span></div>`;
+  }).join('');
+}
+
+function renderTrades(){
+  const crypto = ['BTC','ETH','SOL','XRP','ADA','DOGE','AVAX','LINK','LTC','BCH','DOT','UNI','AAVE','MATIC','ATOM'];
+  const swing = allTrades.filter(t => !t.intraday && !crypto.includes(t.symbol));
   const intra = allTrades.filter(t => t.intraday);
-  const crypto = allTrades.filter(t => ['BTC','ETH','SOL','XRP','ADA','DOGE','AVAX','LINK'].includes(t.symbol));
-  function renderTrades(trades, emptyMsg) {
-    if (!trades.length) return '<div class="empty">' + emptyMsg + '</div>';
-    return trades.slice(0,5).map(t => {
-      const ac = t.action==='BUY'?'buy':t.action==='SELL'?'sell':'stop';
+
+  function render(list, empty){
+    if(!list.length) return `<div class="empty">${empty}</div>`;
+    return list.slice(0,6).map(t => {
+      const ac = t.action === 'BUY' ? 'buy' : t.action === 'SELL' ? 'sell' : 'stop';
       const pnl = t.pnl_pct ? ' · ' + (t.pnl_pct*100>=0?'+':'') + (t.pnl_pct*100).toFixed(1) + '%' : '';
       const time = t.created_at ? new Date(t.created_at).toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'}) : '';
-      return '<div class="trade-row"><div class="trade-icon ' + ac + '">' + t.action + '</div><div class="trade-body"><div class="trade-title">' + t.symbol + pnl + '</div><div class="trade-detail">' + (t.details||'').substring(0,60) + '</div></div><div class="trade-time">' + time + '</div></div>';
+      const det = (t.details || '').substring(0,60);
+      return `<div class="trade-row"><div class="trade-icon ${ac}">${t.action}</div><div class="trade-body"><div class="trade-title">${t.symbol}${pnl}</div><div class="trade-detail">${det}</div></div><div class="trade-time">${time}</div></div>`;
     }).join('');
   }
-  document.getElementById('swing-list').innerHTML = renderTrades(swing, 'No swing trades yet — first briefing 8pm AEST');
-  document.getElementById('intraday-list').innerHTML = renderTrades(intra, 'Active 11:30pm–6am AEST');
+  document.getElementById('swing-list').innerHTML = render(swing, 'No swing trades yet — first briefing 8pm AEST');
+  document.getElementById('intraday-list').innerHTML = render(intra, 'Active 11:30pm–6am AEST');
 }
 
-function updateCryptoChecks(checks) {
-  const el = document.getElementById('crypto-list');
-  if (!checks.length) { el.innerHTML = '<div class="empty">Waiting for first crypto scan...</div>'; return; }
-  const latest = checks[0];
-  let opps = [];
-  try { opps = JSON.parse(latest.opportunities || '[]'); } catch(e) {}
-  let html = '';
-  if (opps.length) {
-    html += '<div style="font-size:10px;color:#9aa0a6;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:10px;">Scanning right now</div>';
-    html += opps.slice(0,5).map(o => {
-      const rsi = o.rsi ? parseFloat(o.rsi).toFixed(0) : '—';
-      const rsiColor = o.rsi < 35 ? '#1a7340' : o.rsi > 65 ? '#c0392b' : '#9aa0a6';
-      const score = o.opportunity_score ? parseFloat(o.opportunity_score).toFixed(1) : '—';
-      const chg = o.change_1d_pct !== undefined ? (o.change_1d_pct >= 0 ? '+' : '') + parseFloat(o.change_1d_pct).toFixed(1) + '%' : '—';
-      const chgColor = parseFloat(o.change_1d_pct||0) >= 0 ? '#1a7340' : '#c0392b';
-      const vol = o.volume_ratio ? parseFloat(o.volume_ratio).toFixed(1) + 'x' : '—';
-      return '<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid #f0f0f0;">' +
-        '<span style="font-size:13px;font-weight:600;min-width:55px;color:#1a1a2e;">' + o.symbol + '</span>' +
-        '<span style="font-size:11px;color:#9aa0a6;">RSI <strong style="color:' + rsiColor + '">' + rsi + '</strong></span>' +
-        '<span style="font-size:11px;color:#9aa0a6;">1d <strong style="color:' + chgColor + '">' + chg + '</strong></span>' +
-        '<span style="font-size:11px;color:#9aa0a6;">Vol <strong style="color:#555">' + vol + '</strong></span>' +
-        '<span style="font-size:10px;padding:2px 8px;border-radius:10px;background:#f5f6f8;border:1px solid #e8eaed;color:#555;">Score ' + score + '</span>' +
-        '</div>';
-    }).join('');
-    html += '<div style="height:10px;"></div>';
+function renderScanner(){
+  const el = document.getElementById('crypto-scanner');
+  // Merge CoinGecko live prices with tracked coins for the "scanner" view.
+  if(!Object.keys(pulseData).length){
+    el.innerHTML = '<div class="empty">Loading...</div>';
+    return;
   }
-  html += '<div style="font-size:10px;color:#9aa0a6;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:10px;">Recent decisions</div>';
-  html += checks.slice(0,5).map(c => {
-    const time = c.checked_at ? new Date(c.checked_at).toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'}) : '';
-    let actions = [];
-    try { actions = JSON.parse(c.actions || '[]'); } catch(e) {}
-    const hasAction = actions.some(a => a.action !== 'HOLD');
-    const bg = hasAction ? '#e8f5e9' : '#f5f6f8';
-    const col = hasAction ? '#1a7340' : '#9aa0a6';
-    const bdr = hasAction ? '#a5d6a7' : '#e8eaed';
-    return '<div style="display:flex;align-items:flex-start;gap:10px;padding:7px 0;border-bottom:1px solid #f0f0f0;">' +
-      '<div style="width:36px;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;flex-shrink:0;background:' + bg + ';color:' + col + ';border:1px solid ' + bdr + ';">' + (hasAction?'ACT':'HOLD') + '</div>' +
-      '<div style="flex:1;min-width:0;"><div style="font-size:12px;font-weight:500;color:#1a1a2e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + (c.reasoning || 'Scanning...') + '</div></div>' +
-      '<div style="font-size:10px;color:#c4c7cc;flex-shrink:0;padding-top:2px;">' + time + '</div>' +
-      '</div>';
+  let html = `<div class="scan-row header"><span>Coin</span><span></span><span>24h %</span><span>Price</span><span></span><span></span></div>`;
+  // Rank by absolute 24h change so movers float to top
+  const ranked = PULSE_COINS.map(c => ({...c, data: pulseData[c.id] || {}}))
+    .filter(x => x.data.aud !== undefined)
+    .sort((a,b) => Math.abs(b.data.aud_24h_change||0) - Math.abs(a.data.aud_24h_change||0));
+  html += ranked.map(c => {
+    const chg = c.data.aud_24h_change || 0;
+    const chgCls = chg >= 0 ? 'up' : 'down';
+    const chgTxt = (chg>=0?'+':'') + chg.toFixed(2) + '%';
+    const price = c.data.aud;
+    const priceFmt = price >= 100 ? '$' + price.toLocaleString('en-AU',{maximumFractionDigits:0}) : price < 1 ? '$' + price.toFixed(4) : '$' + price.toFixed(2);
+    const mover = Math.abs(chg) > 3 ? 'hot' : '';
+    return `<div class="scan-row">
+      <span class="scan-sym">${c.sym}</span>
+      <span style="color:#9aa0a6;font-size:10px;">${c.name}</span>
+      <span class="scan-chg" style="color:${chg>=0?'#1a7340':'#c0392b'};">${chgTxt}</span>
+      <span class="scan-vol">${priceFmt}</span>
+      <span class="scan-score ${mover}">${Math.abs(chg)>3?'MOVER':'—'}</span>
+      <span></span>
+    </div>`;
   }).join('');
   el.innerHTML = html;
+  document.getElementById('scan-updated').textContent = 'Updated ' + new Date().toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'});
 }
 
-function updateSignals() {
-  if (!Object.keys(allWeights).length) return;
-  const signals = [{name:'RSI',val:allWeights.rsi||0.2},{name:'MACD',val:allWeights.macd||0.2},{name:'Bollinger',val:allWeights.bollinger||0.2},{name:'Volume',val:allWeights.volume||0.2},{name:'MA cross',val:allWeights.ma_cross||0.2}];
-  document.getElementById('signals-list').innerHTML = signals.map(s => {
-    const pct = Math.round(s.val*100);
-    return '<div class="sig-row"><span class="sig-name">' + s.name + '</span><div class="sig-track"><div class="sig-fill" style="width:' + pct + '%"></div></div><span class="sig-pct">' + pct + '%</span></div>';
-  }).join('');
-}
-
-function updateMarketStatus() {
+function renderMarketStatus(){
   const now = new Date();
   const aestHour = (now.getUTCHours() + 10) % 24;
-  const isWeekday = now.getDay() > 0 && now.getDay() < 6;
+  const day = now.getUTCDay(); // 0=Sun
+  // Rough: US market open ~23:30 AEST weekdays to 06:00 AEST next day
+  const isWeekday = day >= 1 && day <= 5;
   const isOpen = isWeekday && (aestHour >= 23 || aestHour < 6);
-  const el = document.getElementById('market-status');
-  const il = document.getElementById('intraday-status');
-  if (isOpen) { el.innerHTML = '<span class="dot dot-on"></span>Open now'; il.innerHTML = '<span class="dot dot-on"></span>Active'; }
-  else { el.innerHTML = '<span class="dot dot-warn"></span>Closed'; il.innerHTML = '<span class="dot dot-warn"></span>Standby'; }
+  const ms = document.getElementById('market-status');
+  const is = document.getElementById('intraday-status');
+  if(isOpen){
+    ms.innerHTML = '<span class="dot dot-on"></span>Open';
+    is.innerHTML = '<span class="dot dot-on"></span>Active';
+  } else {
+    ms.innerHTML = '<span class="dot dot-warn"></span>Closed';
+    is.innerHTML = '<span class="dot dot-warn"></span>Standby';
+  }
 }
 
-const assetData = {
-  spy:{ticker:'SPY',name:'S&P 500 ETF',tier:'Conservative',action:'HOLD',actionClass:'hold',reasoning:'Awaiting first evening briefing at 8pm AEST.',signals:[{n:'RSI',v:'Pending',c:'neut'},{n:'MACD',v:'Pending',c:'neut'},{n:'Bollinger',v:'Pending',c:'neut'},{n:'Volume',v:'Pending',c:'neut'},{n:'MA 20/50',v:'Pending',c:'neut'},{n:'Price',v:'Live soon',c:'neut'}],conf:0},
-  qqq:{ticker:'QQQ',name:'Nasdaq 100 ETF',tier:'Conservative',action:'HOLD',actionClass:'hold',reasoning:'Awaiting first evening briefing.',signals:[{n:'RSI',v:'Pending',c:'neut'},{n:'MACD',v:'Pending',c:'neut'},{n:'Bollinger',v:'Pending',c:'neut'},{n:'Volume',v:'Pending',c:'neut'},{n:'MA 20/50',v:'Pending',c:'neut'},{n:'Price',v:'Live soon',c:'neut'}],conf:0},
-  nvda:{ticker:'NVDA',name:'Nvidia Corp',tier:'Moderate',action:'HOLD',actionClass:'hold',reasoning:'Awaiting first evening briefing.',signals:[{n:'RSI',v:'Pending',c:'neut'},{n:'MACD',v:'Pending',c:'neut'},{n:'Bollinger',v:'Pending',c:'neut'},{n:'Volume',v:'Pending',c:'neut'},{n:'MA 20/50',v:'Pending',c:'neut'},{n:'Price',v:'Live soon',c:'neut'}],conf:0},
-  tsla:{ticker:'TSLA',name:'Tesla Inc',tier:'Moderate',action:'HOLD',actionClass:'hold',reasoning:'Awaiting first evening briefing.',signals:[{n:'RSI',v:'Pending',c:'neut'},{n:'MACD',v:'Pending',c:'neut'},{n:'Bollinger',v:'Pending',c:'neut'},{n:'Volume',v:'Pending',c:'neut'},{n:'MA 20/50',v:'Pending',c:'neut'},{n:'Price',v:'Live soon',c:'neut'}],conf:0},
-  meta:{ticker:'META',name:'Meta Platforms',tier:'Moderate',action:'HOLD',actionClass:'hold',reasoning:'Awaiting first evening briefing.',signals:[{n:'RSI',v:'Pending',c:'neut'},{n:'MACD',v:'Pending',c:'neut'},{n:'Bollinger',v:'Pending',c:'neut'},{n:'Volume',v:'Pending',c:'neut'},{n:'MA 20/50',v:'Pending',c:'neut'},{n:'Price',v:'Live soon',c:'neut'}],conf:0},
-  btc:{ticker:'BTC',name:'Bitcoin',tier:'High risk',action:'HOLD',actionClass:'hold',reasoning:'Monitoring 24/7.',signals:[{n:'RSI',v:'Pending',c:'neut'},{n:'MACD',v:'Pending',c:'neut'},{n:'Bollinger',v:'Pending',c:'neut'},{n:'Volume',v:'Pending',c:'neut'},{n:'Trend',v:'Pending',c:'neut'},{n:'Price',v:'Live soon',c:'neut'}],conf:0},
-  eth:{ticker:'ETH',name:'Ethereum',tier:'High risk',action:'HOLD',actionClass:'hold',reasoning:'Monitoring 24/7.',signals:[{n:'RSI',v:'Pending',c:'neut'},{n:'MACD',v:'Pending',c:'neut'},{n:'Bollinger',v:'Pending',c:'neut'},{n:'Volume',v:'Pending',c:'neut'},{n:'Trend',v:'Pending',c:'neut'},{n:'Price',v:'Live soon',c:'neut'}],conf:0},
-};
+function renderIntelligence(){
+  const latest = allChecks[0];
+  if(latest){
+    const time = new Date(latest.checked_at).toLocaleString('en-AU',{hour:'2-digit',minute:'2-digit',day:'numeric',month:'short'});
+    document.getElementById('market-summary').textContent = latest.reasoning || 'Claude returned no reasoning for the latest check.';
+    document.getElementById('intel-date').textContent = 'Last check: ' + time;
+  } else {
+    document.getElementById('market-summary').textContent = 'RivX is online. First briefing 8pm AEST. Crypto monitoring every 5 minutes.';
+    document.getElementById('intel-date').textContent = 'Awaiting first check';
+  }
 
-function showAsset(btn, key) {
-  document.querySelectorAll('.atab').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  const a = assetData[key];
-  const cm = {bull:'bull',bear:'bear',neut:''};
-  document.getElementById('asset-panel').innerHTML =
-    '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">' +
-    '<div><div class="asset-ticker">' + a.ticker + ' <span style="font-size:12px;font-weight:400;color:#9aa0a6;">' + a.name + '</span></div><div style="font-size:11px;color:#9aa0a6;margin-top:2px;">' + a.tier + '</div></div>' +
-    '<span class="asset-action ' + a.actionClass + '">' + a.action + '</span></div>' +
-    '<div class="asset-reasoning">' + a.reasoning + '</div>' +
-    '<div class="sig-pills">' + a.signals.map(s => '<div class="sig-pill"><div class="sig-pill-name">' + s.n + '</div><div class="sig-pill-val ' + (cm[s.c]||'') + '">' + s.v + '</div></div>').join('') + '</div>' +
-    (a.conf > 0 ? '<div class="conf-row"><span class="conf-label">Confidence</span><div class="conf-track"><div class="conf-fill" style="width:' + a.conf + '%;"></div></div><span class="conf-val">' + a.conf + '%</span></div>' : '');
+  // Decision stream grouped by hour
+  const streamEl = document.getElementById('decision-stream');
+  if(!allChecks.length){
+    streamEl.innerHTML = '<div class="empty">Decisions will appear here as the bot runs</div>';
+    document.getElementById('stream-count').textContent = '0 decisions';
+    return;
+  }
+  document.getElementById('stream-count').textContent = allChecks.length + ' decisions';
+
+  // Group by "last hour", "earlier today", "yesterday", "older"
+  const now = Date.now();
+  const groups = { 'Last hour': [], 'Earlier today': [], 'Yesterday': [], 'Older': [] };
+  const today = new Date().toDateString();
+  const yDate = new Date(now - 86400000).toDateString();
+  allChecks.forEach(c => {
+    const ts = new Date(c.checked_at).getTime();
+    const d = new Date(c.checked_at).toDateString();
+    if(now - ts <= 3600000) groups['Last hour'].push(c);
+    else if(d === today) groups['Earlier today'].push(c);
+    else if(d === yDate) groups['Yesterday'].push(c);
+    else groups['Older'].push(c);
+  });
+
+  let html = '';
+  Object.entries(groups).forEach(([label, items]) => {
+    if(!items.length) return;
+    html += `<div class="stream-group"><div class="stream-group-label">${label} · ${items.length}</div>`;
+    html += items.slice(0, 20).map(c => {
+      const time = new Date(c.checked_at).toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'});
+      let actions = [];
+      try { actions = JSON.parse(c.actions || '[]'); } catch(e) {}
+      const hasAction = actions.some(a => a.action && a.action !== 'HOLD');
+      const firstAction = actions.find(a => a.action) || {action:'HOLD'};
+      const badge = hasAction ? (firstAction.action === 'BUY' ? 'buy' : 'sell') : 'hold';
+      const badgeTxt = hasAction ? firstAction.action : 'HOLD';
+      return `<div class="stream-row">
+        <span class="stream-time">${time}</span>
+        <span class="stream-badge ${badge}">${badgeTxt}</span>
+        <span class="stream-text">${c.reasoning || '(no reasoning returned)'}</span>
+      </div>`;
+    }).join('');
+    html += '</div>';
+  });
+  streamEl.innerHTML = html;
 }
 
-function generateExport(type) {
+function renderLearningLog(){
+  const el = document.getElementById('learning-log');
+  const entries = [];
+
+  // Signal weight history
+  // (allWeights comes back with limit 10 above — we need to re-fetch for the full log)
+  // We already have at least the first row; show a system-start entry
+  entries.push({
+    date: '24 APR 2026 · SYSTEM INITIALISED',
+    text: 'RivX is online. Signal weights initialised equally at 20% each. The bot will adapt weights after trades close, rewarding signals that predicted profitable moves.',
+    tags: ['System start', 'Paper mode']
+  });
+
+  // Add entries for each weight history row beyond the first
+  // (sb returned up to 10 rows, ordered desc)
+  // Skip in this simple version — can extend later
+
+  // Recent trades become learning events
+  allTrades.slice(0,5).forEach(t => {
+    if(!t.created_at) return;
+    const d = new Date(t.created_at);
+    const ds = d.toLocaleDateString('en-AU',{day:'numeric',month:'short',year:'numeric'}).toUpperCase();
+    const time = d.toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'});
+    const pnl = t.pnl_pct ? ` P&L ${(t.pnl_pct*100>=0?'+':'')}${(t.pnl_pct*100).toFixed(1)}%` : '';
+    entries.push({
+      date: `${ds} · ${time} · ${t.action} ${t.symbol}${pnl}`,
+      text: t.details || '(no details)',
+      tags: [t.action === 'BUY' ? 'Entry' : 'Exit', pnl ? 'Realised' : 'Open']
+    });
+  });
+
+  el.innerHTML = entries.map(e => `
+    <div class="learn-entry">
+      <div class="learn-date">${e.date}</div>
+      <div class="learn-text">${e.text}</div>
+      ${e.tags.map(t => `<span class="learn-tag">${t}</span>`).join('')}
+    </div>
+  `).join('');
+}
+
+function renderBotStats(){
+  document.getElementById('total-trades').textContent = allTrades.length;
+  if(allChecks.length){
+    const last = allChecks[0];
+    document.getElementById('last-check').textContent = new Date(last.checked_at).toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'});
+    const today = new Date().toDateString();
+    const todayCount = allChecks.filter(c => new Date(c.checked_at).toDateString() === today).length;
+    document.getElementById('checks-today').textContent = todayCount;
+  } else {
+    document.getElementById('last-check').textContent = '—';
+    document.getElementById('checks-today').textContent = '0';
+  }
+}
+
+// ─── Countdown ─────────────────────────────────────────────────────────────
+// Bot runs crypto check every 5 mins. Estimate next run from last check timestamp.
+function tickCountdown(){
+  if(!allChecks.length){
+    document.getElementById('countdown').textContent = 'Next scan —:—';
+    return;
+  }
+  const lastTs = new Date(allChecks[0].checked_at).getTime();
+  const nextTs = lastTs + 5 * 60 * 1000;
+  const secs = Math.max(0, Math.floor((nextTs - Date.now()) / 1000));
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  document.getElementById('countdown').textContent = `Next scan ${m}:${String(s).padStart(2,'0')}`;
+}
+
+// ─── Export ────────────────────────────────────────────────────────────────
+function generateExport(type){
   const latest = allSnapshots[0] || {};
   const total = latest.total_aud || 5000;
   const net = total - 5000;
   const now = new Date().toLocaleDateString('en-AU',{weekday:'short',day:'numeric',month:'short',year:'numeric'});
+  const wins = allTrades.filter(t => t.pnl_pct > 0).length;
+  const wr = allTrades.length ? Math.round(wins/allTrades.length*100) + '%' : 'N/A';
+  const w = allWeights;
+  const hr = '─'.repeat(30);
   let text = '';
-  if (type==='daily') text = 'RivX Daily Report — ' + now + '\n' + '─'.repeat(30) + '\nPortfolio: $' + total.toFixed(2) + '\nNet P&L: ' + (net>=0?'+':'') + '$' + Math.abs(net).toFixed(2) + '\nOpen positions: ' + allPositions.length + '\nTotal trades: ' + allTrades.length + '\n' + '─'.repeat(30) + '\nPowered by RivX';
-  else if (type==='weekly') { const wins=allTrades.filter(t=>t.pnl_pct>0).length; text = 'RivX Weekly — ' + now + '\n' + '─'.repeat(30) + '\nPortfolio: $' + total.toFixed(2) + '\nNet P&L: ' + (net>=0?'+':'') + '$' + Math.abs(net).toFixed(2) + '\nTrades: ' + allTrades.length + ' · Win rate: ' + (allTrades.length?Math.round(wins/allTrades.length*100)+'%':'N/A') + '\n' + '─'.repeat(30) + '\nPowered by RivX'; }
-  else if (type==='trades') { text = 'RivX Trades — ' + now + '\n' + '─'.repeat(30) + '\n' + (allTrades.slice(0,10).map(t => t.action+' '+t.symbol+(t.pnl_pct?' P&L '+(t.pnl_pct*100>=0?'+':'')+(t.pnl_pct*100).toFixed(1)+'%':'')).join('\n')||'No trades yet') + '\n' + '─'.repeat(30) + '\nPowered by RivX'; }
-  else if (type==='intelligence') text = 'RivX Intelligence — ' + now + '\n' + '─'.repeat(30) + '\n' + document.getElementById('market-summary').textContent.trim() + '\n' + '─'.repeat(30) + '\nPowered by RivX';
-  else if (type==='learning') { const w=allWeights; text = 'RivX Learning — ' + now + '\n' + '─'.repeat(30) + '\nRSI: ' + Math.round((w.rsi||0.2)*100) + '%\nMACD: ' + Math.round((w.macd||0.2)*100) + '%\nBollinger: ' + Math.round((w.bollinger||0.2)*100) + '%\nVolume: ' + Math.round((w.volume||0.2)*100) + '%\nMA Cross: ' + Math.round((w.ma_cross||0.2)*100) + '%\n' + '─'.repeat(30) + '\nPowered by RivX'; }
-  else { const wins=allTrades.filter(t=>t.pnl_pct>0).length; const w=allWeights; text = 'RivX Full Report — ' + now + '\n' + '─'.repeat(30) + '\nPortfolio: $' + total.toFixed(2) + '\nNet P&L: ' + (net>=0?'+':'') + '$' + Math.abs(net).toFixed(2) + '\nTrades: ' + allTrades.length + ' · Win rate: ' + (allTrades.length?Math.round(wins/allTrades.length*100)+'%':'N/A') + '\n\nSignal weights:\nRSI ' + Math.round((w.rsi||0.2)*100) + '% · MACD ' + Math.round((w.macd||0.2)*100) + '% · BB ' + Math.round((w.bollinger||0.2)*100) + '%\n\n' + document.getElementById('market-summary').textContent.trim().substring(0,200) + '...\n' + '─'.repeat(30) + '\nPowered by RivX'; }
+  if(type==='daily') text = `RivX Daily — ${now}\n${hr}\nPortfolio: $${total.toFixed(2)}\nNet P&L: ${(net>=0?'+':'')}$${Math.abs(net).toFixed(2)}\nOpen positions: ${allPositions.length}\nTotal trades: ${allTrades.length}\nChecks today: ${document.getElementById('checks-today').textContent}\n${hr}\nPowered by RivX`;
+  else if(type==='weekly') text = `RivX Weekly — ${now}\n${hr}\nPortfolio: $${total.toFixed(2)}\nNet P&L: ${(net>=0?'+':'')}$${Math.abs(net).toFixed(2)}\nTrades: ${allTrades.length} · Win rate: ${wr}\n${hr}\nPowered by RivX`;
+  else if(type==='trades') text = `RivX Trades — ${now}\n${hr}\n${allTrades.slice(0,10).map(t => `${t.action} ${t.symbol}${t.pnl_pct?' '+(t.pnl_pct*100>=0?'+':'')+(t.pnl_pct*100).toFixed(1)+'%':''}`).join('\n')||'No trades yet'}\n${hr}\nPowered by RivX`;
+  else if(type==='intelligence') text = `RivX Intelligence — ${now}\n${hr}\n${document.getElementById('market-summary').textContent.trim()}\n${hr}\nPowered by RivX`;
+  else if(type==='learning') text = `RivX Learning — ${now}\n${hr}\nRSI ${Math.round((w.rsi||0.2)*100)}% · MACD ${Math.round((w.macd||0.2)*100)}% · BB ${Math.round((w.bollinger||0.2)*100)}% · Vol ${Math.round((w.volume||0.2)*100)}% · MA ${Math.round((w.ma_cross||0.2)*100)}%\n${hr}\nPowered by RivX`;
+  else text = `RivX Full Report — ${now}\n${hr}\nPortfolio: $${total.toFixed(2)}\nNet P&L: ${(net>=0?'+':'')}$${Math.abs(net).toFixed(2)}\nTrades: ${allTrades.length} · Win rate: ${wr}\nChecks today: ${document.getElementById('checks-today').textContent}\n\nLatest view:\n${document.getElementById('market-summary').textContent.trim().substring(0,240)}\n${hr}\nPowered by RivX`;
   const preview = document.getElementById('export-preview');
   const copyBtn = document.getElementById('copy-btn');
   preview.textContent = text;
@@ -630,7 +930,7 @@ function generateExport(type) {
   copyBtn.dataset.text = text;
 }
 
-function copyExport() {
+function copyExport(){
   navigator.clipboard.writeText(document.getElementById('copy-btn').dataset.text).then(() => {
     const t = document.getElementById('toast');
     t.style.display = 'block';
@@ -638,10 +938,19 @@ function copyExport() {
   });
 }
 
-function killSwitch() {
-  if (confirm('Send STOP ALL to RivX? This halts all trading immediately.')) {
+function killSwitch(){
+  if(confirm('Send STOP ALL to RivX? This halts all trading immediately.')){
     alert('Send "STOP ALL" to RivX_trading_bot on Telegram to activate the kill switch.');
   }
+}
+
+// ─── Boot ──────────────────────────────────────────────────────────────────
+function startApp(){
+  loadAll();
+  setInterval(loadAll, 60000);           // Full refresh every minute
+  setInterval(loadPulse, 30000);         // Pulse every 30s (faster feel)
+  setInterval(tickCountdown, 1000);      // Countdown tick
+  setInterval(renderMarketStatus, 60000);
 }
 </script>
 </body>
