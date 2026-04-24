@@ -257,7 +257,7 @@ def _score_stock(symbol: str) -> dict | None:
         score += 0.5
         reasons.append("Downtrend — reversal watch")
 
-    if score < 2.0:
+    if score < 1.0:  # Lower threshold
         return None  # Not interesting enough
 
     return {
@@ -317,7 +317,7 @@ def _score_crypto(coin: str, pair: str) -> dict | None:
         score += 1.0
         reasons.append(f"7d trend {change_7d:+.1f}%")
 
-    if score < 2.0:
+    if score < 1.0:  # Lower threshold - show more opportunities
         return None
 
     return {
