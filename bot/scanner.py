@@ -133,44 +133,42 @@ def get_crypto_candidates(coinspot_symbols: set) -> list:
                 "market_cap":  float(c.get("market_cap") or 0),
             }
 
+    # Helper: CoinGecko has strict rate limits on the free tier.
+    # Retry on 429 with exponential backoff, and space successive calls.
+    def _cg_get(params, label):
+        for attempt in range(4):
+            try:
+                r = requests.get(f"{CG_BASE}/coins/markets", params=params, timeout=20)
+                if r.status_code == 429:
+                    wait = 8 * (attempt + 1)  # 8, 16, 24, 32 seconds
+                    log.warning(f"CoinGecko {label}: rate-limited, waiting {wait}s (attempt {attempt+1}/4)")
+                    time.sleep(wait)
+                    continue
+                r.raise_for_status()
+                return r.json()
+            except Exception as e:
+                if attempt == 3:
+                    log.warning(f"CoinGecko {label} pass failed after retries: {e}")
+                    return None
+                time.sleep(4 * (attempt + 1))
+        return None
+
     # Pass 1 — top 200 by volume
-    try:
-        r = requests.get(
-            f"{CG_BASE}/coins/markets",
-            params={"vs_currency":"usd", "order":"volume_desc",
-                    "per_page":250, "page":1, "price_change_percentage":"24h"},
-            timeout=15,
-        )
-        r.raise_for_status()
-        absorb(r.json())
-    except Exception as e:
-        log.warning(f"CoinGecko volume pass failed: {e}")
+    data = _cg_get({"vs_currency":"usd", "order":"volume_desc",
+                    "per_page":250, "page":1, "price_change_percentage":"24h"}, "volume")
+    if data: absorb(data)
+    time.sleep(3)  # space between passes
 
     # Pass 2 — top gainers (by 24h % change)
-    try:
-        r = requests.get(
-            f"{CG_BASE}/coins/markets",
-            params={"vs_currency":"usd", "order":"price_change_percentage_24h_desc",
-                    "per_page":50, "page":1, "price_change_percentage":"24h"},
-            timeout=15,
-        )
-        r.raise_for_status()
-        absorb(r.json())
-    except Exception as e:
-        log.warning(f"CoinGecko gainers pass failed: {e}")
+    data = _cg_get({"vs_currency":"usd", "order":"price_change_percentage_24h_desc",
+                    "per_page":50, "page":1, "price_change_percentage":"24h"}, "gainers")
+    if data: absorb(data)
+    time.sleep(3)
 
     # Pass 3 — top losers (reversals are also opportunities)
-    try:
-        r = requests.get(
-            f"{CG_BASE}/coins/markets",
-            params={"vs_currency":"usd", "order":"price_change_percentage_24h_asc",
-                    "per_page":30, "page":1, "price_change_percentage":"24h"},
-            timeout=15,
-        )
-        r.raise_for_status()
-        absorb(r.json())
-    except Exception as e:
-        log.warning(f"CoinGecko losers pass failed: {e}")
+    data = _cg_get({"vs_currency":"usd", "order":"price_change_percentage_24h_asc",
+                    "per_page":30, "page":1, "price_change_percentage":"24h"}, "losers")
+    if data: absorb(data)
 
     result = list(candidates.values())
     log.info(f"Crypto candidates after CoinSpot filter: {len(result)}")
