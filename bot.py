@@ -304,21 +304,39 @@ def run_crypto_check(db, tg, coinspot):
 
 def run_intraday_snapshot(db):
     """
-    Write a portfolio value snapshot every 5 mins.
-    Feeds the dashboard's intraday chart. Non-critical — errors logged, not raised.
+    Write a portfolio value snapshot every 5 mins using live market prices.
+    Feeds the dashboard's portfolio chart. Non-critical — errors logged, not raised.
     """
     try:
         positions = db.get_positions()
-        deployed = sum(p.get("aud_amount", 0) for p in positions.values())
-        # For paper mode, "cash" is whatever isn't deployed out of the $5000 starting balance.
-        # Later when we track real P&L here, this becomes meaningful.
-        cash = max(0, 5000 - deployed)
-        total = deployed + cash  # placeholder — real version uses broker balance once trades execute
+        symbols   = list(positions.keys())
+
+        # Fetch current prices for every holding so we track real value, not entry cost
+        market_data = get_market_data(symbols) if symbols else {}
+
+        # Compute current AUD value of each position at today's price
+        current_value = 0.0
+        for sym, pos in positions.items():
+            entry_price   = pos.get("entry_price", 0) or 0
+            aud_amount    = pos.get("aud_amount", 0) or 0
+            current_price = market_data.get(sym, {}).get("price", 0) or 0
+
+            if entry_price > 0 and current_price > 0:
+                # Value scales with price movement since entry
+                current_value += aud_amount * (current_price / entry_price)
+            else:
+                # Price unavailable — fall back to entry cost
+                current_value += aud_amount
+
+        # Cash = the $5000 starting balance minus what we deployed at entry
+        deployed_entry = sum(p.get("aud_amount", 0) for p in positions.values())
+        cash  = max(0, 5000 - deployed_entry)
+        total = current_value + cash
 
         db._post("intraday_snapshots", {
             "recorded_at":    datetime.utcnow().isoformat(),
             "total_aud":      round(total, 2),
-            "deployed_aud":   round(deployed, 2),
+            "deployed_aud":   round(current_value, 2),
             "cash_aud":       round(cash, 2),
             "open_positions": len(positions),
         })
