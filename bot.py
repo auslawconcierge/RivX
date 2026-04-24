@@ -3,7 +3,7 @@ RivX AutoTrader — Main Bot
 Runs continuously on Render.
 
 Loops:
-  1. Evening briefing  — 9pm AEST, full analysis, sends plan to Telegram for approval
+  1. Evening briefing  — 8pm AEST, full analysis, sends plan to Telegram for approval
   2. Intraday loop     — every 2 mins during US market hours (11:30pm-6am AEST)
   3. Crypto loop       — every 5 mins 24/7
   4. Question loop     — every 30s, answers user questions from the dashboard
