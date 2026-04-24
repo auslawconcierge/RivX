@@ -120,6 +120,29 @@ def get_crypto_movers() -> list:
         except Exception as e:
             log.debug(f"Skip {coin}: {e}")
 
+    # Always return top results even if scores are low
+    # In quiet markets everything may score low but we still need data
+    if not opportunities:
+        # Force include top coins with basic data even if no signal
+        for coin, pair in list(CRYPTO_UNIVERSE.items())[:5]:
+            try:
+                df = _fetch_crypto_bars(pair, days=5)
+                if not df.empty:
+                    closes = df["close"].astype(float)
+                    opportunities.append({
+                        "symbol": coin,
+                        "price_usd": round(float(closes.iloc[-1]), 4),
+                        "change_1d_pct": round(float((closes.iloc[-1]-closes.iloc[-2])/closes.iloc[-2]*100), 2) if len(closes)>=2 else 0,
+                        "change_7d_pct": 0,
+                        "rsi": None,
+                        "volume_ratio": 1.0,
+                        "opportunity_score": 0.0,
+                        "reasons": ["Low volatility — monitoring"],
+                        "type": "crypto",
+                    })
+            except Exception:
+                pass
+
     opportunities.sort(key=lambda x: x["opportunity_score"], reverse=True)
     top = opportunities[:8]
     log.info(f"Top crypto opportunities: {[o['symbol'] for o in top]}")
