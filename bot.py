@@ -59,9 +59,19 @@ def execute_action(symbol: str, action: str, reason: str,
                    positions: dict, market_data: dict,
                    confidence: float = 1.0, notify: bool = True) -> bool:
     """Execute a single trade action. Returns True if executed."""
-    config    = PORTFOLIO[symbol]
-    market    = config["market"]
-    allocated = config["allocated_aud"]
+    # Get config from PORTFOLIO or use defaults for scanner-picked assets
+    if symbol in PORTFOLIO:
+        config    = PORTFOLIO[symbol]
+        market    = config["market"]
+        allocated = config["allocated_aud"]
+    else:
+        # Scanner-picked asset not in default PORTFOLIO
+        # Determine market and use passed aud_amount
+        crypto_coins = ["BTC","ETH","SOL","XRP","ADA","DOGE","AVAX","LINK","LTC","BCH","DOT","UNI","AAVE","MATIC","ATOM"]
+        market    = "coinspot" if symbol in crypto_coins else "alpaca"
+        allocated = 400  # default position size for scanner picks
+        config    = {"stop_loss_pct": 0.10 if market == "coinspot" else 0.07,
+                     "take_profit_pct": 0.12 if market == "coinspot" else 0.08}
 
     if action == "BUY" and symbol not in positions:
         log.info(f"Executing BUY {symbol} — {reason}")
@@ -268,12 +278,11 @@ def run_crypto_check(db: SupabaseLogger, tg: TelegramNotifier,
 
     # Crypto stop-losses — always check
     positions = db.get_positions()
-    for sym in ["BTC", "ETH"]:
-        if sym not in positions:
+    for sym, pos in list(positions.items()):
+        if pos.get("market") != "coinspot":
             continue
-        pos       = positions[sym]
         pnl_pct   = pos.get("pnl_pct", 0)
-        stop_loss = PORTFOLIO[sym]["stop_loss_pct"]
+        stop_loss = PORTFOLIO[sym]["stop_loss_pct"] if sym in PORTFOLIO else 0.10
         if pnl_pct <= -stop_loss:
             log.warning(f"CRYPTO STOP-LOSS: {sym} at {pnl_pct:.1%}")
             execute_action(
@@ -335,7 +344,14 @@ def main():
     alpaca   = AlpacaTrader()
     coinspot = CoinSpotTrader()
 
-    tg.send(f"RivX is online. {'PAPER trading mode.' if PAPER_MODE else 'LIVE trading mode.'}")
+    # Only send startup message once per day to avoid spam on redeploys
+    startup_flag = db.get_flag("last_startup")
+    today = datetime.now(AEST).date().isoformat()
+    if startup_flag != today:
+        db.set_flag("last_startup", today)
+        tg.send(f"RivX is online. {'PAPER trading mode.' if PAPER_MODE else 'LIVE trading mode.'}")
+    else:
+        log.info("Startup suppressed — already sent today")
 
     last_intraday_check   = 0
     last_crypto_check     = 0
