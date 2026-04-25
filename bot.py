@@ -429,13 +429,13 @@ def _sync_alpaca_positions(db, alpaca):
 def run_snapshot(db, alpaca=None):
     """
     Pure Python. Every 5 min.
-    Writes portfolio value with live prices (CoinGecko for crypto, Alpaca for stocks).
+    Writes portfolio value with live prices (CoinSpot for crypto, Alpaca for stocks).
     Also pushes live Alpaca position data back to Supabase so the dashboard sees it.
     """
     try:
         positions = db.get_positions()
 
-        # 1) Live crypto prices via get_market_data (CoinGecko under the hood)
+        # 1) Live crypto prices via get_market_data (CoinSpot AUD prices)
         crypto_symbols = [s for s, p in positions.items()
                           if (p.get("market") or "").lower() != "alpaca"]
         market_data = get_market_data(crypto_symbols) if crypto_symbols else {}
