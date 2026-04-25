@@ -52,14 +52,53 @@ class CoinSpotTrader:
             return None
 
     def get_latest_price(self, coin: str) -> float:
+        """Try multiple CoinSpot endpoints — they return different shapes for different coins."""
+        sym = coin.upper()
+
+        # Try 1: /pubapi/v2/latest/{coin} — works for BTC, ETH, major coins
         try:
-            resp = requests.get(f"{COINSPOT_BASE}/pubapi/v2/latest/{coin.upper()}", timeout=5)
-            resp.raise_for_status()
-            data = resp.json()
-            return float(data["prices"]["last"])
+            resp = requests.get(f"{COINSPOT_BASE}/pubapi/v2/latest/{sym}", timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                # Shape A: {"prices": {"last": "..."}}
+                if isinstance(data.get("prices"), dict) and "last" in data["prices"]:
+                    return float(data["prices"]["last"])
+                # Shape B: {"prices": "..."}  (single value)
+                if isinstance(data.get("prices"), (str, int, float)):
+                    return float(data["prices"])
         except Exception as e:
-            log.error(f"Price fetch failed for {coin}: {e}")
-            return 0.0
+            log.debug(f"v2/latest/{sym} failed: {e}")
+
+        # Try 2: /pubapi/v2/latest (full list, lookup by key)
+        try:
+            resp = requests.get(f"{COINSPOT_BASE}/pubapi/v2/latest", timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                prices = data.get("prices", {})
+                if isinstance(prices, dict):
+                    entry = prices.get(sym) or prices.get(sym.lower())
+                    if isinstance(entry, dict) and "last" in entry:
+                        return float(entry["last"])
+                    if isinstance(entry, (str, int, float)):
+                        return float(entry)
+        except Exception as e:
+            log.debug(f"v2/latest list failed: {e}")
+
+        # Try 3: legacy v1 endpoint
+        try:
+            resp = requests.get(f"{COINSPOT_BASE}/pubapi/latest", timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                prices = data.get("prices", {})
+                if isinstance(prices, dict):
+                    entry = prices.get(sym.lower()) or prices.get(sym)
+                    if isinstance(entry, dict) and "last" in entry:
+                        return float(entry["last"])
+        except Exception as e:
+            log.debug(f"v1 fallback failed: {e}")
+
+        log.warning(f"Price unavailable for {sym} on CoinSpot — coin may not be tradeable")
+        return 0.0
 
     def buy(self, symbol: str, aud_amount: float) -> dict | None:
         coin = symbol.lower()
