@@ -91,6 +91,30 @@ class SupabaseLogger:
                     return True
         return False
 
+    def _post_with_fallback(self, table: str, data: dict,
+                            optional_fields: list = None) -> dict | None:
+        """
+        POST that retries without optional columns if the first attempt fails.
+        Same pattern as _patch_with_fallback but for inserts. Lets the bot start
+        writing new fields (executions, skipped_setups) before the user has run
+        the ALTER TABLE — the data goes in without those fields until they exist.
+        """
+        result = self._post(table, data)
+        if result is not None:
+            return result
+        if not optional_fields:
+            return None
+        trimmed = dict(data)
+        for field in optional_fields:
+            if field in trimmed:
+                trimmed.pop(field)
+                result = self._post(table, trimmed)
+                if result is not None:
+                    log.info(f"POST {table} succeeded after dropping '{field}' "
+                             f"— add this column in Supabase to persist it.")
+                    return result
+        return None
+
     # ── Trades ────────────────────────────────────────────────────────────────
 
     def log_trade(self, symbol: str, action: str, aud_amount: float,
