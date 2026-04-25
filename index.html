@@ -159,6 +159,41 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .fail-reason{color:#9aa0a6;flex:1;}
 .fail-time{color:#c4c7cc;font-size:11px;flex-shrink:0;}
 
+/* Detail panel — richer sections */
+.dp-section{background:#fafbfc;border:1px solid #e8eaed;border-radius:8px;padding:12px 14px;margin-top:12px;}
+.dp-section-title{font-size:10px;color:#9aa0a6;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:10px;font-weight:600;}
+.dp-pnl-row{display:grid;grid-template-columns:1fr auto;gap:6px 14px;font-size:12px;align-items:baseline;}
+.dp-pnl-k{color:#555;}
+.dp-pnl-v{text-align:right;font-variant-numeric:tabular-nums;color:#1a1a2e;}
+.dp-pnl-v.fee{color:#c0392b;}
+.dp-pnl-v.up{color:#1a7340;font-weight:600;}
+.dp-pnl-v.down{color:#c0392b;font-weight:600;}
+.dp-pnl-net{border-top:1px solid #e8eaed;padding-top:8px;margin-top:6px;font-weight:600;font-size:13px;}
+
+/* Risk levels */
+.risk-row{display:grid;grid-template-columns:auto 1fr auto;gap:8px 14px;align-items:center;font-size:12px;padding:8px 0;border-bottom:1px solid #eef0f2;}
+.risk-row:last-child{border-bottom:none;}
+.risk-icon{font-size:14px;width:20px;text-align:center;}
+.risk-text-label{font-weight:600;color:#1a1a2e;}
+.risk-text-detail{color:#9aa0a6;font-size:11px;margin-top:1px;line-height:1.4;}
+.risk-status{font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;white-space:nowrap;font-variant-numeric:tabular-nums;}
+.risk-status.ok{background:#e8f5e9;color:#1a7340;}
+.risk-status.warn{background:#fef3c7;color:#854d0e;}
+.risk-status.danger{background:#fdecea;color:#c0392b;}
+.risk-status.up{background:#e8f5e9;color:#1a7340;}
+.risk-status.down{background:#fdecea;color:#c0392b;}
+
+/* Per-symbol trade history */
+.sym-trade{display:grid;grid-template-columns:auto 1fr auto;gap:8px 12px;font-size:12px;padding:8px 0;border-bottom:1px solid #eef0f2;}
+.sym-trade:last-child{border-bottom:none;}
+.sym-trade-action{font-size:10px;font-weight:700;padding:3px 8px;border-radius:5px;letter-spacing:0.05em;align-self:start;}
+.sym-trade-action.buy{background:#e8f5e9;color:#1a7340;}
+.sym-trade-action.sell{background:#fdecea;color:#c0392b;}
+.sym-trade-body{min-width:0;}
+.sym-trade-line1{font-weight:500;color:#1a1a2e;}
+.sym-trade-line2{font-size:11px;color:#9aa0a6;margin-top:2px;line-height:1.4;}
+.sym-trade-time{font-size:10px;color:#c4c7cc;text-align:right;align-self:start;font-variant-numeric:tabular-nums;}
+
 /* Closed positions */
 .closed-list{display:flex;flex-direction:column;gap:10px;}
 .closed-card{background:#fafbfc;border:1px solid #e8eaed;border-radius:8px;padding:14px;}
@@ -836,7 +871,8 @@ function renderPositions(){
     const entryCost = entryCostAud(p);
     const qty       = Number(p.qty) || 0;
 
-    const cls = netAud > 0.01 ? 'up' : netAud < -0.01 ? 'down' : 'flat';
+    const cls = (valAud - entryCost) > 0.01 ? 'up' : (valAud - entryCost) < -0.01 ? 'down' : 'flat';
+    const valueDelta = valAud - entryCost;
     const active = selectedHolding === p.symbol ? 'active' : '';
     const grossSign = grossAud >= 0 ? '+' : '−';
     const feeSign = fees.total > 0.005 ? '−' : '';
@@ -854,13 +890,12 @@ function renderPositions(){
         <span class="pos-sym">${p.symbol}</span>
         <span class="pos-pct-badge ${cls}">${fmtSignedPct(netPctVal)} net</span>
       </div>
-      <div class="pos-headline ${cls}">${netSign}$${Math.abs(netAud).toFixed(2)}</div>
-      <div class="pos-headline-sub">net P&L if sold now · after est. ${fmtAud(fees.total)} fees</div>
+      <div class="pos-headline ${cls}">${fmtAud(valAud)}</div>
+      <div class="pos-headline-sub">worth now · ${valueDelta>=0?'+':'−'}${fmtAud(Math.abs(valueDelta))} from $${entryCost.toFixed(0)} deployed</div>
       <div class="pos-divider"></div>
-      <div class="pos-row"><span class="pos-row-k">Capital deployed</span><span class="pos-row-v">${fmtAud(entryCost)}</span></div>
-      <div class="pos-row"><span class="pos-row-k">Worth now (gross)</span><span class="pos-row-v">${fmtAud(valAud)}</span></div>
       <div class="pos-row"><span class="pos-row-k">Gross P&L</span><span class="pos-row-v ${grossAud>0.01?'up':grossAud<-0.01?'down':''}">${grossSign}${fmtAud(Math.abs(grossAud))} (${fmtSignedPct(grossPct)})</span></div>
-      <div class="pos-row"><span class="pos-row-k">Est. fees (round-trip)</span><span class="pos-row-v">${feeSign}${fmtAud(fees.total)}</span></div>
+      <div class="pos-row"><span class="pos-row-k">Est. round-trip fees</span><span class="pos-row-v">${feeSign}${fmtAud(fees.total)}</span></div>
+      <div class="pos-row"><span class="pos-row-k">Net P&L if sold now</span><span class="pos-row-v ${netAud>0.01?'up':netAud<-0.01?'down':''}">${netSign}${fmtAud(Math.abs(netAud))} (${fmtSignedPct(netPctVal)})</span></div>
       <div class="pos-foot">${sharesLine}${sharesLine?' · ':''}${entryLine} · ${p.market||'—'} · ${fmtRelativeFromIso(p.created_at)}</div>
     </div>`;
   }).join('');
@@ -1017,116 +1052,113 @@ async function selectHolding(sym){
 
   document.getElementById('holding-detail-card').style.display = 'block';
 
-  const entry = entryPriceAud(pos);
-  const cur = currentPriceAud(pos);
-  const valAud = marketValueAud(pos);
+  const stock     = isStock(pos);
+  const entry     = entryPriceAud(pos);
+  const cur       = currentPriceAud(pos);
+  const valAud    = marketValueAud(pos);
   const entryCost = entryCostAud(pos);
-  const grossAud = grossPnlAud(pos);
-  const grossPct = grossPnlPct(pos);
-  const fees = estimatedFeesAud(pos);
-  const netAud = grossAud - fees.total;
-  const netPct = netPnlPct(pos);
-  const qty = Number(pos.qty) || 0;
-  const profile = feeProfile(pos);
+  const grossAud  = grossPnlAud(pos);
+  const grossPct  = grossPnlPct(pos);
+  const fees      = estimatedFeesAud(pos);
+  const netAud    = grossAud - fees.total;
+  const netPct    = netPnlPct(pos);
+  const qty       = Number(pos.qty) || 0;
+  const profile   = feeProfile(pos);
+  const usdPnlPct = Number(pos.pnl_pct) || 0;
 
-  const marketLabel = isStock(pos) ? 'US stock · Alpaca' : 'Crypto · CoinSpot';
+  const marketLabel = stock ? 'US stock · Alpaca' : 'Crypto · CoinSpot';
   document.getElementById('holding-title').textContent = sym + ' detail';
   document.getElementById('holding-sub').textContent =
     marketLabel + ' · bought ' + fmtRelativeFromIso(pos.created_at) +
     ' · last priced ' + fmtRelativeFromIso(pos.last_priced_at || pos.created_at);
 
+  const valueDelta = valAud - entryCost;
+  const valueColor = valueDelta > 0.01 ? '#1a7340' : valueDelta < -0.01 ? '#c0392b' : '#1a1a2e';
+
   const priceEl = document.getElementById('holding-price');
   if(cur > 0){
-    const netCls2 = netAud >= 0 ? 'up' : 'down';
-    const netColor = netAud >= 0 ? '#1a7340' : '#c0392b';
-    const netSign = netAud >= 0 ? '+' : '−';
-    priceEl.innerHTML = `<div style="font-size:22px;font-weight:700;color:${netColor};letter-spacing:-0.5px;">${netSign}$${Math.abs(netAud).toFixed(2)} <span style="font-size:11px;color:#9aa0a6;font-weight:500;">net AUD</span></div>
-      <div style="font-size:11px;color:#9aa0a6;">worth ${fmtAud(valAud)} · ${fmtSignedPct(netPct)} after fees</div>`;
+    priceEl.innerHTML = `<div style="font-size:24px;font-weight:700;color:${valueColor};letter-spacing:-0.5px;">${fmtAud(valAud)} <span style="font-size:11px;color:#9aa0a6;font-weight:500;">AUD worth</span></div>
+      <div style="font-size:11px;color:#9aa0a6;">${valueDelta>=0?'+':'−'}${fmtAud(Math.abs(valueDelta))} from $${entryCost.toFixed(0)} deployed · ${fmtSignedPct(netPct)} after fees</div>`;
   } else {
     priceEl.innerHTML = `<div style="font-size:13px;color:#c4c7cc;">price syncing…</div>`;
   }
 
-  // Today's change for this position
   let todayLine = '';
-  if(isStock(pos) && pos.change_today != null){
-    const ch = Number(pos.change_today);
-    todayLine = `<div class="hd-stat-sub" style="color:${ch>=0?'#1a7340':'#c0392b'};">${fmtSignedPct(ch)} today (USD)</div>`;
-  } else if(!isStock(pos)){
+  if(stock && pos.change_today != null){
+    todayLine = `${fmtSignedPct(Number(pos.change_today))} today (USD)`;
+  } else if(!stock){
     const cg = SYM_TO_CG[pos.symbol];
     if(cg && livePrices[cg] && livePrices[cg].aud_24h_change != null){
-      const ch = Number(livePrices[cg].aud_24h_change)/100;
-      todayLine = `<div class="hd-stat-sub" style="color:${ch>=0?'#1a7340':'#c0392b'};">${fmtSignedPct(ch)} 24h</div>`;
+      todayLine = `${fmtSignedPct(Number(livePrices[cg].aud_24h_change)/100)} 24h`;
     }
   }
 
-  const grossCls = grossAud > 0.01 ? 'up' : grossAud < -0.01 ? 'down' : '';
-  const netCls = netAud > 0.01 ? 'up' : netAud < -0.01 ? 'down' : '';
-
-  // Top metrics — entry, current, value, gross P&L
-  const metricsHtml = `
+  const statsHtml = `
     <div class="hd-grid">
       <div class="hd-stat">
         <div class="hd-stat-label">Entry price</div>
         <div class="hd-stat-val">${entry>0 ? fmtPrice(entry) : '—'}</div>
-        <div class="hd-stat-sub">AUD per ${isStock(pos)?'share':'unit'}${qty>0?' · '+qty.toFixed(qty<1?6:(qty<100?4:2))+' held':''}</div>
+        <div class="hd-stat-sub">AUD per ${stock?'share':'unit'}${qty>0?' · '+qty.toFixed(qty<1?6:(qty<100?4:2))+' held':''}</div>
       </div>
       <div class="hd-stat">
         <div class="hd-stat-label">Current price</div>
         <div class="hd-stat-val">${cur>0 ? fmtPrice(cur) : '—'}</div>
-        <div class="hd-stat-sub">AUD${cur>0 ? ' · live' : ' · syncing'}</div>
-        ${todayLine}
+        <div class="hd-stat-sub">${cur>0 ? 'AUD · live' : 'syncing'}${todayLine?' · '+todayLine:''}</div>
       </div>
       <div class="hd-stat">
         <div class="hd-stat-label">Capital deployed</div>
         <div class="hd-stat-val">${fmtAud(entryCost)}</div>
-        <div class="hd-stat-sub">AUD spent</div>
+        <div class="hd-stat-sub">AUD spent at entry</div>
       </div>
       <div class="hd-stat">
-        <div class="hd-stat-label">Market value now</div>
-        <div class="hd-stat-val">${fmtAud(valAud)}</div>
-        <div class="hd-stat-sub">AUD${qty>0 ? ' · '+qty.toFixed(qty<1?6:(qty<100?4:2))+' × '+fmtPrice(cur) : ''}</div>
+        <div class="hd-stat-label">Position age</div>
+        <div class="hd-stat-val">${fmtRelativeFromIso(pos.created_at).replace(' ago','')}</div>
+        <div class="hd-stat-sub">since ${fmtDateTime(pos.created_at)}</div>
       </div>
     </div>`;
 
-  // P&L breakdown (gross vs net) with itemised fees
+  const grossCls = grossAud > 0.01 ? 'up' : grossAud < -0.01 ? 'down' : '';
+  const netCls   = netAud > 0.01 ? 'up' : netAud < -0.01 ? 'down' : '';
   const feeRows = fees.breakdown.map(b =>
-    `<tr><td style="padding:4px 0;color:#555;">${b.label}</td><td style="padding:4px 0;color:#9aa0a6;">${b.when}</td><td style="padding:4px 0;text-align:right;color:#c0392b;font-variant-numeric:tabular-nums;">−${fmtAud(b.aud)}</td></tr>`
-  ).join('') || '<tr><td colspan="3" style="padding:4px 0;color:#9aa0a6;">No fees in this venue.</td></tr>';
+    `<div class="dp-pnl-k" style="padding-left:14px;font-size:11px;">${b.label} <span style="color:#c4c7cc;">· ${b.when}</span></div><div class="dp-pnl-v fee" style="font-size:11px;">−${fmtAud(b.aud)}</div>`
+  ).join('') || '<div class="dp-pnl-k" style="padding-left:14px;font-size:11px;color:#9aa0a6;">No fees in this venue</div><div></div>';
 
-  const pnlBreakdownHtml = `
-    <div style="margin-top:14px;background:#fafbfc;border:1px solid #e8eaed;border-radius:8px;padding:14px;">
-      <div style="font-size:10px;color:#9aa0a6;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:10px;">P&L breakdown</div>
-      <div style="display:grid;grid-template-columns:1fr auto;gap:6px 12px;font-size:13px;align-items:baseline;">
-        <div style="color:#555;">Gross P&L (market move)</div>
-        <div class="hd-stat-val ${grossCls}" style="font-size:15px;text-align:right;">${fmtSignedAud(grossAud)} <span style="color:#9aa0a6;font-weight:400;font-size:12px;">(${fmtSignedPct(grossPct)})</span></div>
-
-        <div style="color:#555;">Estimated round-trip fees</div>
-        <div style="text-align:right;color:#c0392b;font-weight:600;font-size:14px;font-variant-numeric:tabular-nums;">−${fmtAud(fees.total)}</div>
-      </div>
-      <table style="width:100%;font-size:11px;margin-top:8px;border-top:1px solid #e8eaed;padding-top:6px;">
+  const pnlHtml = `
+    <div class="dp-section">
+      <div class="dp-section-title">P&L breakdown</div>
+      <div class="dp-pnl-row">
+        <div class="dp-pnl-k">Gross P&L (market move only)</div>
+        <div class="dp-pnl-v ${grossCls}">${fmtSignedAud(grossAud)} (${fmtSignedPct(grossPct)})</div>
+        <div class="dp-pnl-k" style="font-size:11px;color:#9aa0a6;margin-top:2px;">Estimated round-trip fees:</div>
+        <div class="dp-pnl-v fee" style="font-size:11px;margin-top:2px;">−${fmtAud(fees.total)}</div>
         ${feeRows}
-      </table>
-      <div style="display:grid;grid-template-columns:1fr auto;gap:6px 12px;font-size:13px;align-items:baseline;margin-top:10px;border-top:1px solid #e8eaed;padding-top:10px;">
-        <div style="color:#1a1a2e;font-weight:600;">Net P&L if sold now</div>
-        <div class="hd-stat-val ${netCls}" style="font-size:18px;text-align:right;">${fmtSignedAud(netAud)} <span style="color:#9aa0a6;font-weight:400;font-size:12px;">(${fmtSignedPct(netPct)})</span></div>
+        <div class="dp-pnl-k dp-pnl-net">Net P&L if sold now</div>
+        <div class="dp-pnl-v ${netCls} dp-pnl-net">${fmtSignedAud(netAud)} (${fmtSignedPct(netPct)})</div>
       </div>
-    </div>
-    <div style="margin-top:10px;padding:10px 12px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;font-size:11px;color:#854d0e;line-height:1.5;">
-      <strong>${profile.label}</strong> — ${profile.notes}
     </div>`;
 
-  // Reasoning from the matching BUY trade
-  const buyTrade = allTrades.find(t => t.symbol===sym && t.action==='BUY');
+  const riskHtml = renderRiskLevels(pos, stock, usdPnlPct);
+
+  const trades = allTrades.filter(t => t.symbol === sym).slice(0, 20);
+  const closedForSym = allClosed.filter(p => p.symbol === sym);
+  const tradeRows = renderSymbolTradeHistory(trades, closedForSym);
+
+  const buyTrade = trades.find(t => t.action==='BUY');
   const reasoningHtml = buyTrade && buyTrade.details
-    ? `<div class="hd-reasoning">
-        <div class="hd-reasoning-label">Why we bought</div>
-        ${escapeHtml(buyTrade.details)}
+    ? `<div class="dp-section">
+        <div class="dp-section-title">Why we bought</div>
+        <div style="font-size:13px;color:#1a1a2e;line-height:1.6;">${escapeHtml(buyTrade.details)}</div>
       </div>`
     : '';
 
-  document.getElementById('holding-metrics').innerHTML = metricsHtml + pnlBreakdownHtml + reasoningHtml;
+  const methodologyHtml = `
+    <div style="margin-top:12px;padding:10px 12px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;font-size:11px;color:#854d0e;line-height:1.5;">
+      <strong>${profile.label}</strong> — ${profile.notes}
+    </div>`;
 
-  // Crypto gets a 24h chart from CoinGecko. Stocks don't (no free intraday feed without keys).
+  document.getElementById('holding-metrics').innerHTML =
+    statsHtml + pnlHtml + riskHtml + tradeRows + reasoningHtml + methodologyHtml;
+
   const cg = SYM_TO_CG[sym];
   const chartWrap = document.getElementById('holding-chart-wrap');
   if(cg){
@@ -1141,6 +1173,155 @@ async function selectHolding(sym){
   } else {
     chartWrap.style.display = 'none';
   }
+}
+
+const RISK_THRESHOLDS = {
+  alpaca:   { stop: -0.015, take:  0.03 },
+  coinspot: { stop: -0.025, take:  0.05,
+              trail_trigger: 0.03, trail_floor: 0.015,
+              time_exit_hours: 4 },
+};
+
+function renderRiskLevels(pos, stock, usdPnlPct){
+  const t = stock ? RISK_THRESHOLDS.alpaca : RISK_THRESHOLDS.coinspot;
+  const ageHours = pos.created_at
+    ? (Date.now() - new Date(pos.created_at).getTime()) / 3600000
+    : 0;
+  const peakPct = Number(pos.peak_pnl_pct) || usdPnlPct;
+  const rows = [];
+
+  const stopDist = usdPnlPct - t.stop;
+  let stopStatus, stopText;
+  if(usdPnlPct <= t.stop){ stopStatus='danger'; stopText='WOULD TRIGGER'; }
+  else if(stopDist < 0.005){ stopStatus='warn'; stopText=`only ${(stopDist*100).toFixed(2)}% above`; }
+  else { stopStatus='ok'; stopText=`${(stopDist*100).toFixed(2)}% above`; }
+  rows.push({
+    icon: '🛑',
+    label: 'Stop loss',
+    detail: `Auto-sell if ${stock?'USD ':''}P&L falls to ${(t.stop*100).toFixed(1)}% · currently ${(usdPnlPct*100).toFixed(2)}%`,
+    status: stopText, statusCls: stopStatus,
+  });
+
+  const takeDist = t.take - usdPnlPct;
+  let takeStatus, takeText;
+  if(usdPnlPct >= t.take){ takeStatus='ok'; takeText='WOULD TRIGGER'; }
+  else if(takeDist < 0.005){ takeStatus='warn'; takeText=`only ${(takeDist*100).toFixed(2)}% to go`; }
+  else { takeStatus='ok'; takeText=`${(takeDist*100).toFixed(2)}% to go`; }
+  rows.push({
+    icon: '🎯',
+    label: 'Take profit',
+    detail: `Auto-sell if ${stock?'USD ':''}P&L reaches ${(t.take*100).toFixed(1)}% · currently ${(usdPnlPct*100).toFixed(2)}%`,
+    status: takeText, statusCls: takeStatus,
+  });
+
+  if(!stock){
+    const trailArmed = peakPct >= t.trail_trigger;
+    let trailStatus, trailText;
+    if(trailArmed && usdPnlPct < t.trail_floor){ trailStatus='danger'; trailText='WOULD TRIGGER'; }
+    else if(trailArmed){ trailStatus='warn'; trailText=`armed · floor +${(t.trail_floor*100).toFixed(1)}%`; }
+    else { trailStatus='ok'; trailText=`arms at +${(t.trail_trigger*100).toFixed(1)}%`; }
+    rows.push({
+      icon: '📈',
+      label: 'Trailing stop',
+      detail: `Once peak hits +${(t.trail_trigger*100).toFixed(1)}%, exits if drops below +${(t.trail_floor*100).toFixed(1)}% · peak ${(peakPct*100).toFixed(2)}%`,
+      status: trailText, statusCls: trailStatus,
+    });
+
+    const remaining = t.time_exit_hours - ageHours;
+    const stagnant = Math.abs(usdPnlPct) < 0.015;
+    let timeStatus, timeText;
+    if(remaining <= 0 && stagnant){ timeStatus='danger'; timeText='WOULD TRIGGER (stagnant)'; }
+    else if(remaining <= 0){ timeStatus='ok'; timeText='past window · held'; }
+    else if(remaining < 0.5){ timeStatus='warn'; timeText=`${(remaining*60).toFixed(0)}m left`; }
+    else { timeStatus='ok'; timeText=`${remaining.toFixed(1)}h left`; }
+    rows.push({
+      icon: '⏰',
+      label: 'Time exit',
+      detail: `Sells after ${t.time_exit_hours}h if movement stays under ±1.5% · age ${ageHours.toFixed(1)}h`,
+      status: timeText, statusCls: timeStatus,
+    });
+  } else {
+    rows.push({
+      icon: '📅',
+      label: 'Friday EOD exit',
+      detail: 'US stock positions auto-close before each Friday US-market close to avoid weekend gaps',
+      status: 'auto-managed', statusCls: 'ok',
+    });
+  }
+
+  const rowsHtml = rows.map(r => `
+    <div class="risk-row">
+      <span class="risk-icon">${r.icon}</span>
+      <div class="risk-text">
+        <div class="risk-text-label">${r.label}</div>
+        <div class="risk-text-detail">${r.detail}</div>
+      </div>
+      <span class="risk-status ${r.statusCls}">${r.status}</span>
+    </div>`).join('');
+
+  return `<div class="dp-section">
+    <div class="dp-section-title">Auto-exit triggers — when this position sells itself</div>
+    ${rowsHtml}
+  </div>`;
+}
+
+function renderSymbolTradeHistory(trades, closedForSym){
+  if(!trades.length && !closedForSym.length){
+    return `<div class="dp-section">
+      <div class="dp-section-title">Trade history for this symbol</div>
+      <div style="font-size:12px;color:#9aa0a6;text-align:center;padding:8px 0;">No trades recorded yet</div>
+    </div>`;
+  }
+
+  const items = [];
+
+  closedForSym.forEach(p => {
+    const grossPct = Number(p.pnl_pct) || 0;
+    const profile = (p.market||'').toLowerCase()==='alpaca' ? FEES.alpaca : FEES.coinspot;
+    const entry = Number(p.aud_amount) || 0;
+    const proceeds = entry * (1 + grossPct);
+    const fee = entry*profile.buyPct + proceeds*profile.sellPct
+              + entry*profile.fxOneWayPct + proceeds*profile.fxOneWayPct;
+    const net = (proceeds - entry) - fee;
+    const netPct = entry > 0 ? net/entry : 0;
+    const cls = net > 0.01 ? 'up' : net < -0.01 ? 'down' : '';
+    items.push({
+      sortKey: p.closed_at || p.created_at,
+      html: `<div class="sym-trade">
+        <span class="sym-trade-action sell">CLOSED</span>
+        <div class="sym-trade-body">
+          <div class="sym-trade-line1">${fmtAud(entry)} → ${fmtAud(proceeds)} · net <span class="${cls?'risk-status '+cls:''}">${fmtSignedAud(net)} (${fmtSignedPct(netPct)})</span></div>
+          <div class="sym-trade-line2">held ${fmtHoldDuration(p.created_at, p.closed_at)} · ${fmtSignedPct(grossPct)} gross before est. ${fmtAud(fee)} fees</div>
+        </div>
+        <div class="sym-trade-time">${fmtDateTime(p.closed_at || p.created_at)}</div>
+      </div>`
+    });
+  });
+
+  trades.forEach(t => {
+    const action = t.action || '';
+    const cls = action === 'BUY' ? 'buy' : 'sell';
+    const aud = Number(t.aud_amount) || 0;
+    const pnl = t.pnl_pct != null ? ` · ${fmtSignedPct(Number(t.pnl_pct))}` : '';
+    items.push({
+      sortKey: t.created_at,
+      html: `<div class="sym-trade">
+        <span class="sym-trade-action ${cls}">${action}</span>
+        <div class="sym-trade-body">
+          <div class="sym-trade-line1">${fmtAud(aud)}${pnl}</div>
+          <div class="sym-trade-line2">${escapeHtml(t.details || '—')}</div>
+        </div>
+        <div class="sym-trade-time">${fmtDateTime(t.created_at)}</div>
+      </div>`
+    });
+  });
+
+  items.sort((a,b) => new Date(b.sortKey || 0) - new Date(a.sortKey || 0));
+
+  return `<div class="dp-section">
+    <div class="dp-section-title">Trade history for this symbol (${items.length})</div>
+    ${items.slice(0, 12).map(i => i.html).join('')}
+  </div>`;
 }
 
 function escapeHtml(s){
