@@ -220,7 +220,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
       <div class="stats">
         <div class="stat"><div class="stat-label">Portfolio</div><div class="stat-value" id="s-port">$5,000.00</div><div class="stat-sub" id="s-port-sub">AUD total</div></div>
-        <div class="stat"><div class="stat-label">Net P&L</div><div class="stat-value" id="s-pnl">+$0.00</div><div class="stat-sub" id="s-pnl-sub">since start</div></div>
+        <div class="stat"><div class="stat-label">P&L</div><div class="stat-value" id="s-pnl">+$0.00</div><div class="stat-sub" id="s-pnl-sub">since start</div></div>
         <div class="stat"><div class="stat-label">Trades</div><div class="stat-value" id="s-trades">0</div><div class="stat-sub" id="s-trades-sub">lifetime</div></div>
         <div class="stat"><div class="stat-label">Today's cost</div><div class="stat-value" id="s-cost">$0.00</div><div class="stat-sub">Claude API</div></div>
       </div>
@@ -251,7 +251,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
             <div style="font-size:11px;color:#9aa0a6;" id="chart-sub">Updated every 5 min</div>
           </div>
           <div class="timeframes">
-            <button class="tf-btn active" onclick="setTf(this,'1D')">1D</button>
+            <button class="tf-btn" onclick="setTf(this,'1H')">1H</button>
+            <button class="tf-btn active" onclick="setTf(this,'24H')">24H</button>
             <button class="tf-btn" onclick="setTf(this,'1W')">1W</button>
             <button class="tf-btn" onclick="setTf(this,'1M')">1M</button>
             <button class="tf-btn" onclick="setTf(this,'ALL')">All</button>
@@ -263,6 +264,26 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       <div class="card">
         <div class="card-title">Recent trades</div>
         <div id="recent-trades"><div class="empty">No trades yet</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-row" style="margin-bottom:8px;">
+          <div class="card-title" style="margin-bottom:0;">Fees &amp; methodology</div>
+          <div style="font-size:10px;color:#c4c7cc;">why net ≠ gross</div>
+        </div>
+        <div style="font-size:12px;color:#555;line-height:1.7;">
+          All values shown in AUD. Stocks priced in USD by Alpaca and converted at the live AUD/USD rate (sourced from CoinGecko); the entry price stored uses the FX rate at the moment of purchase, so AUD P&amp;L includes any FX movement.
+          <br><br>
+          <strong>Gross P&amp;L</strong> is the market move only — current value minus capital deployed, before any transaction costs.
+          <br>
+          <strong>Net P&amp;L</strong> subtracts an estimated round-trip fee for closing the position right now.
+          <br><br>
+          <strong>CoinSpot (crypto)</strong>: The bot uses Instant Buy/Sell, which is 1% per side = 2% round-trip. There is also a 1–2% bid/ask spread baked into the quote — not separately shown. Market orders would be 0.1% per side, but the bot does not use those.
+          <br>
+          <strong>Alpaca (US stocks)</strong>: $0 commission on buys; ~0.05% SEC/TAF on sells. The real cost for an Aussie is the AUD↔USD conversion to fund/withdraw — about 0.5% per direction via Wise, so ~1% round-trip. This is paid outside Alpaca but is included in the net figure.
+          <br><br>
+          <strong>Paper mode</strong> charges no actual fees. The numbers above show what real fees <em>would</em> be in live mode, so the net P&amp;L is a realistic forecast of what you'd pocket on close.
+        </div>
       </div>
     </div>
 
@@ -376,7 +397,7 @@ const SYM_TO_CG = {
 };
 
 let perfChart=null, holdingChart=null, costChart=null;
-let currentTf='1D', selectedHolding=null;
+let currentTf='24H', selectedHolding=null;
 let allSnapshots=[], allIntraday=[], allTrades=[], allPositions=[], allChecks=[], allQuestions=[], tokenUsage=[], holdingCache={};
 let livePrices={};
 
@@ -470,46 +491,124 @@ function renderAll(){
 }
 
 // ─── Position math helpers ─────────────────────────────────────────────────
-// Every position has two worlds: the crypto world (priced in AUD by CoinGecko)
-// and the Alpaca world (priced in USD, sync'd by the bot into positions.pnl_pct
-// and positions.current_price).
+// All display values are AUD. Stocks are priced internally in USD by Alpaca,
+// so we convert via USD_TO_AUD (live rate from CoinGecko) for display.
+// Crypto is already AUD-native.
+//
+// Fee model (estimates; paper mode charges nothing — these show what live mode would cost):
+//
+// CoinSpot (Instant Buy / Sell — what the bot uses):
+//   1% fee on each side = 2% round-trip
+//   (Plus 1-2% spread baked into the quote — not separately modelled)
+//
+// Alpaca (US stocks, paper mode):
+//   $0 commissions on buys
+//   ~0.05% regulatory fees (SEC + TAF) on sells only
+//   For an Aussie funder: ~0.5% AUD↔USD spread one-way via Wise/bank, so
+//   ~1% round-trip FX cost. This is shown but is paid OUTSIDE Alpaca, not by it.
+
+const FEES = {
+  alpaca: {
+    label: 'Alpaca (US stocks)',
+    buyPct: 0,
+    sellPct: 0.0005,        // ~0.05% SEC/TAF on sells
+    fxOneWayPct: 0.005,     // ~0.5% AUD→USD via Wise (one-way)
+    notes: 'Alpaca charges no commission on US stocks. Sell-side US regulatory fees are tiny (~0.05%). The real cost for an Aussie is the AUD↔USD conversion to fund the account — about 0.5% per direction via Wise, so ~1% round-trip. Paper mode = $0 actual cost.',
+  },
+  coinspot: {
+    label: 'CoinSpot (crypto)',
+    buyPct: 0.01,           // 1% Instant Buy
+    sellPct: 0.01,          // 1% Instant Sell
+    fxOneWayPct: 0,         // already AUD
+    notes: 'CoinSpot Instant Buy/Sell (what the bot uses) is 1% per side = 2% round-trip. There is also a 1-2% bid/ask spread baked into the quoted price that is not separately shown. Market orders would be 0.1% per side, but the bot does not use those. Paper mode = $0 actual cost.',
+  },
+};
 
 function isStock(pos){ return (pos.market || '').toLowerCase() === 'alpaca'; }
+function feeProfile(pos){ return isStock(pos) ? FEES.alpaca : FEES.coinspot; }
 
-function livePnlFor(pos){
-  // Crypto: compute from live CG price vs stored entry
+// Entry price per unit, in AUD. For stocks we use aud_amount/qty (locks in
+// the FX rate at entry); for crypto entry_price is already AUD.
+function entryPriceAud(pos){
   if(!isStock(pos)){
-    const cg = SYM_TO_CG[pos.symbol];
-    const lp = cg && livePrices[cg] ? Number(livePrices[cg].aud) : 0;
-    const entry = Number(pos.entry_price) || 0;
-    if(entry > 0 && lp > 0) return (lp - entry) / entry;
+    return Number(pos.entry_price) || 0;
   }
-  // Stocks: trust the pnl_pct that the bot synced from Alpaca
-  return Number(pos.pnl_pct) || 0;
-}
-
-function liveValueAud(pos){
+  const qty = Number(pos.qty) || 0;
   const amt = Number(pos.aud_amount) || 0;
-  return amt * (1 + livePnlFor(pos));
+  if(qty > 0 && amt > 0) return amt / qty;
+  // Fallback: convert stored USD entry at current FX (less accurate)
+  const usd = Number(pos.entry_price) || 0;
+  return usd > 0 ? usd * USD_TO_AUD : 0;
 }
 
-// Current price in the position's native currency (AUD for crypto, USD for Alpaca)
-function currentPriceNative(pos){
+// Current price per unit, in AUD.
+function currentPriceAud(pos){
   if(!isStock(pos)){
     const cg = SYM_TO_CG[pos.symbol];
     const lp = cg && livePrices[cg] ? Number(livePrices[cg].aud) : 0;
     if(lp > 0) return lp;
-    const entry = Number(pos.entry_price) || 0;
-    return entry * (1 + livePnlFor(pos));
+    // Fallback to entry × (1+pnl)
+    return entryPriceAud(pos) * (1 + (Number(pos.pnl_pct) || 0));
   }
-  // Stock — prefer current_price from Supabase (written by bot snapshot sync)
-  const cp = Number(pos.current_price) || 0;
-  if(cp > 0) return cp;
-  const entry = Number(pos.entry_price) || 0;
-  return entry * (1 + livePnlFor(pos));
+  const usdPrice = Number(pos.current_price) || 0;
+  if(usdPrice > 0) return usdPrice * USD_TO_AUD;
+  return entryPriceAud(pos) * (1 + (Number(pos.pnl_pct) || 0));
 }
 
-function currencyFor(pos){ return isStock(pos) ? 'USD' : 'AUD'; }
+// Market value in AUD. Prefer qty × current_price_aud (truthful AUD inc. FX move);
+// fall back to aud_amount × (1 + pnl_pct) when qty is missing.
+function marketValueAud(pos){
+  const qty = Number(pos.qty) || 0;
+  const cur = currentPriceAud(pos);
+  if(qty > 0 && cur > 0) return qty * cur;
+  const amt = Number(pos.aud_amount) || 0;
+  return amt * (1 + (Number(pos.pnl_pct) || 0));
+}
+
+function entryCostAud(pos){ return Number(pos.aud_amount) || 0; }
+
+// Gross P&L in AUD = market move only, before any transaction costs.
+function grossPnlAud(pos){ return marketValueAud(pos) - entryCostAud(pos); }
+function grossPnlPct(pos){
+  const e = entryCostAud(pos);
+  return e > 0 ? grossPnlAud(pos) / e : 0;
+}
+
+// Estimated round-trip fees in AUD if you closed this position right now.
+// Returns {total, breakdown:[{label, aud}]} so the detail view can itemise.
+function estimatedFeesAud(pos){
+  const f = feeProfile(pos);
+  const entry = entryCostAud(pos);
+  const value = marketValueAud(pos);
+  const breakdown = [];
+
+  if(f.buyPct > 0){
+    const v = entry * f.buyPct;
+    breakdown.push({label: `Buy fee (${(f.buyPct*100).toFixed(2)}%)`, aud: v, when: 'paid at entry'});
+  }
+  if(f.sellPct > 0){
+    const v = value * f.sellPct;
+    breakdown.push({label: `Sell fee (${(f.sellPct*100).toFixed(2)}%)`, aud: v, when: 'on close'});
+  }
+  if(f.fxOneWayPct > 0){
+    const inAud = entry * f.fxOneWayPct;
+    const outAud = value * f.fxOneWayPct;
+    breakdown.push({label: `FX in (${(f.fxOneWayPct*100).toFixed(2)}%)`, aud: inAud, when: 'paid at entry'});
+    breakdown.push({label: `FX out (${(f.fxOneWayPct*100).toFixed(2)}%)`, aud: outAud, when: 'on close'});
+  }
+  const total = breakdown.reduce((s,b) => s + b.aud, 0);
+  return {total, breakdown};
+}
+
+function netPnlAud(pos){ return grossPnlAud(pos) - estimatedFeesAud(pos).total; }
+function netPnlPct(pos){
+  const e = entryCostAud(pos);
+  return e > 0 ? netPnlAud(pos) / e : 0;
+}
+
+// Backwards-compat: some older code referenced these names.
+function livePnlFor(pos){ return grossPnlPct(pos); }
+function liveValueAud(pos){ return marketValueAud(pos); }
 
 function fmtPrice(v){
   if(!v || !isFinite(v)) return '—';
@@ -521,19 +620,26 @@ function fmtPrice(v){
 }
 
 function fmtAud(v){ return '$' + (v||0).toLocaleString('en-AU', {minimumFractionDigits:2, maximumFractionDigits:2}); }
+function fmtSignedAud(v){ return (v>=0?'+':'-') + '$' + Math.abs(v||0).toFixed(2); }
+function fmtSignedPct(v){ return (v>=0?'+':'') + (v*100).toFixed(2) + '%'; }
 
 function renderStats(){
   let cryptoVal = 0, stocksVal = 0, derivsVal = 0, entryCost = 0;
-  let todayPnlAud = 0;
+  let grossPnl = 0, estFees = 0, todayPnlAud = 0;
+
   allPositions.forEach(p=>{
-    const val = liveValueAud(p);
-    entryCost += Number(p.aud_amount) || 0;
+    const val = marketValueAud(p);
+    entryCost += entryCostAud(p);
+    grossPnl += grossPnlAud(p);
+    estFees += estimatedFeesAud(p).total;
+
     const mkt = (p.market||'').toLowerCase();
     if(mkt === 'alpaca') stocksVal += val;
     else if(mkt === 'derivatives') derivsVal += val;
     else cryptoVal += val;
-    // Today's P&L: Alpaca gives us change_today per position; for crypto use 24h change
-    const amt = Number(p.aud_amount) || 0;
+
+    // Today's P&L: Alpaca gives change_today per stock; for crypto use 24h change
+    const amt = entryCostAud(p);
     if(isStock(p)){
       const ch = Number(p.change_today) || 0;
       todayPnlAud += amt * ch;
@@ -543,22 +649,25 @@ function renderStats(){
       todayPnlAud += amt * ch24;
     }
   });
+
   const cash = Math.max(0, STARTING_AUD - entryCost);
   const total = cash + cryptoVal + stocksVal + derivsVal;
-  const net = total - STARTING_AUD;
+  const netPnlIfClosed = grossPnl - estFees;
+  const totalNet = total - estFees;
 
   document.getElementById('s-port').textContent = fmtAud(total);
-  document.getElementById('s-port-sub').textContent = allPositions.length ? `${allPositions.length} position${allPositions.length>1?'s':''} · live` : 'AUD total';
+  document.getElementById('s-port-sub').textContent = allPositions.length
+    ? `${allPositions.length} pos · live · ${fmtAud(totalNet)} after fees`
+    : 'AUD total';
 
   const pnlEl = document.getElementById('s-pnl');
-  pnlEl.textContent = (net>=0?'+':'-') + '$' + Math.abs(net).toFixed(2);
-  pnlEl.className = 'stat-value ' + (net>0?'up':net<0?'down':'');
+  pnlEl.textContent = fmtSignedAud(grossPnl);
+  pnlEl.className = 'stat-value ' + (grossPnl>0?'up':grossPnl<0?'down':'');
   const pnlSub = document.getElementById('s-pnl-sub');
-  if(Math.abs(todayPnlAud) > 0.005){
-    pnlSub.textContent = (todayPnlAud>=0?'+':'-') + '$' + Math.abs(todayPnlAud).toFixed(2) + ' today';
-  } else {
-    pnlSub.textContent = 'since start';
-  }
+  const todayStr = Math.abs(todayPnlAud) > 0.005
+    ? `${fmtSignedAud(todayPnlAud)} today`
+    : 'gross · before fees';
+  pnlSub.textContent = `${todayStr} · net ${fmtSignedAud(netPnlIfClosed)}`;
 
   document.getElementById('s-trades').textContent = allTrades.length;
   const buys = allTrades.filter(t=>t.action==='BUY').length;
@@ -573,8 +682,8 @@ function renderStats(){
 function renderAllocation(){
   let cryptoVal = 0, stocksVal = 0, derivsVal = 0, entryCost = 0;
   allPositions.forEach(p=>{
-    const val = liveValueAud(p);
-    entryCost += Number(p.aud_amount) || 0;
+    const val = marketValueAud(p);
+    entryCost += entryCostAud(p);
     const mkt = (p.market||'').toLowerCase();
     if(mkt === 'alpaca') stocksVal += val;
     else if(mkt === 'derivatives') derivsVal += val;
@@ -608,45 +717,48 @@ function renderPositions(){
     return;
   }
   el.innerHTML = allPositions.map(p=>{
-    const pnl = livePnlFor(p);
-    const cls = pnl>0.0005 ? 'up' : pnl<-0.0005 ? 'down' : 'flat';
+    const grossPct = grossPnlPct(p);
+    const cls = grossPct>0.0005 ? 'up' : grossPct<-0.0005 ? 'down' : 'flat';
     const active = selectedHolding === p.symbol ? 'active' : '';
-    const cur = currentPriceNative(p);
-    const entry = Number(p.entry_price) || 0;
-    const ccy = currencyFor(p);
-    const valAud = liveValueAud(p);
-    const entryAud = Number(p.aud_amount) || 0;
-    const pnlAud = valAud - entryAud;
 
-    // Stock-specific: shares held (if qty synced from Alpaca)
+    const cur = currentPriceAud(p);
+    const entry = entryPriceAud(p);
+    const valAud = marketValueAud(p);
+    const grossAud = grossPnlAud(p);
+    const fees = estimatedFeesAud(p);
+    const netAud = grossAud - fees.total;
+    const netPct = netPnlPct(p);
     const qty = Number(p.qty) || 0;
-    const hasQty = qty > 0;
-    const qtyLine = hasQty ? `<div class="pos-stat-k">Shares</div><div class="pos-stat-v">${qty.toFixed(qty<1?6:(qty<100?4:2))}</div>` : '';
+
+    const grossCls = grossAud > 0.01 ? 'up' : grossAud < -0.01 ? 'down' : '';
+    const netCls = netAud > 0.01 ? 'up' : netAud < -0.01 ? 'down' : '';
 
     const curLine = cur > 0
-      ? `<div class="pos-price-row"><span class="pos-price">${fmtPrice(cur)}</span><span class="pos-price-unit">${ccy}</span></div>`
+      ? `<div class="pos-price-row"><span class="pos-price">${fmtPrice(cur)}</span><span class="pos-price-unit">AUD</span></div>`
       : `<div class="pos-price-row"><span class="pos-price" style="color:#c4c7cc;">price syncing…</span></div>`;
 
     const entryLine = entry > 0
-      ? `<div class="pos-stat-k">Entry</div><div class="pos-stat-v">${fmtPrice(entry)} ${ccy}</div>`
+      ? `<div class="pos-stat-k">Entry</div><div class="pos-stat-v">${fmtPrice(entry)} AUD</div>`
       : `<div class="pos-stat-k">Entry</div><div class="pos-stat-v" style="color:#c4c7cc;">syncing…</div>`;
 
-    const pnlAudCls = pnlAud > 0.01 ? 'up' : pnlAud < -0.01 ? 'down' : '';
-    const pnlAudStr = (pnlAud>=0?'+':'-') + '$' + Math.abs(pnlAud).toFixed(2);
+    const qtyLine = qty > 0
+      ? `<div class="pos-stat-k">${isStock(p)?'Shares':'Units'}</div><div class="pos-stat-v">${qty.toFixed(qty<1?6:(qty<100?4:2))}</div>`
+      : '';
 
     return `<div class="pos-card ${active}" onclick="selectHolding('${p.symbol}')">
       <div class="pos-card-header">
         <span class="pos-sym">${p.symbol}</span>
-        <span class="pos-pnl ${cls}">${pnl>=0?'+':''}${(pnl*100).toFixed(2)}%</span>
+        <span class="pos-pnl ${cls}">${fmtSignedPct(grossPct)}</span>
       </div>
       ${curLine}
       <div class="pos-stats">
         ${entryLine}
         ${qtyLine}
-        <div class="pos-stat-k">Value</div><div class="pos-stat-v">${fmtAud(valAud)} AUD</div>
-        <div class="pos-stat-k">P&L</div><div class="pos-stat-v ${pnlAudCls}">${pnlAudStr} AUD</div>
+        <div class="pos-stat-k">Value</div><div class="pos-stat-v">${fmtAud(valAud)}</div>
+        <div class="pos-stat-k">Gross P&L</div><div class="pos-stat-v ${grossCls}">${fmtSignedAud(grossAud)}</div>
+        <div class="pos-stat-k">Net*</div><div class="pos-stat-v ${netCls}">${fmtSignedAud(netAud)} <span style="color:#9aa0a6;font-weight:400;">(${fmtSignedPct(netPct)})</span></div>
       </div>
-      <div class="pos-meta">${p.market||'—'} · bought ${fmtRelativeFromIso(p.created_at)}</div>
+      <div class="pos-meta">*after est. ${fmtAud(fees.total)} round-trip fees · ${p.market||'—'} · bought ${fmtRelativeFromIso(p.created_at)}</div>
     </div>`;
   }).join('');
 
@@ -654,7 +766,6 @@ function renderPositions(){
   if(!selectedHolding || !allPositions.find(p=>p.symbol===selectedHolding)){
     selectHolding(allPositions[0].symbol);
   } else {
-    // Refresh current selection with latest data
     selectHolding(selectedHolding);
   }
 }
@@ -672,63 +783,106 @@ function fmtRelativeFromIso(iso){
 
 async function selectHolding(sym){
   selectedHolding = sym;
-  // Re-paint cards to update the .active border without re-triggering selectHolding
   document.querySelectorAll('.pos-card').forEach(c=>c.classList.remove('active'));
-  const cards = document.querySelectorAll('.pos-card');
   const pos = allPositions.find(p=>p.symbol===sym);
   if(!pos){ document.getElementById('holding-detail-card').style.display = 'none'; return; }
 
   document.getElementById('holding-detail-card').style.display = 'block';
 
-  const pnl = livePnlFor(pos);
-  const cur = currentPriceNative(pos);
-  const entry = Number(pos.entry_price) || 0;
-  const ccy = currencyFor(pos);
-  const valAud = liveValueAud(pos);
-  const entryAud = Number(pos.aud_amount) || 0;
-  const pnlAud = valAud - entryAud;
+  const entry = entryPriceAud(pos);
+  const cur = currentPriceAud(pos);
+  const valAud = marketValueAud(pos);
+  const entryCost = entryCostAud(pos);
+  const grossAud = grossPnlAud(pos);
+  const grossPct = grossPnlPct(pos);
+  const fees = estimatedFeesAud(pos);
+  const netAud = grossAud - fees.total;
+  const netPct = netPnlPct(pos);
   const qty = Number(pos.qty) || 0;
+  const profile = feeProfile(pos);
 
-  // Title
   const marketLabel = isStock(pos) ? 'US stock · Alpaca' : 'Crypto · CoinSpot';
   document.getElementById('holding-title').textContent = sym + ' detail';
-  document.getElementById('holding-sub').textContent = marketLabel + ' · bought ' + fmtRelativeFromIso(pos.created_at);
+  document.getElementById('holding-sub').textContent =
+    marketLabel + ' · bought ' + fmtRelativeFromIso(pos.created_at) +
+    ' · last priced ' + fmtRelativeFromIso(pos.last_priced_at || pos.created_at);
 
-  // Header price + change
   const priceEl = document.getElementById('holding-price');
   if(cur > 0){
-    const pnlCls = pnl>=0 ? 'up' : 'down';
-    const chgColor = pnl>=0 ? '#1a7340' : '#c0392b';
-    priceEl.innerHTML = `<div style="font-size:20px;font-weight:600;">${fmtPrice(cur)} <span style="font-size:11px;color:#9aa0a6;font-weight:500;">${ccy}</span></div>
-      <div style="font-size:11px;color:${chgColor};">${pnl>=0?'+':''}${(pnl*100).toFixed(2)}% since entry</div>`;
+    const chgColor = grossPct>=0 ? '#1a7340' : '#c0392b';
+    priceEl.innerHTML = `<div style="font-size:20px;font-weight:600;">${fmtPrice(cur)} <span style="font-size:11px;color:#9aa0a6;font-weight:500;">AUD</span></div>
+      <div style="font-size:11px;color:${chgColor};">${fmtSignedPct(grossPct)} since entry</div>`;
   } else {
     priceEl.innerHTML = `<div style="font-size:13px;color:#c4c7cc;">price syncing…</div>`;
   }
 
-  // Metrics grid
-  const pnlAudCls = pnlAud > 0.01 ? 'up' : pnlAud < -0.01 ? 'down' : '';
+  // Today's change for this position
+  let todayLine = '';
+  if(isStock(pos) && pos.change_today != null){
+    const ch = Number(pos.change_today);
+    todayLine = `<div class="hd-stat-sub" style="color:${ch>=0?'#1a7340':'#c0392b'};">${fmtSignedPct(ch)} today (USD)</div>`;
+  } else if(!isStock(pos)){
+    const cg = SYM_TO_CG[pos.symbol];
+    if(cg && livePrices[cg] && livePrices[cg].aud_24h_change != null){
+      const ch = Number(livePrices[cg].aud_24h_change)/100;
+      todayLine = `<div class="hd-stat-sub" style="color:${ch>=0?'#1a7340':'#c0392b'};">${fmtSignedPct(ch)} 24h</div>`;
+    }
+  }
+
+  const grossCls = grossAud > 0.01 ? 'up' : grossAud < -0.01 ? 'down' : '';
+  const netCls = netAud > 0.01 ? 'up' : netAud < -0.01 ? 'down' : '';
+
+  // Top metrics — entry, current, value, gross P&L
   const metricsHtml = `
     <div class="hd-grid">
       <div class="hd-stat">
         <div class="hd-stat-label">Entry price</div>
         <div class="hd-stat-val">${entry>0 ? fmtPrice(entry) : '—'}</div>
-        <div class="hd-stat-sub">${ccy}${entry>0 ? '' : ' · syncing'}</div>
+        <div class="hd-stat-sub">AUD per ${isStock(pos)?'share':'unit'}${qty>0?' · '+qty.toFixed(qty<1?6:(qty<100?4:2))+' held':''}</div>
       </div>
       <div class="hd-stat">
         <div class="hd-stat-label">Current price</div>
         <div class="hd-stat-val">${cur>0 ? fmtPrice(cur) : '—'}</div>
-        <div class="hd-stat-sub">${ccy}${cur>0 ? ' · live' : ' · syncing'}</div>
+        <div class="hd-stat-sub">AUD${cur>0 ? ' · live' : ' · syncing'}</div>
+        ${todayLine}
       </div>
       <div class="hd-stat">
-        <div class="hd-stat-label">Market value</div>
+        <div class="hd-stat-label">Capital deployed</div>
+        <div class="hd-stat-val">${fmtAud(entryCost)}</div>
+        <div class="hd-stat-sub">AUD spent</div>
+      </div>
+      <div class="hd-stat">
+        <div class="hd-stat-label">Market value now</div>
         <div class="hd-stat-val">${fmtAud(valAud)}</div>
-        <div class="hd-stat-sub">AUD${qty>0 ? ' · ' + qty.toFixed(qty<1?6:(qty<100?4:2)) + ' ' + (isStock(pos)?'shares':'units') : ''}</div>
+        <div class="hd-stat-sub">AUD${qty>0 ? ' · '+qty.toFixed(qty<1?6:(qty<100?4:2))+' × '+fmtPrice(cur) : ''}</div>
       </div>
-      <div class="hd-stat">
-        <div class="hd-stat-label">Unrealised P&L</div>
-        <div class="hd-stat-val ${pnlAudCls}">${pnlAud>=0?'+':'-'}$${Math.abs(pnlAud).toFixed(2)}</div>
-        <div class="hd-stat-sub">AUD · ${pnl>=0?'+':''}${(pnl*100).toFixed(2)}%</div>
+    </div>`;
+
+  // P&L breakdown (gross vs net) with itemised fees
+  const feeRows = fees.breakdown.map(b =>
+    `<tr><td style="padding:4px 0;color:#555;">${b.label}</td><td style="padding:4px 0;color:#9aa0a6;">${b.when}</td><td style="padding:4px 0;text-align:right;color:#c0392b;font-variant-numeric:tabular-nums;">−${fmtAud(b.aud)}</td></tr>`
+  ).join('') || '<tr><td colspan="3" style="padding:4px 0;color:#9aa0a6;">No fees in this venue.</td></tr>';
+
+  const pnlBreakdownHtml = `
+    <div style="margin-top:14px;background:#fafbfc;border:1px solid #e8eaed;border-radius:8px;padding:14px;">
+      <div style="font-size:10px;color:#9aa0a6;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:10px;">P&L breakdown</div>
+      <div style="display:grid;grid-template-columns:1fr auto;gap:6px 12px;font-size:13px;align-items:baseline;">
+        <div style="color:#555;">Gross P&L (market move)</div>
+        <div class="hd-stat-val ${grossCls}" style="font-size:15px;text-align:right;">${fmtSignedAud(grossAud)} <span style="color:#9aa0a6;font-weight:400;font-size:12px;">(${fmtSignedPct(grossPct)})</span></div>
+
+        <div style="color:#555;">Estimated round-trip fees</div>
+        <div style="text-align:right;color:#c0392b;font-weight:600;font-size:14px;font-variant-numeric:tabular-nums;">−${fmtAud(fees.total)}</div>
       </div>
+      <table style="width:100%;font-size:11px;margin-top:8px;border-top:1px solid #e8eaed;padding-top:6px;">
+        ${feeRows}
+      </table>
+      <div style="display:grid;grid-template-columns:1fr auto;gap:6px 12px;font-size:13px;align-items:baseline;margin-top:10px;border-top:1px solid #e8eaed;padding-top:10px;">
+        <div style="color:#1a1a2e;font-weight:600;">Net P&L if sold now</div>
+        <div class="hd-stat-val ${netCls}" style="font-size:18px;text-align:right;">${fmtSignedAud(netAud)} <span style="color:#9aa0a6;font-weight:400;font-size:12px;">(${fmtSignedPct(netPct)})</span></div>
+      </div>
+    </div>
+    <div style="margin-top:10px;padding:10px 12px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;font-size:11px;color:#854d0e;line-height:1.5;">
+      <strong>${profile.label}</strong> — ${profile.notes}
     </div>`;
 
   // Reasoning from the matching BUY trade
@@ -740,9 +894,9 @@ async function selectHolding(sym){
       </div>`
     : '';
 
-  document.getElementById('holding-metrics').innerHTML = metricsHtml + reasoningHtml;
+  document.getElementById('holding-metrics').innerHTML = metricsHtml + pnlBreakdownHtml + reasoningHtml;
 
-  // Crypto gets a 24h chart from CoinGecko. Stocks don't (no free intraday feed).
+  // Crypto gets a 24h chart from CoinGecko. Stocks don't (no free intraday feed without keys).
   const cg = SYM_TO_CG[sym];
   const chartWrap = document.getElementById('holding-chart-wrap');
   if(cg){
@@ -805,40 +959,95 @@ function renderChart(tf){
   const canvas = document.getElementById('perfChart');
   if(!canvas) return;
   if(perfChart){ perfChart.destroy(); }
-  let labels, values, title, note;
-  if(tf === '1D'){
-    const today = new Date().toDateString();
-    const todays = allIntraday.filter(s=>new Date(s.recorded_at).toDateString()===today).reverse();
-    if(todays.length){
-      labels = todays.map(s=>new Date(s.recorded_at).toLocaleTimeString('en-AU',{hour:'2-digit', minute:'2-digit'}));
-      values = todays.map(s=>Number(s.total_aud));
-      title = 'Portfolio value — today';
-      note = `${todays.length} snapshots · every 5 min`;
+  let labels, values, points, title, note, mode;
+  const now = Date.now();
+
+  if(tf === '1H' || tf === '24H'){
+    // Rolling intraday window from intraday_snapshots (5-min cadence)
+    const windowMs = tf === '1H' ? 60*60*1000 : 24*60*60*1000;
+    const cutoff = now - windowMs;
+    const inWindow = allIntraday
+      .filter(s => new Date(s.recorded_at).getTime() >= cutoff)
+      .slice()
+      .reverse(); // oldest → newest
+    if(inWindow.length){
+      points = inWindow.map(s => ({t: new Date(s.recorded_at), v: Number(s.total_aud)}));
+      title = tf === '1H' ? 'Portfolio value — last hour' : 'Portfolio value — last 24 hours';
+      note = `${inWindow.length} snapshots · 5-min granularity`;
+      mode = tf === '1H' ? 'minutes' : 'hours';
     } else {
-      labels = ['Now']; values = [STARTING_AUD];
-      title = 'Portfolio value — today';
-      note = 'Snapshots begin after bot is deployed';
+      points = [{t: new Date(), v: STARTING_AUD}];
+      title = tf === '1H' ? 'Portfolio value — last hour' : 'Portfolio value — last 24 hours';
+      note = 'Waiting for snapshots — bot writes one every 5 min';
+      mode = 'hours';
     }
   } else {
+    // Daily series from snapshots table (one per day, written at 6:30am AEST)
     const limits = {'1W':7, '1M':30, 'ALL':9999};
     let filtered = allSnapshots.slice().reverse();
     if(limits[tf]) filtered = filtered.slice(-limits[tf]);
     if(!filtered.length){
-      labels = ['Start']; values = [STARTING_AUD];
+      points = [{t: new Date(), v: STARTING_AUD}];
       note = 'Daily snapshots begin at 6:30am AEST';
     } else {
-      labels = filtered.map(s=>new Date(s.date).toLocaleDateString('en-AU',{month:'short', day:'numeric'}));
-      values = filtered.map(s=>Number(s.total_aud)||STARTING_AUD);
+      points = filtered.map(s => ({t: new Date(s.date), v: Number(s.total_aud)||STARTING_AUD}));
       note = 'Daily snapshots';
     }
     title = 'Portfolio value';
+    mode = 'days';
   }
+
+  // Build label strings based on mode
+  labels = points.map(p => {
+    if(mode === 'minutes') return p.t.toLocaleTimeString('en-AU',{hour:'2-digit', minute:'2-digit'});
+    if(mode === 'hours')   return p.t.toLocaleTimeString('en-AU',{hour:'2-digit', minute:'2-digit'});
+    return p.t.toLocaleDateString('en-AU',{month:'short', day:'numeric'});
+  });
+  values = points.map(p => p.v);
+
   document.getElementById('chart-title').textContent = title;
   document.getElementById('chart-sub').textContent = note;
+
   perfChart = new Chart(canvas, {
     type:'line',
-    data:{labels, datasets:[{data:values, borderColor:'#0d1f38', backgroundColor:'rgba(13,31,56,0.05)', fill:true, tension:0.3, pointRadius:values.length>60?0:2, borderWidth:2}]},
-    options:{responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}, tooltip:{callbacks:{label:ctx=>'$'+ctx.parsed.y.toLocaleString('en-AU',{maximumFractionDigits:2})}}}, scales:{x:{ticks:{color:'#9aa0a6', font:{size:10}, maxTicksLimit:8}, grid:{color:'rgba(0,0,0,0.04)'}}, y:{ticks:{color:'#9aa0a6', font:{size:10}, callback:v=>'$'+v.toLocaleString('en-AU',{maximumFractionDigits:0})}, grid:{color:'rgba(0,0,0,0.04)'}}}}
+    data:{labels, datasets:[{
+      data:values,
+      borderColor:'#0d1f38',
+      backgroundColor:'rgba(13,31,56,0.05)',
+      fill:true,
+      tension:0.3,
+      pointRadius: values.length>60 ? 0 : 2,
+      borderWidth:2,
+    }]},
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      plugins:{
+        legend:{display:false},
+        tooltip:{
+          callbacks:{
+            title: ctx => {
+              const p = points[ctx[0].dataIndex];
+              if(!p) return '';
+              if(mode === 'minutes' || mode === 'hours'){
+                return p.t.toLocaleString('en-AU',{weekday:'short', day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'});
+              }
+              return p.t.toLocaleDateString('en-AU',{weekday:'short', day:'numeric', month:'short', year:'numeric'});
+            },
+            label: ctx => '$' + ctx.parsed.y.toLocaleString('en-AU',{maximumFractionDigits:2}) + ' AUD'
+          }
+        }
+      },
+      scales:{
+        x:{
+          ticks:{color:'#9aa0a6', font:{size:10}, maxTicksLimit: mode==='minutes'?8:(mode==='hours'?12:8)},
+          grid:{color:'rgba(0,0,0,0.04)'}
+        },
+        y:{
+          ticks:{color:'#9aa0a6', font:{size:10}, callback:v=>'$'+v.toLocaleString('en-AU',{maximumFractionDigits:0})},
+          grid:{color:'rgba(0,0,0,0.04)'}
+        }
+      }
+    }
   });
 }
 
@@ -914,7 +1123,7 @@ function renderStory(){
 
   let cryptoVal=0, stocksVal=0;
   allPositions.forEach(p=>{
-    const val = liveValueAud(p);
+    const val = marketValueAud(p);
     if(isStock(p)) stocksVal+=val;
     else cryptoVal+=val;
   });
