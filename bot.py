@@ -657,6 +657,58 @@ def run_morning_summary(db, tg):
 
 # ─── Main loop ─────────────────────────────────────────────────────────────
 
+def run_daily_cleanup(db):
+    """
+    Trim old chatter so the dashboard and Supabase tables don't bloat.
+
+    Keep:
+      - trades (audit trail) — forever
+      - positions (closed/open) — forever
+      - flags — forever (state)
+
+    Trim:
+      - user_questions older than 7 days  (Q&A is conversational, not learned-from)
+      - crypto_checks  older than 7 days  (just shows scanner activity)
+      - intraday_snapshots older than 30 days  (chart history we don't need long-term)
+      - usage_log     older than 60 days  (cost tracking)
+
+    The bot's actual learning happens in evening_briefing via signal_weights,
+    which reads from `trades` (kept forever) — so deleting Q&A history is safe.
+    """
+    cutoffs = {
+        "user_questions":     7,
+        "crypto_checks":      7,
+        "intraday_snapshots": 30,
+        "usage_log":          60,
+    }
+    deleted_total = 0
+    for table, days in cutoffs.items():
+        cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        try:
+            # Supabase REST: DELETE with filter on created_at/checked_at/snapshot_time/date
+            time_col = {
+                "user_questions":     "asked_at",
+                "crypto_checks":      "checked_at",
+                "intraday_snapshots": "snapshot_time",
+                "usage_log":          "date",
+            }[table]
+            # Use _patch_with_fallback's underlying mechanism via a raw DELETE
+            url = f"{db.base}/rest/v1/{table}?{time_col}=lt.{cutoff}"
+            import requests
+            r = requests.delete(url, headers={**db.headers, "Prefer": "return=representation"}, timeout=15)
+            if r.ok:
+                rows = r.json() if r.headers.get("content-type", "").startswith("application/json") else []
+                count = len(rows) if isinstance(rows, list) else 0
+                deleted_total += count
+                if count > 0:
+                    log.info(f"Cleanup: removed {count} rows from {table} older than {days}d")
+            else:
+                log.warning(f"Cleanup {table}: HTTP {r.status_code} — {r.text[:120]}")
+        except Exception as e:
+            log.warning(f"Cleanup {table} failed: {e}")
+    log.info(f"Daily cleanup complete — {deleted_total} total rows removed")
+
+
 def main():
     log.info(f"RivX starting — {'PAPER' if PAPER_MODE else 'LIVE'} mode")
 
@@ -714,6 +766,14 @@ def main():
                 time.sleep(1)
                 if db.get_flag("last_morning_summary") == today:
                     run_morning_summary(db, tg)
+
+            # Daily cleanup — once per day at 3am AEST (low activity)
+            if (now.hour == 3 and now.minute < 5
+                and db.get_flag("last_cleanup") != today):
+                db.set_flag("last_cleanup", today)
+                time.sleep(1)
+                if db.get_flag("last_cleanup") == today:
+                    run_daily_cleanup(db)
 
             now_ts = time.time()
 
