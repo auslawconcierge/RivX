@@ -167,9 +167,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .status-time{font-family:monospace;color:#9aa0a6;font-size:11px;flex-shrink:0;width:60px;}
 .status-icon{font-size:14px;flex-shrink:0;width:20px;text-align:center;}
 .status-text{flex:1;}
-.fail-row{display:flex;gap:8px;padding:8px 0;border-bottom:1px solid #f0f0f0;font-size:12px;}
+.fail-row{display:flex;gap:8px;padding:8px 0;border-bottom:1px solid #f0f0f0;font-size:12px;align-items:center;}
 .fail-row:last-child{border-bottom:none;}
-.fail-sym{font-weight:600;color:#1a1a2e;width:60px;flex-shrink:0;}
+.fail-badge{font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;letter-spacing:0.05em;flex-shrink:0;}
+.fail-badge.fail-err{background:#fdecea;color:#c0392b;}
+.fail-badge.fail-skip{background:#fef3c7;color:#854d0e;}
+.fail-sym{font-weight:600;color:#1a1a2e;width:55px;flex-shrink:0;}
 .fail-reason{color:#9aa0a6;flex:1;}
 .fail-time{color:#c4c7cc;font-size:11px;flex-shrink:0;}
 
@@ -299,7 +302,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
       <div class="card" id="failed-card" style="display:none;">
         <div class="card-row" style="margin-bottom:8px;">
-          <div class="card-title" style="margin-bottom:0;">Skipped trades</div>
+          <div class="card-title" style="margin-bottom:0;">Failed buys &amp; skipped setups</div>
           <div style="font-size:10px;color:#9aa0a6;" id="failed-count"></div>
         </div>
         <div id="failed-list"></div>
@@ -1720,34 +1723,62 @@ function renderFailures(){
   const card = document.getElementById('failed-card');
   const list = document.getElementById('failed-list');
 
-  const failures = [];
-  allChecks.slice(0, 30).forEach(c=>{
-    const reasoning = c.reasoning || '';
-    const skippedMatch = reasoning.match(/Skipped (\w+)[\s—-]+([^|]+)/gi);
-    if(skippedMatch){
-      skippedMatch.forEach(m=>{
-        const parts = m.match(/Skipped (\w+)[\s—-]+(.+)/i);
-        if(parts){
-          failures.push({
-            symbol: parts[1].toUpperCase(),
-            reason: parts[2].trim().substring(0, 80),
-            time: c.checked_at,
-          });
-        }
+  // Two distinct things to surface here, both important:
+  //   1. EXECUTION FAILURES — the bot tried to buy, broker rejected. User needs to see this.
+  //   2. SKIPPED SETUPS — Claude vetoed with a red flag. User can audit the reasoning.
+  // Old version regex-parsed the reasoning string and produced bogus symbols
+  // like "FOUR" from "skipped four 2.5-score setups". Now we read the
+  // structured `executions` and `skipped_setups` columns.
+  const rows = [];
+  allChecks.slice(0, 20).forEach(c => {
+    // Execution failures (highest priority)
+    let executions = [];
+    try { executions = JSON.parse(c.executions || '[]'); } catch(e){}
+    executions.filter(e => e && !e.success).forEach(e => {
+      rows.push({
+        kind: 'fail',
+        symbol: (e.symbol || '?').toUpperCase(),
+        reason: `${e.action || 'BUY'} failed: ${e.error || 'unknown error'}`,
+        time: c.checked_at,
       });
-    }
+    });
+
+    // Claude-vetoed setups
+    let skipped = [];
+    try { skipped = JSON.parse(c.skipped_setups || '[]'); } catch(e){}
+    skipped.forEach(s => {
+      const sym = s && s.symbol;
+      if(!sym) return;
+      rows.push({
+        kind: 'skip',
+        symbol: String(sym).toUpperCase(),
+        reason: (s.red_flag || s.reason || 'no reason given'),
+        time: c.checked_at,
+      });
+    });
   });
 
-  if(!failures.length){
+  if(!rows.length){
     card.style.display = 'none';
     return;
   }
 
   card.style.display = 'block';
-  document.getElementById('failed-count').textContent = `${failures.length} skipped`;
-  list.innerHTML = failures.slice(0, 8).map(f=>{
-    const time = new Date(f.time).toLocaleTimeString('en-AU',{hour:'2-digit', minute:'2-digit'});
-    return `<div class="fail-row"><span class="fail-sym">${f.symbol}</span><span class="fail-reason">${f.reason}</span><span class="fail-time">${time}</span></div>`;
+  document.getElementById('failed-count').textContent =
+    `${rows.length} ${rows.length===1?'event':'events'}`;
+
+  list.innerHTML = rows.slice(0, 12).map(f => {
+    const time = new Date(f.time).toLocaleTimeString('en-AU',
+      {hour:'2-digit', minute:'2-digit'});
+    const badge = f.kind === 'fail'
+      ? '<span class="fail-badge fail-err">FAILED</span>'
+      : '<span class="fail-badge fail-skip">SKIPPED</span>';
+    return `<div class="fail-row">
+      ${badge}
+      <span class="fail-sym">${escapeHtml(f.symbol)}</span>
+      <span class="fail-reason">${escapeHtml(f.reason).substring(0, 100)}</span>
+      <span class="fail-time">${time}</span>
+    </div>`;
   }).join('');
 }
 
