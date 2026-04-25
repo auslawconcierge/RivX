@@ -493,6 +493,13 @@ def run_snapshot(db, alpaca=None):
                           if (p.get("market") or "").lower() != "alpaca"]
         market_data = get_market_data(crypto_symbols) if crypto_symbols else {}
 
+        # 1b) Backfill any crypto whose entry_price is still 0 (CoinSpot was
+        # down at buy time, etc). Cheap to re-run — only patches rows that need it.
+        try:
+            _repair_crypto_entry_prices(db)
+        except Exception as e:
+            log.debug(f"Repair on snapshot failed: {e}")
+
         # 2) Live Alpaca positions — also writes fresh data into Supabase
         alpaca_data = _sync_alpaca_positions(db, alpaca)
 
