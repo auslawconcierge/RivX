@@ -608,6 +608,38 @@ Return:
         for skipped in result.get("skipped", []):
             reasons.append(f"Skipped {skipped.get('symbol', '?')}: {skipped.get('red_flag', 'no reason given')}")
 
+    # ── Mechanical fallback ──────────────────────────────────────────────
+    # If Claude returned nothing useful (no buys, no skipped flags) despite
+    # the scanner finding qualified setups, buy the top picks mechanically.
+    # Claude is meant to FILTER, not gatekeep — silence is consent.
+    has_buy_action = any(a.get("action") == "BUY" for a in actions)
+    skipped_syms = set()
+    if result:
+        skipped_syms = {s.get("symbol") for s in result.get("skipped", []) if s.get("symbol")}
+
+    if not has_buy_action and len(strong_opps) > 0 and crypto_available >= 300 and open_count < CRYPTO_MAX_POSITIONS:
+        fallback_count = 0
+        for opp in strong_opps:
+            if open_count >= CRYPTO_MAX_POSITIONS or crypto_available < 300:
+                break
+            sym = opp.get("symbol")
+            if not sym or sym in crypto_positions or sym in skipped_syms:
+                continue
+            score = opp.get("opportunity_score", 0)
+            daily = opp.get("daily_change", 0)
+            actions.append({
+                "symbol": sym,
+                "action": "BUY",
+                "reason": f"mechanical fallback (Claude hesitated): score {score:.1f}, daily {daily*100:+.1f}%",
+                "aud_amount": suggested_size,
+            })
+            crypto_available -= suggested_size
+            open_count += 1
+            fallback_count += 1
+            reasons.append(f"FALLBACK BUY {sym} (score {score:.1f}) — Claude returned no buys nor skip flag")
+        if fallback_count > 0:
+            log.warning(f"Crypto: mechanical fallback fired — bought {fallback_count} setups Claude didn't decide on")
+
     return {
         "actions": actions,
         "reasoning": " | ".join(r for r in reasons if r) or "Monitoring",
