@@ -382,7 +382,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
           <div style="font-size:10px;color:#c4c7cc;">why net ≠ gross</div>
         </div>
         <div style="font-size:12px;color:#555;line-height:1.7;">
-          All values shown in AUD. Stocks priced in USD by Alpaca and converted at the live AUD/USD rate (sourced from CoinGecko); the entry price stored uses the FX rate at the moment of purchase, so AUD P&amp;L includes any FX movement.
+          All values shown in AUD. Stocks priced in USD by Alpaca and converted at the live AUD/USD rate (sourced from the European Central Bank via Frankfurter); the entry price stored uses the FX rate at the moment of purchase, so AUD P&amp;L includes any FX movement.
           <br><br>
           <strong>Gross P&amp;L</strong> is the market move only — current value minus capital deployed, before any transaction costs.
           <br>
@@ -499,11 +499,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 const SUPABASE_URL = 'https://fsbnhrfipzmulbypheyl.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_k12zd-TEPlpGJDC5DkxsUA_w8-fN3p5';
 const PASSWORD = 'RivX@Boat2026!';
-const CG_BASE = 'https://api.coingecko.com/api/v3';
+const FX_URL = 'https://api.frankfurter.app/latest?from=USD&to=AUD';
+const PAPRIKA_URL = 'https://api.coinpaprika.com/v1/tickers?limit=300';
 const DAILY_BUDGET_USD = 2.00;
 const STARTING_AUD = 5000;
-// Rough USD→AUD for display of Alpaca prices. Updated on each refresh from CoinGecko's global ticker
-// when available; otherwise fallback.
+// USD→AUD rate for displaying Alpaca (USD-priced) stocks in AUD. Refreshed
+// each load from the Frankfurter API (ECB rates, no auth, no rate limit).
 let USD_TO_AUD = 1.57;
 
 const SYM_TO_CG = {
@@ -662,34 +663,56 @@ async function sb(table, params, method='GET', body=null){
 }
 
 async function loadFxRate(){
-  // Always fetch USD/AUD rate, regardless of whether any crypto position exists.
-  // Without this the rate stays at the 1.57 hardcoded default and AUD values
-  // for stocks drift out of sync with reality.
+  // Frankfurter — ECB-backed daily rates, no auth, no rate limit.
+  // Replaces CoinGecko which was throttling us hard.
   try {
-    const r = await fetch(`${CG_BASE}/simple/price?ids=bitcoin&vs_currencies=aud,usd`);
+    const r = await fetch(FX_URL);
     if(!r.ok) return;
     const data = await r.json();
-    const b = data && data.bitcoin;
-    if(b && b.aud && b.usd){
-      USD_TO_AUD = b.aud / b.usd;
+    const rate = data && data.rates && data.rates.AUD;
+    if(rate && rate > 0.5 && rate < 3){  // sanity-bound to reject bad data
+      USD_TO_AUD = rate;
     }
   } catch(e) {}
 }
 
 async function loadLivePrices(symbols){
+  // CoinPaprika — free tier 25k calls/month, no auth. Returns top 300 coins
+  // with USD price + 24h change in one call. We convert USD→AUD client-side.
   if(!symbols.length) return {};
-  const ids = symbols.map(s=>SYM_TO_CG[s]).filter(Boolean).join(',');
-  if(!ids) return {};
   try {
-    const r = await fetch(`${CG_BASE}/simple/price?ids=${ids}&vs_currencies=aud,usd&include_24hr_change=true`);
+    const r = await fetch(PAPRIKA_URL);
     if(!r.ok) return {};
-    const data = await r.json();
-    // Opportunistically update USD→AUD rate from any coin with both quotes
-    for(const id of Object.keys(data)){
-      const d = data[id];
-      if(d && d.aud && d.usd){ USD_TO_AUD = d.aud / d.usd; break; }
+    const rows = await r.json();
+    if(!Array.isArray(rows)) return {};
+
+    // Build a quick {SYMBOL: tickerRow} index
+    const bySym = {};
+    for(const row of rows){
+      const s = (row.symbol || '').toUpperCase();
+      if(s && !bySym[s]) bySym[s] = row;
     }
-    return data;
+
+    // Keyed by CoinGecko ID to match existing consumers' SYM_TO_CG[sym] lookup.
+    // Each entry: {aud, usd, aud_24h_change} — same shape as before, just
+    // sourced from CoinPaprika + Frankfurter instead of CoinGecko.
+    const out = {};
+    for(const sym of symbols){
+      const cgId = SYM_TO_CG[sym];
+      if(!cgId) continue;
+      const row = bySym[sym.toUpperCase()];
+      if(!row) continue;
+      const q = (row.quotes && row.quotes.USD) || {};
+      const usd = parseFloat(q.price || 0);
+      const chg = parseFloat(q.percent_change_24h || 0);
+      if(usd <= 0) continue;
+      out[cgId] = {
+        usd: usd,
+        aud: usd * USD_TO_AUD,
+        aud_24h_change: chg,  // 24h change in % — same units the old code used
+      };
+    }
+    return out;
   } catch(e) { return {}; }
 }
 
@@ -734,7 +757,7 @@ function renderAll(){
 
 // ─── Position math helpers ─────────────────────────────────────────────────
 // All display values are AUD. Stocks are priced internally in USD by Alpaca,
-// so we convert via USD_TO_AUD (live rate from CoinGecko) for display.
+// so we convert via USD_TO_AUD (live ECB rate from Frankfurter) for display.
 // Crypto is already AUD-native.
 //
 // Fee model (estimates; paper mode charges nothing — these show what live mode would cost):
@@ -1351,18 +1374,10 @@ async function selectHolding(sym){
 
   const cg = SYM_TO_CG[sym];
   const chartWrap = document.getElementById('holding-chart-wrap');
-  if(cg){
-    chartWrap.style.display = 'block';
-    if(!holdingCache[sym]){
-      try {
-        const r = await fetch(`${CG_BASE}/coins/${cg}/market_chart?vs_currency=aud&days=1`);
-        if(r.ok) holdingCache[sym] = (await r.json()).prices;
-      } catch(e){}
-    }
-    if(holdingCache[sym]) drawHoldingChart(sym, holdingCache[sym]);
-  } else {
-    chartWrap.style.display = 'none';
-  }
+  // 1-day price chart is temporarily disabled — relied on CoinGecko which
+  // throttled us to death. Will return when bot logs per-symbol price
+  // history to Supabase. For now: hide the chart slot, keep everything else.
+  chartWrap.style.display = 'none';
 }
 
 const RISK_THRESHOLDS = {
