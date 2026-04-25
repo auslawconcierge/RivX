@@ -84,20 +84,34 @@ def _fetch_alpaca_fill_price(trader, symbol: str, retries: int = 5) -> float:
 
 def execute_action(symbol, action, reason, alpaca, coinspot, db, tg,
                    positions, market_data, confidence=1.0, notify=True,
-                   aud_amount=None):
-    """Execute a single trade. Defensive: never calls .buy/.sell on None."""
+                   aud_amount=None, market=None):
+    """
+    Execute a single trade. Defensive: never calls .buy/.sell on None.
+
+    Returns a tuple (success: bool, error_reason: str|None) so callers can
+    track per-action outcomes. When the loop already knows the venue (e.g.
+    run_crypto_loop knows it's crypto), pass `market` explicitly to skip
+    symbol-based classification.
+    """
     crypto_coins = ["BTC","ETH","SOL","XRP","ADA","DOGE","AVAX","LINK","LTC",
                     "BCH","DOT","UNI","AAVE","MATIC","ATOM","ALGO","NEAR",
                     "FTM","SAND","MANA","CRV","GRT","SUSHI","MKR","SNX",
-                    "PEPE","SHIB","FLOKI","WIF","BONK","FET","RNDR","TAO"]
+                    "PEPE","SHIB","FLOKI","WIF","BONK","FET","RNDR","TAO",
+                    # Layer-2s and newer L1s the scanner now returns
+                    "OP","APT","ARB","FIL","INJ","RUNE","IMX","STX","SEI",
+                    "TIA","JUP","ORDI","PYTH","JTO","WLD","ENA","SUI","TON"]
 
-    if symbol in PORTFOLIO:
-        config = PORTFOLIO[symbol]
-        market = config.get("market", "coinspot")
-        default_amount = config.get("allocated_aud", 400)
+    if market is None:
+        if symbol in PORTFOLIO:
+            config = PORTFOLIO[symbol]
+            market = config.get("market", "coinspot")
+            default_amount = config.get("allocated_aud", 400)
+        else:
+            market = "coinspot" if symbol in crypto_coins else "alpaca"
+            default_amount = 400
     else:
-        market = "coinspot" if symbol in crypto_coins else "alpaca"
-        default_amount = 400
+        default_amount = (PORTFOLIO.get(symbol, {}).get("allocated_aud", 400)
+                          if symbol in PORTFOLIO else 400)
 
     allocated = aud_amount if aud_amount else default_amount
 
@@ -109,56 +123,66 @@ def execute_action(symbol, action, reason, alpaca, coinspot, db, tg,
             market = "coinspot"
             trader = coinspot
         else:
-            log.warning(f"Skip {symbol} — no {market} trader in scope")
-            return False
+            err = f"no {market} trader available in this loop"
+            log.warning(f"Skip {symbol} — {err}")
+            return False, err
 
     if action == "BUY" and symbol not in positions:
         log.info(f"Executing BUY {symbol} on {market} ({allocated} AUD) — {reason}")
         try:
             order = trader.buy(symbol, allocated)
         except Exception as e:
-            log.error(f"BUY call failed for {symbol}: {e}")
-            return False
-        if order:
-            # Resolve entry price. For Alpaca we need to wait for the fill
-            # and pull the actual avg_entry_price — market_data is crypto-only.
-            price = market_data.get(symbol, {}).get("price", 0) or 0
-            if market == "alpaca":
-                fill_price = _fetch_alpaca_fill_price(trader, symbol)
-                if fill_price > 0:
-                    price = fill_price
-                    log.info(f"Alpaca fill: {symbol} @ ${price:.4f} USD")
+            err = f"{type(e).__name__}: {str(e)[:120]}"
+            log.error(f"BUY call failed for {symbol}: {err}")
+            return False, err
+        if not order:
+            err = f"{market} returned no order (likely unsupported symbol or API rejection)"
+            log.error(f"BUY {symbol} on {market}: {err}")
+            return False, err
 
-            db.log_trade(symbol, "BUY", allocated, order, confidence, reason)
-            db.save_position(symbol, price, allocated, market)
-            if notify:
-                tg.send(f"{'[PAPER] ' if PAPER_MODE else ''}Bought {symbol} — {reason}")
-            return True
+        # Resolve entry price. For Alpaca we need to wait for the fill
+        # and pull the actual avg_entry_price — market_data is crypto-only.
+        price = market_data.get(symbol, {}).get("price", 0) or 0
+        if market == "alpaca":
+            fill_price = _fetch_alpaca_fill_price(trader, symbol)
+            if fill_price > 0:
+                price = fill_price
+                log.info(f"Alpaca fill: {symbol} @ ${price:.4f} USD")
+
+        db.log_trade(symbol, "BUY", allocated, order, confidence, reason)
+        db.save_position(symbol, price, allocated, market)
+        if notify:
+            tg.send(f"{'[PAPER] ' if PAPER_MODE else ''}Bought {symbol} — {reason}")
+        return True, None
 
     elif action == "SELL" and symbol in positions:
         log.info(f"Executing SELL {symbol} on {market} — {reason}")
         try:
             order = trader.sell(symbol)
         except Exception as e:
-            log.error(f"SELL call failed for {symbol}: {e}")
-            return False
-        if order:
-            pos = positions[symbol]
-            price = market_data.get(symbol, {}).get("price", 0) or 0
-            # For Alpaca, prefer the last known current_price from the position
-            # (stored by the snapshot sync) over market_data which is crypto-only.
-            if market == "alpaca":
-                stored_current = float(pos.get("current_price", 0) or 0)
-                if stored_current > 0:
-                    price = stored_current
-            pnl = pos.get("pnl_pct", 0)
-            db.log_trade(symbol, "SELL", pos.get("aud_amount", 0), order, confidence, reason)
-            db.close_position(symbol, price, pnl)
-            if notify:
-                tg.send(f"{'[PAPER] ' if PAPER_MODE else ''}Sold {symbol} — {reason} — P&L {pnl:+.1%}")
-            return True
+            err = f"{type(e).__name__}: {str(e)[:120]}"
+            log.error(f"SELL call failed for {symbol}: {err}")
+            return False, err
+        if not order:
+            err = f"{market} sell returned no order"
+            log.error(f"SELL {symbol}: {err}")
+            return False, err
 
-    return False
+        pos = positions[symbol]
+        price = market_data.get(symbol, {}).get("price", 0) or 0
+        if market == "alpaca":
+            stored_current = float(pos.get("current_price", 0) or 0)
+            if stored_current > 0:
+                price = stored_current
+        pnl = pos.get("pnl_pct", 0)
+        db.log_trade(symbol, "SELL", pos.get("aud_amount", 0), order, confidence, reason)
+        db.close_position(symbol, price, pnl)
+        if notify:
+            tg.send(f"{'[PAPER] ' if PAPER_MODE else ''}Sold {symbol} — {reason} — P&L {pnl:+.1%}")
+        return True, None
+
+    err = f"unhandled: action={action}, in_positions={symbol in positions}"
+    return False, err
 
 
 # ─── Loops ─────────────────────────────────────────────────────────────────
@@ -249,6 +273,7 @@ def run_intraday_loop(db, tg, alpaca, coinspot):
         return
 
     market_data = {}
+    failed = []
     for act in actions:
         sym = act.get("symbol")
         action = act.get("action")
@@ -258,8 +283,17 @@ def run_intraday_loop(db, tg, alpaca, coinspot):
         if sym not in market_data:
             market_data.update(get_market_data([sym]))
         positions = db.get_positions()
-        execute_action(sym, action, reason, alpaca, coinspot, db, tg,
-                      positions, market_data, confidence=0.8, notify=True)
+        success, err = execute_action(sym, action, reason, alpaca, coinspot, db, tg,
+                                      positions, market_data, confidence=0.8, notify=True,
+                                      market="alpaca")
+        if not success:
+            failed.append({"symbol": sym, "action": action, "error": err})
+
+    if failed and tg:
+        msg = "Intraday actions FAILED: " + "; ".join(
+            f"{f['action']} {f['symbol']} ({(f['error'] or '')[:60]})" for f in failed
+        )
+        tg.send(msg)
 
 
 def run_crypto_loop(db, tg, coinspot):
@@ -271,15 +305,47 @@ def run_crypto_loop(db, tg, coinspot):
     actions = result.get("actions", [])
     reasoning = result.get("reasoning", "")
     opportunities = result.get("opportunities", [])
+    skipped = result.get("skipped", [])  # structured skip list from Claude
 
-    # Log every check so the dashboard can display activity
+    # Execute actions and track per-symbol outcomes
+    executions = []
+    if actions:
+        market_data = get_market_data(["BTC", "ETH"])
+        for act in actions:
+            sym = act.get("symbol")
+            action = act.get("action")
+            reason = act.get("reason", "")
+            aud = act.get("aud_amount")
+            if action not in ("BUY", "SELL"):
+                executions.append({"symbol": sym, "action": action, "success": False,
+                                   "error": "invalid action", "aud_amount": aud})
+                continue
+            if sym not in market_data:
+                market_data.update(get_market_data([sym]))
+            positions = db.get_positions()
+            success, err = execute_action(sym, action, reason, None, coinspot, db, tg,
+                                          positions, market_data, confidence=0.75,
+                                          notify=True, aud_amount=aud,
+                                          market="coinspot")  # we KNOW it's crypto
+            executions.append({
+                "symbol": sym, "action": action,
+                "aud_amount": aud,
+                "success": success,
+                "error": err,
+            })
+
+    # Log every check so the dashboard can display activity, including which
+    # buys actually succeeded and which failed. This is what the user needs to
+    # debug "why isn't it trading" without reading server logs.
     try:
-        db._post("crypto_checks", {
+        db._post_with_fallback("crypto_checks", {
             "checked_at": datetime.utcnow().isoformat(),
             "reasoning": reasoning,
             "actions": json.dumps(actions),
+            "executions": json.dumps(executions),
+            "skipped_setups": json.dumps(skipped),
             "opportunities": json.dumps(opportunities[:10]) if opportunities else "[]",
-        })
+        }, optional_fields=["executions", "skipped_setups", "opportunities"])
     except Exception as e:
         log.warning(f"crypto_checks log failed: {e}")
 
@@ -287,20 +353,13 @@ def run_crypto_loop(db, tg, coinspot):
         log.debug(f"Crypto: no actions — {reasoning}")
         return
 
-    market_data = get_market_data(["BTC", "ETH"])
-    for act in actions:
-        sym = act.get("symbol")
-        action = act.get("action")
-        reason = act.get("reason", "")
-        aud = act.get("aud_amount")
-        if action not in ("BUY", "SELL"):
-            continue
-        if sym not in market_data:
-            market_data.update(get_market_data([sym]))
-        positions = db.get_positions()
-        execute_action(sym, action, reason, None, coinspot, db, tg,
-                      positions, market_data, confidence=0.75,
-                      notify=True, aud_amount=aud)
+    # Surface failed buys to telegram so the user knows immediately
+    failed = [e for e in executions if not e["success"]]
+    if failed and tg:
+        msg = "Crypto buys FAILED: " + "; ".join(
+            f"{e['symbol']} ({e['error'][:60]})" for e in failed
+        )
+        tg.send(msg)
 
 
 def _sync_alpaca_positions(db, alpaca):
