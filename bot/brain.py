@@ -74,7 +74,11 @@ STOCK_EXIT_BEFORE_CLOSE_MIN = 15
 _CRYPTO_LIST = ["BTC","ETH","SOL","XRP","ADA","DOGE","AVAX","LINK","LTC","BCH",
                 "DOT","UNI","AAVE","MATIC","ATOM","ALGO","NEAR","FTM","SAND",
                 "MANA","CRV","GRT","SUSHI","MKR","SNX","PEPE","SHIB","FLOKI",
-                "WIF","BONK","FET","RNDR","TAO"]
+                "WIF","BONK","FET","RNDR","TAO",
+                # Layer-2s and newer L1s the scanner now sees
+                "OP","APT","ARB","FIL","INJ","RUNE","IMX","STX","SEI","TIA",
+                "JUP","ORDI","PYTH","JTO","WLD","ENA","SUI","TON","ICP","HBAR",
+                "VET","TRX"]
 
 
 # ─── Budget tracking ───────────────────────────────────────────────────────
@@ -135,17 +139,17 @@ def _fetch_bars(symbol: str, days: int = 30) -> pd.DataFrame:
         is_crypto = symbol in _CRYPTO_LIST or PORTFOLIO.get(symbol, {}).get("type") == "crypto"
 
         if is_crypto:
-            crypto_map = {"BTC": "BTC/USD", "ETH": "ETH/USD", "SOL": "SOL/USD",
-                          "XRP": "XRP/USD", "AVAX": "AVAX/USD", "LINK": "LINK/USD",
-                          "DOGE": "DOGE/USD", "LTC": "LTC/USD", "BCH": "BCH/USD"}
-            if symbol not in crypto_map:
-                return pd.DataFrame()
+            # Alpaca crypto pairs all follow {SYM}/USD. If a symbol isn't on
+            # Alpaca, the response just returns no bars for it — empty DataFrame,
+            # the caller handles the no-data case. We don't need a hardcoded
+            # whitelist anymore.
+            pair = f"{symbol.upper()}/USD"
             r = requests.get(f"{ALPACA_DATA_URL}/v1beta3/crypto/us/bars",
                              headers=HEADERS,
-                             params={"symbols": crypto_map[symbol], "timeframe": "1Day", "start": start},
+                             params={"symbols": pair, "timeframe": "1Day", "start": start},
                              timeout=10)
             r.raise_for_status()
-            bars = r.json().get("bars", {}).get(crypto_map[symbol], [])
+            bars = r.json().get("bars", {}).get(pair, [])
         else:
             r = requests.get(f"{ALPACA_DATA_URL}/v2/stocks/{symbol}/bars",
                              headers=HEADERS,
