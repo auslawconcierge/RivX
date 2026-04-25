@@ -34,6 +34,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .topbar-right{display:flex;align-items:center;gap:10px;}
 .topbar-time{font-size:11px;color:#6b8196;}
 .topbar-btn{font-size:11px;padding:5px 11px;border:1px solid rgba(255,255,255,0.1);border-radius:6px;background:none;color:#94a3b8;cursor:pointer;}
+.topbar-btn-kill{font-weight:600;}
+.topbar-btn-kill.kill-active{background:#7f1d1d;border-color:#dc2626;color:#fef2f2;}
+.topbar-btn-kill:not(.kill-active){background:rgba(26,115,64,0.15);border-color:#1a7340;color:#86efac;}
+
+/* Force sell button on holding detail */
+.force-sell-btn{font-size:11px;padding:6px 12px;border:1px solid #fecaca;border-radius:6px;background:#fef2f2;color:#c0392b;cursor:pointer;font-weight:600;letter-spacing:0.02em;}
+.force-sell-btn:hover{background:#fee2e2;border-color:#fca5a5;}
 
 .main{padding:20px;max-width:1320px;margin:0 auto;}
 .page{display:none;}
@@ -280,6 +287,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     </div>
     <div class="topbar-right">
       <span class="topbar-time" id="last-updated">Loading...</span>
+      <button class="topbar-btn topbar-btn-kill" id="kill-switch-btn" onclick="toggleKillSwitch()">Trading: ON</button>
       <button class="topbar-btn" onclick="loadAll()">Refresh</button>
       <button class="topbar-btn" onclick="logout()">Sign out</button>
     </div>
@@ -390,7 +398,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
             <div class="card-title" style="margin-bottom:2px;" id="holding-title">Detail</div>
             <div style="font-size:11px;color:#9aa0a6;" id="holding-sub">Live data</div>
           </div>
-          <div id="holding-price" style="text-align:right;"></div>
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
+            <div id="holding-price" style="text-align:right;"></div>
+            <button class="force-sell-btn" id="holding-force-sell" onclick="forceSellSelected()">Force sell now</button>
+          </div>
         </div>
         <div id="holding-metrics"></div>
         <div id="holding-chart-wrap" style="display:none;">
@@ -509,6 +520,107 @@ function logout(){
   sessionStorage.removeItem('rivx_auth');
   location.reload();
 }
+
+// ── Kill switch ─────────────────────────────────────────────────────────
+// Toggles the `kill_switch` flag in approved_plan. When "on", the bot pauses
+// all trading loops but keeps snapshots and the manual-orders processor
+// running so you can still force-sell things from the dashboard.
+let killSwitchState = 'off';
+
+async function loadKillSwitchState(){
+  try {
+    const rows = await sb('approved_plan?order=updated_at.desc&limit=1');
+    if(rows && rows.length){
+      const plan = JSON.parse(rows[0].plan || '{}');
+      killSwitchState = plan._flag_kill_switch || 'off';
+    }
+  } catch(e){}
+  updateKillSwitchButton();
+}
+
+function updateKillSwitchButton(){
+  const btn = document.getElementById('kill-switch-btn');
+  if(!btn) return;
+  if(killSwitchState === 'on'){
+    btn.textContent = 'Trading: PAUSED';
+    btn.classList.add('kill-active');
+  } else {
+    btn.textContent = 'Trading: ON';
+    btn.classList.remove('kill-active');
+  }
+}
+
+async function toggleKillSwitch(){
+  const newState = killSwitchState === 'on' ? 'off' : 'on';
+  const verb = newState === 'on' ? 'PAUSE all automated trading' : 'RESUME automated trading';
+  if(!confirm(`${verb}?\n\n` +
+              (newState === 'on'
+                ? 'The bot will stop opening new positions and stop running auto-exits. ' +
+                  'Snapshots and force-sell from the dashboard still work.'
+                : 'The bot will resume normal trading on the next cycle.'))){
+    return;
+  }
+
+  try {
+    // Read current plan
+    const rows = await sb('approved_plan?order=updated_at.desc&limit=1');
+    let plan = {};
+    let id = null;
+    if(rows && rows.length){
+      try { plan = JSON.parse(rows[0].plan || '{}'); } catch(e){}
+      id = rows[0].id;
+    }
+    plan._flag_kill_switch = newState;
+    const body = {plan: JSON.stringify(plan), updated_at: new Date().toISOString()};
+
+    let ok;
+    if(id){
+      ok = await sb(`approved_plan?id=eq.${id}`, {}, 'PATCH', body);
+    } else {
+      ok = await sb('approved_plan', {}, 'POST', body);
+    }
+    if(ok){
+      killSwitchState = newState;
+      updateKillSwitchButton();
+    } else {
+      alert('Could not update kill switch — check Supabase permissions');
+    }
+  } catch(e){
+    alert('Kill switch toggle failed: ' + e.message);
+  }
+}
+
+// ── Manual force-sell ───────────────────────────────────────────────────
+// Inserts a row into `manual_orders` which the bot polls every 30s and
+// executes via execute_action. Status is patched back so dashboard shows
+// success/failure.
+async function forceSell(symbol, market){
+  if(!confirm(`Force-sell ${symbol}?\n\nThis bypasses the bot's auto-exit logic and ` +
+              `closes the position on the next cycle (~30 sec).`)){
+    return;
+  }
+  const body = {
+    symbol: symbol,
+    action: 'SELL',
+    market: market || null,
+    requested_at: new Date().toISOString(),
+    status: 'pending',
+  };
+  const result = await sb('manual_orders', {}, 'POST', body);
+  if(result){
+    alert(`Force-sell queued for ${symbol}. Check Telegram or refresh in ~30 seconds.`);
+    setTimeout(loadAll, 5000);
+  } else {
+    alert(`Could not queue sell for ${symbol}. Did you create the manual_orders table?`);
+  }
+}
+
+function forceSellSelected(){
+  if(!selectedHolding) return;
+  const pos = allPositions.find(p => p.symbol === selectedHolding);
+  if(!pos) return;
+  forceSell(pos.symbol, pos.market);
+}
 function showDash(){
   document.getElementById('login-screen').style.display='none';
   document.getElementById('dashboard').style.display='block';
@@ -595,6 +707,7 @@ async function loadAll(){
   livePrices = await loadLivePrices(syms);
 
   renderAll();
+  loadKillSwitchState();
   document.getElementById('last-updated').textContent = 'Updated ' + new Date().toLocaleTimeString('en-AU', {hour:'2-digit', minute:'2-digit'});
 }
 
@@ -1215,7 +1328,7 @@ function renderRiskLevels(pos, stock, usdPnlPct){
   rows.push({
     icon: '🛑',
     label: 'Stop loss',
-    detail: `Auto-sell if ${stock?'USD ':''}P&L falls to ${(t.stop*100).toFixed(1)}% · currently ${(usdPnlPct*100).toFixed(2)}%`,
+    detail: `Trigger: P&L drops to ${(t.stop*100).toFixed(1)}% (current ${(usdPnlPct*100).toFixed(2)}%${stock?', USD':''})`,
     status: stopText, statusCls: stopStatus,
   });
 
@@ -1227,7 +1340,7 @@ function renderRiskLevels(pos, stock, usdPnlPct){
   rows.push({
     icon: '🎯',
     label: 'Take profit',
-    detail: `Auto-sell if ${stock?'USD ':''}P&L reaches ${(t.take*100).toFixed(1)}% · currently ${(usdPnlPct*100).toFixed(2)}%`,
+    detail: `Trigger: P&L hits +${(t.take*100).toFixed(1)}% (current ${(usdPnlPct*100).toFixed(2)}%${stock?', USD':''})`,
     status: takeText, statusCls: takeStatus,
   });
 
