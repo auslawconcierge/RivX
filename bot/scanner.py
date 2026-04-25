@@ -111,22 +111,22 @@ def get_crypto_movers() -> list:
                 "market_cap": float(c.get("market_cap") or 0),
             }
 
-    # Pass 1: top 200 by volume
+    # Pass 1: top 200 by volume — this single pass gives us most of what we need
     data = _cg_get("/coins/markets",
                    {"vs_currency":"usd", "order":"volume_desc", "per_page":200, "page":1,
                     "price_change_percentage":"24h"}, "volume")
     absorb(data or [])
-    time.sleep(3)
 
-    # Pass 2: top gainers (only if we got volume data)
-    if candidates:
+    # Only run extra passes if Pass 1 succeeded AND we have time
+    # (skip gainers/losers if we already have 100+ candidates — it's overkill)
+    if candidates and len(candidates) < 100:
+        time.sleep(8)  # gentler spacing
         data = _cg_get("/coins/markets",
                        {"vs_currency":"usd", "order":"price_change_percentage_24h_desc",
                         "per_page":50, "page":1, "price_change_percentage":"24h"}, "gainers")
         absorb(data or [])
-        time.sleep(3)
 
-        # Pass 3: top losers (reversal setups)
+        time.sleep(8)
         data = _cg_get("/coins/markets",
                        {"vs_currency":"usd", "order":"price_change_percentage_24h_asc",
                         "per_page":30, "page":1, "price_change_percentage":"24h"}, "losers")
