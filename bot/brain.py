@@ -506,6 +506,7 @@ def crypto_check(db, positions: dict, approved_plan: dict) -> dict:
             "reasoning": ("No Claude call: " + ", ".join(skip_reason) +
                           ((" | " + " | ".join(reasons)) if reasons else "")),
             "opportunities": crypto_opps,
+            "skipped": [],
         }
 
     # 4. Claude call — DECISIVE prompt, no HOLD in schema ──────────────────
@@ -644,6 +645,7 @@ Return:
         "actions": actions,
         "reasoning": " | ".join(r for r in reasons if r) or "Monitoring",
         "opportunities": crypto_opps,
+        "skipped": (result.get("skipped", []) if result else []),
     }
 
 
