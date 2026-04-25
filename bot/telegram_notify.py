@@ -270,31 +270,127 @@ class TelegramNotifier:
         try:
             portfolio = db.get_portfolio_value()
             positions = db.get_positions()
+            recent    = db.get_recent_trades(limit=50) or []
+            kill      = (db.get_flag("kill_switch") or "").lower() in ("on", "1", "true")
         except Exception as e:
             self.send(f"Could not load summary: {e}")
             return
 
-        total = portfolio.get("total_aud", 0)
-        day = portfolio.get("day_pnl", 0)
-        all_time = portfolio.get("total_pnl", 0)
-        emoji = "📈" if day >= 0 else "📉"
+        from datetime import datetime, timezone, timedelta
+        aest = timezone(timedelta(hours=10))
+        now_aest = datetime.now(aest)
 
-        pos_lines = []
+        # ── Portfolio header ─────────────────────────────────────────────
+        total    = float(portfolio.get("total_aud", 5000) or 5000)
+        day_pnl  = float(portfolio.get("day_pnl", 0) or 0)
+        all_pnl  = float(portfolio.get("total_pnl", 0) or 0)
+        day_pct  = (day_pnl / max(1, total - day_pnl)) * 100
+        all_pct  = (all_pnl / 5000) * 100
+        head_emoji = "📈" if day_pnl >= 0 else "📉"
+
+        # ── Capacity (deployed vs available, per market) ─────────────────
+        stock_pos  = {s: p for s, p in positions.items() if (p.get("market") or "").lower() == "alpaca"}
+        crypto_pos = {s: p for s, p in positions.items() if (p.get("market") or "").lower() == "coinspot"}
+
+        stock_deployed  = sum(float(p.get("aud_amount") or 0) for p in stock_pos.values())
+        crypto_deployed = sum(float(p.get("aud_amount") or 0) for p in crypto_pos.values())
+        total_deployed  = stock_deployed + crypto_deployed
+        # Hard-coded budgets — match brain.py constants
+        STOCK_BUDGET, CRYPTO_BUDGET, TOTAL_BUDGET = 1500, 3000, 4500
+        STOCK_SLOTS, CRYPTO_SLOTS = 3, 6
+        cash_avail = max(0, 5000 - total_deployed)
+
+        # ── Today's activity (trades since AEST midnight) ────────────────
+        midnight_aest = now_aest.replace(hour=0, minute=0, second=0, microsecond=0)
+        midnight_utc  = midnight_aest.astimezone(timezone.utc)
+        todays_trades = []
+        for t in recent:
+            try:
+                ts = datetime.fromisoformat((t.get("created_at") or "").replace("Z", "+00:00"))
+                if ts >= midnight_utc:
+                    todays_trades.append(t)
+            except Exception:
+                pass
+        bought = [t for t in todays_trades if (t.get("action") or "").upper() == "BUY"]
+        sold   = [t for t in todays_trades if (t.get("action") or "").upper() == "SELL"]
+
+        # ── Top movers (best/worst by pnl_pct) ───────────────────────────
+        movers = []
         for sym, p in positions.items():
-            pnl_pct = (p.get("pnl_pct") or 0) * 100
-            market = (p.get("market") or "")[:6]
-            aud = p.get("aud_amount") or 0
-            pos_lines.append(f"  • <b>{sym}</b> ({market}): ${aud:.0f} → {pnl_pct:+.2f}%")
+            pct = float(p.get("pnl_pct") or 0) * 100
+            aud = float(p.get("aud_amount") or 0)
+            dollar = aud * (pct / 100)
+            movers.append((sym, pct, dollar))
+        movers.sort(key=lambda x: x[1], reverse=True)
+        winners = [m for m in movers if m[1] > 0][:2]
+        losers  = sorted([m for m in movers if m[1] < 0], key=lambda x: x[1])[:2]
 
-        msg = (
-            f"{emoji} <b>RivX summary</b>\n\n"
-            f"Portfolio: <b>${total:,.2f} AUD</b>\n"
-            f"Today: {'+' if day >= 0 else ''}${day:.2f}\n"
-            f"All-time: {'+' if all_time >= 0 else ''}${all_time:.2f}\n\n"
-            f"<b>Open ({len(positions)})</b>:\n"
-            f"{chr(10).join(pos_lines) if pos_lines else '  (none)'}"
+        # ── Position list, grouped, with $/% ─────────────────────────────
+        def _fmt_group(label, group, budget, slots):
+            if not group:
+                return f"<b>{label}</b> (0/{slots} slots) — none\n"
+            net_pct_sum = sum(float(p.get("aud_amount") or 0) * float(p.get("pnl_pct") or 0)
+                              for p in group.values())
+            lines = [f"<b>{label}</b> ({len(group)}/{slots} slots) — net {'+' if net_pct_sum >= 0 else '-'}${abs(net_pct_sum):.2f}"]
+            # Sort by abs P&L $ desc so biggest movers first
+            sorted_items = sorted(group.items(),
+                                  key=lambda kv: abs(float(kv[1].get("aud_amount") or 0) *
+                                                     float(kv[1].get("pnl_pct") or 0)),
+                                  reverse=True)
+            for sym, p in sorted_items:
+                pct = float(p.get("pnl_pct") or 0) * 100
+                aud = float(p.get("aud_amount") or 0)
+                dollar = aud * (pct / 100)
+                lines.append(f"  • <b>{sym}</b>: ${aud:.0f} → {'+' if pct >= 0 else ''}{pct:.2f}% "
+                             f"({'+' if dollar >= 0 else '-'}${abs(dollar):.2f})")
+            return "\n".join(lines) + "\n"
+
+        # ── Build the message ────────────────────────────────────────────
+        parts = []
+        parts.append(
+            f"{head_emoji} <b>RivX summary</b> — {now_aest.strftime('%H:%M')} AEST\n\n"
+            f"Portfolio: <b>${total:,.2f} AUD</b>  "
+            f"({'+' if day_pnl >= 0 else '-'}${abs(day_pnl):.2f}, "
+            f"{'+' if day_pct >= 0 else ''}{day_pct:.2f}% today)\n"
+            f"All-time: {'+' if all_pnl >= 0 else '-'}${abs(all_pnl):.2f} "
+            f"({'+' if all_pct >= 0 else ''}{all_pct:.2f}%)\n"
         )
-        self.send(msg)
+
+        parts.append(
+            f"\n<b>Capital</b>\n"
+            f"  Deployed: ${total_deployed:.0f} / ${TOTAL_BUDGET} "
+            f"({total_deployed/TOTAL_BUDGET*100:.0f}%)\n"
+            f"  Cash: ${cash_avail:.0f}\n"
+            f"  Stocks: ${stock_deployed:.0f} / ${STOCK_BUDGET}  "
+            f"({len(stock_pos)}/{STOCK_SLOTS} slots)\n"
+            f"  Crypto: ${crypto_deployed:.0f} / ${CRYPTO_BUDGET}  "
+            f"({len(crypto_pos)}/{CRYPTO_SLOTS} slots)\n"
+        )
+
+        parts.append(
+            f"\n<b>Today</b>\n"
+            f"  Bought: {len(bought)}"
+            + (f" ({', '.join(t.get('symbol','?') for t in bought[:6])}{'...' if len(bought)>6 else ''})" if bought else "")
+            + f"\n  Sold: {len(sold)}"
+            + (f" ({', '.join(t.get('symbol','?') for t in sold[:6])})" if sold else "")
+            + "\n"
+        )
+
+        if winners or losers:
+            parts.append("\n<b>Top movers</b>\n")
+            for sym, pct, dollar in winners:
+                parts.append(f"  🟢 {sym}  +{pct:.2f}% (+${dollar:.2f})\n")
+            for sym, pct, dollar in losers:
+                parts.append(f"  🔴 {sym}  {pct:.2f}% (-${abs(dollar):.2f})\n")
+
+        parts.append(f"\n<b>Open ({len(positions)})</b>\n")
+        parts.append(_fmt_group("US stocks", stock_pos, STOCK_BUDGET, STOCK_SLOTS))
+        parts.append(_fmt_group("Crypto",    crypto_pos, CRYPTO_BUDGET, CRYPTO_SLOTS))
+
+        status_emoji = "🔴 paused" if kill else "🟢 trading active"
+        parts.append(f"\nBot: {status_emoji}")
+
+        self.send("".join(parts))
 
     def _cmd_positions(self, db) -> None:
         if db is None:
