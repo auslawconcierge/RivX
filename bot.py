@@ -25,6 +25,8 @@ from bot.config import (
 from bot.brain import (
     evening_briefing, intraday_check, crypto_check, get_market_data,
     MODEL_QA,
+    CRYPTO_MAX_POSITIONS, CRYPTO_MAX_DEPLOYED, CRYPTO_POSITION_SIZE,
+    STOCK_MAX_POSITIONS,  STOCK_MAX_DEPLOYED,  STOCK_POSITION_SIZE,
 )
 from bot.alpaca_trader  import AlpacaTrader, get_aud_usd_rate
 from bot.coinspot_trader import CoinSpotTrader
@@ -457,7 +459,8 @@ def run_question_poll(db, tg):
         # Build a rich context so Claude can answer accurately about both
         # what's happening NOW (open positions) and what HAS happened (closed
         # positions, recent trades, recent crypto scans). Without this Claude
-        # hallucinates — e.g. claiming the bot doesn't trade crypto when it does.
+        # hallucinates — e.g. claiming the bot doesn't trade crypto when it does,
+        # or claiming capital is fully deployed when only stocks are at their cap.
         try:
             positions = db.get_positions()
             trades = db.get_recent_trades(20)
@@ -469,6 +472,51 @@ def run_question_poll(db, tg):
             portfolio = db.get_portfolio_value()
         except Exception:
             positions = {}; trades = []; closed = []; crypto_scans = []; plan = {}; portfolio = {}
+
+        # ── Compute per-market allocation state — without this Claude guesses ──
+        STARTING_CAPITAL = 5000  # AUD seed
+        stock_positions  = {s: p for s, p in positions.items() if (p.get("market") or "").lower() == "alpaca"}
+        crypto_positions = {s: p for s, p in positions.items() if (p.get("market") or "").lower() == "coinspot"}
+        stock_deployed   = sum((p.get("aud_amount") or 0) for p in stock_positions.values())
+        crypto_deployed  = sum((p.get("aud_amount") or 0) for p in crypto_positions.values())
+        stock_free_budget  = max(0, STOCK_MAX_DEPLOYED  - stock_deployed)
+        crypto_free_budget = max(0, CRYPTO_MAX_DEPLOYED - crypto_deployed)
+        stock_free_slots   = max(0, STOCK_MAX_POSITIONS  - len(stock_positions))
+        crypto_free_slots  = max(0, CRYPTO_MAX_POSITIONS - len(crypto_positions))
+        # Cash buffer = starting capital minus what's deployed (entry cost basis)
+        free_cash = max(0, STARTING_CAPITAL - stock_deployed - crypto_deployed)
+
+        # Why each market can or cannot buy right now
+        def _market_status(deployed, free_budget, free_slots, max_dep, max_pos, min_size):
+            if free_slots <= 0:
+                return f"AT POSITION CAP ({max_pos}/{max_pos} open) — must close something before buying"
+            if free_budget < min_size:
+                return f"BUDGET FULL (${deployed:.0f} of ${max_dep} deployed, only ${free_budget:.0f} left, need >=${min_size})"
+            return f"READY TO BUY: ${free_budget:.0f} budget left + {free_slots} slot(s) available"
+
+        stock_status  = _market_status(stock_deployed,  stock_free_budget,  stock_free_slots,
+                                       STOCK_MAX_DEPLOYED,  STOCK_MAX_POSITIONS,  300)
+        crypto_status = _market_status(crypto_deployed, crypto_free_budget, crypto_free_slots,
+                                       CRYPTO_MAX_DEPLOYED, CRYPTO_MAX_POSITIONS, 300)
+
+        budget_state = {
+            "starting_capital_aud": STARTING_CAPITAL,
+            "free_cash_aud":        round(free_cash, 2),
+            "stocks": {
+                "deployed":  round(stock_deployed, 2),
+                "max_budget": STOCK_MAX_DEPLOYED,
+                "open_count": len(stock_positions),
+                "max_positions": STOCK_MAX_POSITIONS,
+                "status": stock_status,
+            },
+            "crypto": {
+                "deployed":  round(crypto_deployed, 2),
+                "max_budget": CRYPTO_MAX_DEPLOYED,
+                "open_count": len(crypto_positions),
+                "max_positions": CRYPTO_MAX_POSITIONS,
+                "status": crypto_status,
+            },
+        }
 
         # Compact summaries so token usage stays reasonable
         open_summary = {
@@ -494,27 +542,34 @@ def run_question_poll(db, tg):
         recent_scans_summary = [{
             'when': (c.get('checked_at') or '')[:16],
             'reasoning': (c.get('reasoning') or '')[:240],
+            'actions':   (c.get('actions') or '')[:200],
         } for c in crypto_scans]
 
         system = (
             "You are RivX, an autonomous paper-trading bot. You actively trade BOTH "
             "US stocks (via Alpaca) AND crypto (via CoinSpot). Crypto is scanned every "
             "15 min, 24/7. Stocks are scanned every 5 min during US market hours. "
-            "Mechanical stops and targets execute automatically; the rest goes through "
+            "Mechanical stops/targets execute automatically; the rest goes through "
             "Claude Haiku for decision-making. "
-            "ANSWER ONLY FROM THE CONTEXT BELOW. Do not invent trades, strategies, or "
-            "facts not present in the data. If the user asks about something that isn't "
-            "in the context, say so explicitly rather than guessing. Closed positions "
-            "are real history — reference them. Paper mode means no real money at risk, "
-            "but the trades are otherwise real decisions. Under 200 words."
+            "\n\nCRITICAL: The two markets have SEPARATE budgets and SEPARATE position caps. "
+            "When asked about cash or capacity, ALWAYS reference BUDGET_STATE — never "
+            "invent or assume. If stocks are at their position cap but crypto has "
+            "headroom, say so explicitly. If a recent crypto scan recommended buys but "
+            "actions came back empty, that's a Claude-hesitation issue (now patched with "
+            "a mechanical fallback in newer code) — say that, don't blame missing capital. "
+            "\n\nANSWER ONLY FROM THE CONTEXT BELOW. Do not invent trades, strategies, "
+            "or facts not present in the data. If something isn't in the context, say so. "
+            "Closed positions are real history — reference them. Paper mode means no real "
+            "money at risk, but the trades are otherwise real decisions. Under 200 words."
         )
         user_msg = (
             f"Q: {question}\n\n"
-            f"PORTFOLIO: {json.dumps(portfolio)}\n\n"
+            f"BUDGET STATE (THIS IS THE TRUTH ABOUT CASH AND CAPACITY):\n{json.dumps(budget_state, indent=1)}\n\n"
+            f"PORTFOLIO TOTALS: {json.dumps(portfolio)}\n\n"
             f"OPEN POSITIONS ({len(open_summary)}):\n{json.dumps(open_summary, indent=1)}\n\n"
             f"CLOSED POSITIONS ({len(closed_summary)} most recent):\n{json.dumps(closed_summary, indent=1)}\n\n"
             f"RECENT TRADES ({len(recent_trades_summary)} most recent):\n{json.dumps(recent_trades_summary, indent=1)}\n\n"
-            f"RECENT CRYPTO SCANS ({len(recent_scans_summary)} most recent — these show what the bot is deciding every 15 min):\n{json.dumps(recent_scans_summary, indent=1)}\n\n"
+            f"RECENT CRYPTO SCANS ({len(recent_scans_summary)} most recent — `actions` array shows what the bot ACTUALLY DID, `reasoning` shows what Claude was thinking):\n{json.dumps(recent_scans_summary, indent=1)}\n\n"
             f"PLAN ACTIVE: {'yes' if plan else 'no'}"
         )
 
