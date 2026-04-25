@@ -69,7 +69,19 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .alloc-bar-fill{height:100%;transition:width 0.3s;}
 
 /* Positions */
-.pos-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px;}
+.pos-grid{display:flex;flex-direction:column;gap:18px;}
+.pos-group-header{margin-bottom:0;}
+.pos-group-titlebar{display:flex;justify-content:space-between;align-items:flex-end;padding:0 0 8px 0;border-bottom:1px solid #e8eaed;margin-bottom:10px;}
+.pos-group-label{font-size:13px;font-weight:600;color:#1a1a2e;letter-spacing:-0.01em;}
+.pos-group-count{font-weight:400;color:#9aa0a6;font-size:11px;margin-left:4px;}
+.pos-group-sub{font-size:10px;color:#9aa0a6;margin-top:2px;letter-spacing:0.02em;}
+.pos-group-totals{text-align:right;}
+.pos-group-val{font-size:14px;font-weight:600;color:#1a1a2e;font-variant-numeric:tabular-nums;}
+.pos-group-pnl{font-size:11px;font-variant-numeric:tabular-nums;margin-top:1px;}
+.pos-group-pnl.up{color:#1a7340;}
+.pos-group-pnl.down{color:#c0392b;}
+.pos-group-pnl.flat{color:#9aa0a6;}
+.pos-group-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px;}
 .pos-card{background:#fafbfc;border:1px solid #e8eaed;border-radius:8px;padding:14px 14px 12px;cursor:pointer;transition:all 0.15s;}
 .pos-card:hover{border-color:#0d1f38;}
 .pos-card.active{border-color:#0d1f38;box-shadow:0 0 0 1px #0d1f38;}
@@ -988,7 +1000,24 @@ function renderPositions(){
     document.getElementById('holding-detail-card').style.display = 'none';
     return;
   }
-  el.innerHTML = allPositions.map(p=>{
+
+  // ── Group by category so the user can see what's what ─────────────────
+  // Tickers alone (APLD, TAO, NOW…) don't say "stock vs crypto" — group
+  // them under labelled sections with per-group totals.
+  const groups = [
+    { key: 'alpaca',   label: 'US stocks',  subtitle: 'Alpaca · USD-priced, AUD displayed' },
+    { key: 'coinspot', label: 'Crypto',     subtitle: 'CoinSpot · 24/7 trading' },
+    { key: 'other',    label: 'Other',      subtitle: '' },
+  ];
+  const positionsByGroup = { alpaca: [], coinspot: [], other: [] };
+  allPositions.forEach(p => {
+    const m = (p.market || '').toLowerCase();
+    if(m === 'alpaca') positionsByGroup.alpaca.push(p);
+    else if(m === 'coinspot') positionsByGroup.coinspot.push(p);
+    else positionsByGroup.other.push(p);
+  });
+
+  const renderCard = p => {
     const grossAud  = grossPnlAud(p);
     const fees      = estimatedFeesAud(p);
     const netAud    = grossAud - fees.total;
@@ -1028,7 +1057,38 @@ function renderPositions(){
       <div class="pos-row"><span class="pos-row-k">Net P&L if sold now</span><span class="pos-row-v ${netAud>0.01?'up':netAud<-0.01?'down':''}">${netSign}${fmtAud(Math.abs(netAud))} (${fmtSignedPct(netPctVal)})</span></div>
       <div class="pos-foot">${sharesLine}${sharesLine?' · ':''}${entryLine} · ${p.market||'—'} · ${fmtRelativeFromIso(p.created_at)}</div>
     </div>`;
+  };
+
+  // Build grouped HTML — each group gets a header strip with totals, then a card grid
+  const html = groups.filter(g => positionsByGroup[g.key].length > 0).map(g => {
+    const items = positionsByGroup[g.key];
+    const groupValue    = items.reduce((s, p) => s + marketValueAud(p), 0);
+    const groupCapital  = items.reduce((s, p) => s + entryCostAud(p), 0);
+    const groupGross    = items.reduce((s, p) => s + grossPnlAud(p), 0);
+    const groupFees     = items.reduce((s, p) => s + estimatedFeesAud(p).total, 0);
+    const groupNet      = groupGross - groupFees;
+    const groupNetPct   = groupCapital > 0 ? groupNet / groupCapital : 0;
+    const cls = groupNet > 0.01 ? 'up' : groupNet < -0.01 ? 'down' : 'flat';
+
+    return `
+      <div class="pos-group-header">
+        <div class="pos-group-titlebar">
+          <div>
+            <div class="pos-group-label">${g.label} <span class="pos-group-count">(${items.length})</span></div>
+            ${g.subtitle ? `<div class="pos-group-sub">${g.subtitle}</div>` : ''}
+          </div>
+          <div class="pos-group-totals">
+            <div class="pos-group-val">${fmtAud(groupValue)}</div>
+            <div class="pos-group-pnl ${cls}">${fmtSignedAud(groupNet)} net (${fmtSignedPct(groupNetPct)})</div>
+          </div>
+        </div>
+      </div>
+      <div class="pos-group-grid">
+        ${items.map(renderCard).join('')}
+      </div>`;
   }).join('');
+
+  el.innerHTML = html;
 
   // Auto-select first holding if none selected (or selected one closed)
   if(!selectedHolding || !allPositions.find(p=>p.symbol===selectedHolding)){
