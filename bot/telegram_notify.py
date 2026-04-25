@@ -280,6 +280,31 @@ class TelegramNotifier:
         aest = timezone(timedelta(hours=10))
         now_aest = datetime.now(aest)
 
+        # Are US markets currently open? (NYSE: 9:30am-4pm ET = 11:30pm-6am AEST weekdays)
+        # Pre-market 4am ET = 6pm AEST prev day, after-hours to 8pm ET = 10am AEST.
+        # We treat "open" loosely as "either core or extended hours weekday".
+        def _us_market_state(now):
+            # now is AEST. Convert to ET (AEST - 14h normal, -15h DST — close enough either way for labelling)
+            et_now = now - timedelta(hours=14)
+            if et_now.weekday() >= 5:
+                return "closed"  # weekend
+            mins = et_now.hour * 60 + et_now.minute
+            if 4*60 <= mins < 9*60 + 30:
+                return "premarket"
+            if 9*60 + 30 <= mins < 16*60:
+                return "open"
+            if 16*60 <= mins < 20*60:
+                return "afterhours"
+            return "closed"
+
+        market_state = _us_market_state(now_aest)
+        market_label = {
+            "open":       "",
+            "premarket":  " (pre-market)",
+            "afterhours": " (after-hours)",
+            "closed":     " (market closed)",
+        }[market_state]
+
         # ── Portfolio header ─────────────────────────────────────────────
         total    = float(portfolio.get("total_aud", 5000) or 5000)
         day_pnl  = float(portfolio.get("day_pnl", 0) or 0)
@@ -379,12 +404,14 @@ class TelegramNotifier:
         if winners or losers:
             parts.append("\n<b>Top movers</b>\n")
             for sym, pct, dollar in winners:
-                parts.append(f"  🟢 {sym}  +{pct:.2f}% (+${dollar:.2f})\n")
+                tag = market_label if sym in stock_pos else ""
+                parts.append(f"  🟢 {sym}  +{pct:.2f}% (+${dollar:.2f}){tag}\n")
             for sym, pct, dollar in losers:
-                parts.append(f"  🔴 {sym}  {pct:.2f}% (-${abs(dollar):.2f})\n")
+                tag = market_label if sym in stock_pos else ""
+                parts.append(f"  🔴 {sym}  {pct:.2f}% (-${abs(dollar):.2f}){tag}\n")
 
         parts.append(f"\n<b>Open ({len(positions)})</b>\n")
-        parts.append(_fmt_group("US stocks", stock_pos, STOCK_BUDGET, STOCK_SLOTS))
+        parts.append(_fmt_group(f"US stocks{market_label}", stock_pos, STOCK_BUDGET, STOCK_SLOTS))
         parts.append(_fmt_group("Crypto",    crypto_pos, CRYPTO_BUDGET, CRYPTO_SLOTS))
 
         status_emoji = "🔴 paused" if kill else "🟢 trading active"
