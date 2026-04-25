@@ -119,6 +119,23 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .empty{text-align:center;padding:24px;font-size:12px;color:#c4c7cc;}
 .footer{text-align:center;padding:14px;font-size:10px;color:#c4c7cc;letter-spacing:0.12em;}
 
+/* Today's story / status / failures */
+.story-card{background:linear-gradient(135deg,#0d1f38 0%,#1a2f4a 100%);color:white;padding:18px;border-radius:10px;margin-bottom:14px;}
+.story-title{font-size:10px;color:rgba(255,255,255,0.5);letter-spacing:0.1em;text-transform:uppercase;margin-bottom:8px;}
+.story-text{font-size:14px;line-height:1.6;}
+.story-stat{display:inline-block;font-size:13px;color:rgba(255,255,255,0.85);margin-right:14px;}
+.story-stat strong{color:white;font-weight:600;}
+.status-row{display:flex;gap:12px;font-size:12px;color:#555;padding:8px 0;border-bottom:1px solid #f0f0f0;}
+.status-row:last-child{border-bottom:none;}
+.status-time{font-family:monospace;color:#9aa0a6;font-size:11px;flex-shrink:0;width:60px;}
+.status-icon{font-size:14px;flex-shrink:0;width:20px;text-align:center;}
+.status-text{flex:1;}
+.fail-row{display:flex;gap:8px;padding:8px 0;border-bottom:1px solid #f0f0f0;font-size:12px;}
+.fail-row:last-child{border-bottom:none;}
+.fail-sym{font-weight:600;color:#1a1a2e;width:60px;flex-shrink:0;}
+.fail-reason{color:#9aa0a6;flex:1;}
+.fail-time{color:#c4c7cc;font-size:11px;flex-shrink:0;}
+
 @media(max-width:720px){
   .stats,.alloc{grid-template-columns:1fr 1fr;}
   .main{padding:12px;}
@@ -165,6 +182,25 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
     <!-- OVERVIEW -->
     <div id="page-overview" class="page active">
+
+      <div class="story-card">
+        <div class="story-title">Today's story</div>
+        <div class="story-text" id="story-text">Loading...</div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Live status</div>
+        <div id="live-status"><div class="empty">Loading...</div></div>
+      </div>
+
+      <div class="card" id="failed-card" style="display:none;">
+        <div class="card-row" style="margin-bottom:8px;">
+          <div class="card-title" style="margin-bottom:0;">Skipped trades</div>
+          <div style="font-size:10px;color:#9aa0a6;" id="failed-count"></div>
+        </div>
+        <div id="failed-list"></div>
+      </div>
+
       <div class="stats">
         <div class="stat"><div class="stat-label">Portfolio</div><div class="stat-value" id="s-port">$5,000.00</div><div class="stat-sub" id="s-port-sub">AUD total</div></div>
         <div class="stat"><div class="stat-label">Net P&L</div><div class="stat-value" id="s-pnl">+$0.00</div><div class="stat-sub">since start</div></div>
@@ -400,6 +436,7 @@ function renderAll(){
   renderTrades(); renderChart(currentTf);
   renderIntelligence(); renderQA();
   renderCostWidget();
+  renderStory(); renderLiveStatus(); renderFailures();
 }
 
 function livePnlFor(pos){
@@ -671,6 +708,170 @@ function renderCostWidget(){
   document.getElementById('cost-bar-fill').style.width = pct + '%';
   document.getElementById('cost-bar-fill').style.background = pct>=90?'#c0392b':pct>=70?'#f59e0b':'#1a7340';
   document.getElementById('cost-details').textContent = `${calls} Claude calls today · ${pct.toFixed(0)}% of daily cap`;
+}
+
+function renderStory(){
+  const el = document.getElementById('story-text');
+  const today = new Date().toDateString();
+  const todayTrades = allTrades.filter(t=>t.created_at && new Date(t.created_at).toDateString()===today);
+  const todayBuys = todayTrades.filter(t=>t.action==='BUY').length;
+  const todaySells = todayTrades.filter(t=>t.action==='SELL').length;
+  const todayChecks = allChecks.filter(c=>c.checked_at && new Date(c.checked_at).toDateString()===today);
+
+  // Count skipped trades from check reasoning (look for "Skipped" or "Cannot buy" patterns)
+  let skipped = 0;
+  todayChecks.forEach(c=>{
+    const r = (c.reasoning||'').toLowerCase();
+    if(r.includes('skipped') || r.includes('cannot buy') || r.includes('price unavailable')) skipped++;
+  });
+
+  let cryptoVal=0, stocksVal=0;
+  allPositions.forEach(p=>{
+    const val = liveValueFor(p);
+    if((p.market||'').toLowerCase()==='alpaca') stocksVal+=val;
+    else cryptoVal+=val;
+  });
+
+  const dayName = new Date().toLocaleDateString('en-AU', {weekday:'long'});
+  const isWeekend = [0,6].includes(new Date().getDay());
+
+  let story = `<strong>${dayName}</strong>. `;
+  if(allPositions.length === 0){
+    story += `No open positions. `;
+  } else {
+    const parts = [];
+    if(cryptoVal>0) parts.push(`$${cryptoVal.toFixed(0)} in crypto`);
+    if(stocksVal>0) parts.push(`$${stocksVal.toFixed(0)} in US stocks`);
+    story += `Holding ${allPositions.length} position${allPositions.length>1?'s':''} — ${parts.join(', ')}. `;
+  }
+
+  if(isWeekend){
+    story += `It's weekend — US markets closed until Monday 11:30pm AEST. `;
+    if(stocksVal>0) story += `Stock positions are frozen at last close. `;
+  }
+
+  if(todayChecks.length>0){
+    story += `Bot has run ${todayChecks.length} crypto scan${todayChecks.length>1?'s':''} today. `;
+  }
+  if(todayBuys>0 || todaySells>0){
+    story += `${todayBuys} buy${todayBuys===1?'':'s'} and ${todaySells} sell${todaySells===1?'':'s'} executed today.`;
+  } else {
+    story += `No trades have executed today.`;
+  }
+
+  el.innerHTML = story;
+}
+
+function renderLiveStatus(){
+  const el = document.getElementById('live-status');
+  const items = [];
+
+  // Last scan time
+  if(allChecks.length){
+    const last = allChecks[0];
+    const ago = Math.round((Date.now() - new Date(last.checked_at).getTime()) / 60000);
+    items.push({
+      icon: '🔍',
+      time: `${ago}m ago`,
+      text: `Last crypto scan — ${last.reasoning ? last.reasoning.substring(0, 120) : 'no reasoning'}`
+    });
+  }
+
+  // Most recent trade
+  if(allTrades.length){
+    const t = allTrades[0];
+    const ago = Math.round((Date.now() - new Date(t.created_at).getTime()) / 60000);
+    const agoStr = ago < 60 ? `${ago}m ago` : ago < 1440 ? `${Math.round(ago/60)}h ago` : `${Math.round(ago/1440)}d ago`;
+    items.push({
+      icon: t.action === 'BUY' ? '🟢' : '🔴',
+      time: agoStr,
+      text: `${t.action} ${t.symbol} — ${(t.details || '').substring(0, 100)}`
+    });
+  }
+
+  // Last snapshot
+  if(allIntraday.length){
+    const last = allIntraday[0];
+    const ago = Math.round((Date.now() - new Date(last.recorded_at).getTime()) / 60000);
+    items.push({
+      icon: '📸',
+      time: `${ago}m ago`,
+      text: `Portfolio snapshot — $${Number(last.total_aud).toFixed(2)} (${last.open_positions} open)`
+    });
+  }
+
+  // Today's cost trajectory
+  const today = new Date().toISOString().slice(0,10);
+  const todayCost = (tokenUsage.find(u=>u.date===today) || {});
+  if(todayCost.call_count){
+    items.push({
+      icon: '💰',
+      time: `${todayCost.call_count} calls`,
+      text: `Today's Claude spend: $${Number(todayCost.cost_usd).toFixed(4)} of $2.00 daily cap`
+    });
+  }
+
+  // Bot status indicator
+  const lastSnapshotAge = allIntraday.length ?
+    Math.round((Date.now() - new Date(allIntraday[0].recorded_at).getTime()) / 60000) : 999;
+  if(lastSnapshotAge > 15){
+    items.unshift({
+      icon: '⚠️',
+      time: 'now',
+      text: `Bot may be offline — last activity ${lastSnapshotAge}m ago`
+    });
+  } else {
+    items.unshift({
+      icon: '✓',
+      time: 'now',
+      text: `Bot is alive and running. Next crypto scan in ~${Math.max(0, 15 - lastSnapshotAge)}m.`
+    });
+  }
+
+  if(!items.length){
+    el.innerHTML = '<div class="empty">No activity yet</div>';
+    return;
+  }
+  el.innerHTML = items.map(i=>
+    `<div class="status-row"><span class="status-icon">${i.icon}</span><span class="status-time">${i.time}</span><span class="status-text">${i.text}</span></div>`
+  ).join('');
+}
+
+function renderFailures(){
+  const card = document.getElementById('failed-card');
+  const list = document.getElementById('failed-list');
+
+  // Parse check reasoning for skipped/failed trades
+  const failures = [];
+  allChecks.slice(0, 30).forEach(c=>{
+    const reasoning = c.reasoning || '';
+    // Look for patterns like "Skipped X — reason" or "Cannot buy X"
+    const skippedMatch = reasoning.match(/Skipped (\w+)[\s—-]+([^|]+)/gi);
+    if(skippedMatch){
+      skippedMatch.forEach(m=>{
+        const parts = m.match(/Skipped (\w+)[\s—-]+(.+)/i);
+        if(parts){
+          failures.push({
+            symbol: parts[1].toUpperCase(),
+            reason: parts[2].trim().substring(0, 80),
+            time: c.checked_at,
+          });
+        }
+      });
+    }
+  });
+
+  if(!failures.length){
+    card.style.display = 'none';
+    return;
+  }
+
+  card.style.display = 'block';
+  document.getElementById('failed-count').textContent = `${failures.length} skipped`;
+  list.innerHTML = failures.slice(0, 8).map(f=>{
+    const time = new Date(f.time).toLocaleTimeString('en-AU',{hour:'2-digit', minute:'2-digit'});
+    return `<div class="fail-row"><span class="fail-sym">${f.symbol}</span><span class="fail-reason">${f.reason}</span><span class="fail-time">${time}</span></div>`;
+  }).join('');
 }
 
 function renderCostChart(){
