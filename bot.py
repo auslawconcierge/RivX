@@ -454,22 +454,69 @@ def run_question_poll(db, tg):
         if not question:
             continue
 
+        # Build a rich context so Claude can answer accurately about both
+        # what's happening NOW (open positions) and what HAS happened (closed
+        # positions, recent trades, recent crypto scans). Without this Claude
+        # hallucinates — e.g. claiming the bot doesn't trade crypto when it does.
         try:
             positions = db.get_positions()
-            trades = db.get_recent_trades(10)
+            trades = db.get_recent_trades(20)
+            closed = db._get("positions",
+                             {"status": "eq.closed", "order": "closed_at.desc", "limit": "10"}) or []
+            crypto_scans = db._get("crypto_checks",
+                                   {"order": "checked_at.desc", "limit": "5"}) or []
             plan = db.get_approved_plan()
             portfolio = db.get_portfolio_value()
         except Exception:
-            positions = {}; trades = []; plan = {}; portfolio = {}
+            positions = {}; trades = []; closed = []; crypto_scans = []; plan = {}; portfolio = {}
 
-        system = ("You are RivX, the user's autonomous trading bot. Answer their dashboard "
-                  "question concisely using the context. Paper mode — no real money at risk. "
-                  "Under 200 words.")
-        user_msg = (f"Q: {question}\n\n"
-                   f"Portfolio: {json.dumps(portfolio)}\n"
-                   f"Positions: {json.dumps({s: {k:v for k,v in p.items() if k in ['entry_price','pnl_pct','aud_amount','market','current_price','qty']} for s,p in positions.items()})}\n"
-                   f"Recent trades: {len(trades)}\n"
-                   f"Plan active: {'yes' if plan else 'no'}")
+        # Compact summaries so token usage stays reasonable
+        open_summary = {
+            s: {k: v for k, v in p.items()
+                if k in ['entry_price','pnl_pct','aud_amount','market','current_price','qty']}
+            for s, p in positions.items()
+        }
+        closed_summary = [{
+            'symbol': p.get('symbol'),
+            'market': p.get('market'),
+            'aud_amount': p.get('aud_amount'),
+            'pnl_pct': p.get('pnl_pct'),
+            'opened': (p.get('created_at') or '')[:10],
+            'closed': (p.get('closed_at') or '')[:10],
+        } for p in closed]
+        recent_trades_summary = [{
+            'symbol': t.get('symbol'),
+            'action': t.get('action'),
+            'aud_amount': t.get('aud_amount'),
+            'when': (t.get('created_at') or '')[:16],
+            'detail': (t.get('details') or '')[:120],
+        } for t in trades[:12]]
+        recent_scans_summary = [{
+            'when': (c.get('checked_at') or '')[:16],
+            'reasoning': (c.get('reasoning') or '')[:240],
+        } for c in crypto_scans]
+
+        system = (
+            "You are RivX, an autonomous paper-trading bot. You actively trade BOTH "
+            "US stocks (via Alpaca) AND crypto (via CoinSpot). Crypto is scanned every "
+            "15 min, 24/7. Stocks are scanned every 5 min during US market hours. "
+            "Mechanical stops and targets execute automatically; the rest goes through "
+            "Claude Haiku for decision-making. "
+            "ANSWER ONLY FROM THE CONTEXT BELOW. Do not invent trades, strategies, or "
+            "facts not present in the data. If the user asks about something that isn't "
+            "in the context, say so explicitly rather than guessing. Closed positions "
+            "are real history — reference them. Paper mode means no real money at risk, "
+            "but the trades are otherwise real decisions. Under 200 words."
+        )
+        user_msg = (
+            f"Q: {question}\n\n"
+            f"PORTFOLIO: {json.dumps(portfolio)}\n\n"
+            f"OPEN POSITIONS ({len(open_summary)}):\n{json.dumps(open_summary, indent=1)}\n\n"
+            f"CLOSED POSITIONS ({len(closed_summary)} most recent):\n{json.dumps(closed_summary, indent=1)}\n\n"
+            f"RECENT TRADES ({len(recent_trades_summary)} most recent):\n{json.dumps(recent_trades_summary, indent=1)}\n\n"
+            f"RECENT CRYPTO SCANS ({len(recent_scans_summary)} most recent — these show what the bot is deciding every 15 min):\n{json.dumps(recent_scans_summary, indent=1)}\n\n"
+            f"PLAN ACTIVE: {'yes' if plan else 'no'}"
+        )
 
         try:
             resp = client.messages.create(
