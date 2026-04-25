@@ -253,7 +253,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       <div class="stats">
         <div class="stat"><div class="stat-label">Portfolio</div><div class="stat-value" id="s-port">$5,000.00</div><div class="stat-sub" id="s-port-sub">AUD total</div></div>
         <div class="stat"><div class="stat-label">P&L</div><div class="stat-value" id="s-pnl">+$0.00</div><div class="stat-sub" id="s-pnl-sub">since start</div></div>
-        <div class="stat"><div class="stat-label">Trades</div><div class="stat-value" id="s-trades">0</div><div class="stat-sub" id="s-trades-sub">lifetime</div></div>
+        <div class="stat"><div class="stat-label">Realised P&L</div><div class="stat-value" id="s-realised">$0.00</div><div class="stat-sub" id="s-realised-sub">no closed positions</div></div>
         <div class="stat"><div class="stat-label">Today's cost</div><div class="stat-value" id="s-cost">$0.00</div><div class="stat-sub">Claude API</div></div>
       </div>
 
@@ -479,6 +479,21 @@ async function sb(table, params, method='GET', body=null){
   } catch(e) { return null; }
 }
 
+async function loadFxRate(){
+  // Always fetch USD/AUD rate, regardless of whether any crypto position exists.
+  // Without this the rate stays at the 1.57 hardcoded default and AUD values
+  // for stocks drift out of sync with reality.
+  try {
+    const r = await fetch(`${CG_BASE}/simple/price?ids=bitcoin&vs_currencies=aud,usd`);
+    if(!r.ok) return;
+    const data = await r.json();
+    const b = data && data.bitcoin;
+    if(b && b.aud && b.usd){
+      USD_TO_AUD = b.aud / b.usd;
+    }
+  } catch(e) {}
+}
+
 async function loadLivePrices(symbols){
   if(!symbols.length) return {};
   const ids = symbols.map(s=>SYM_TO_CG[s]).filter(Boolean).join(',');
@@ -518,6 +533,7 @@ async function loadAll(){
   tokenUsage = usage || [];
 
   const syms = allPositions.map(p=>p.symbol).filter(s=>SYM_TO_CG[s]);
+  await loadFxRate();
   livePrices = await loadLivePrices(syms);
 
   renderAll();
@@ -649,6 +665,29 @@ function netPnlPct(pos){
   return e > 0 ? netPnlAud(pos) / e : 0;
 }
 
+// ─── Cumulative closed-position math ──────────────────────────────────────
+// In paper mode, closed positions don't actually deduct fees — the cash that
+// returns from a paper sale is the gross amount. So "realised paper P&L" is
+// just sum(aud_amount × pnl_pct) — already absorbed into the running cash.
+// "Realised LIVE-equivalent P&L" subtracts the round-trip fees that would
+// have been charged in real life.
+
+function closedGrossPaperAud(){
+  return allClosed.reduce((s,p) =>
+    s + (Number(p.aud_amount)||0) * (Number(p.pnl_pct)||0), 0);
+}
+function closedFeesEstAud(){
+  return allClosed.reduce((s,p) => {
+    const profile = (p.market||'').toLowerCase()==='alpaca' ? FEES.alpaca : FEES.coinspot;
+    const entry = Number(p.aud_amount) || 0;
+    const proceeds = entry * (1 + (Number(p.pnl_pct)||0));
+    const fee = entry*profile.buyPct + proceeds*profile.sellPct
+              + entry*profile.fxOneWayPct + proceeds*profile.fxOneWayPct;
+    return s + fee;
+  }, 0);
+}
+function closedNetLiveAud(){ return closedGrossPaperAud() - closedFeesEstAud(); }
+
 // Backwards-compat: some older code referenced these names.
 function livePnlFor(pos){ return grossPnlPct(pos); }
 function liveValueAud(pos){ return marketValueAud(pos); }
@@ -668,20 +707,19 @@ function fmtSignedPct(v){ return (v>=0?'+':'') + (v*100).toFixed(2) + '%'; }
 
 function renderStats(){
   let cryptoVal = 0, stocksVal = 0, derivsVal = 0, entryCost = 0;
-  let grossPnl = 0, estFees = 0, todayPnlAud = 0;
+  let grossPnl = 0, openEstFees = 0, todayPnlAud = 0;
 
   allPositions.forEach(p=>{
     const val = marketValueAud(p);
     entryCost += entryCostAud(p);
     grossPnl += grossPnlAud(p);
-    estFees += estimatedFeesAud(p).total;
+    openEstFees += estimatedFeesAud(p).total;
 
     const mkt = (p.market||'').toLowerCase();
     if(mkt === 'alpaca') stocksVal += val;
     else if(mkt === 'derivatives') derivsVal += val;
     else cryptoVal += val;
 
-    // Today's P&L: Alpaca gives change_today per stock; for crypto use 24h change
     const amt = entryCostAud(p);
     if(isStock(p)){
       const ch = Number(p.change_today) || 0;
@@ -693,29 +731,42 @@ function renderStats(){
     }
   });
 
-  const cash = Math.max(0, STARTING_AUD - entryCost);
-  const total = cash + cryptoVal + stocksVal + derivsVal;
-  const netPnlIfClosed = grossPnl - estFees;
-  const totalNet = total - estFees;
+  // Paper portfolio: actual paper-money balance. In paper mode, closed-position
+  // cash returns at gross (no fees deducted), so this = STARTING_AUD + sum of all
+  // gross P&L (open unrealised + closed realised which is now in cash).
+  const cash = Math.max(0, STARTING_AUD - entryCost + closedGrossPaperAud());
+  const paperTotal = cash + cryptoVal + stocksVal + derivsVal;
 
-  document.getElementById('s-port').textContent = fmtAud(total);
-  document.getElementById('s-port-sub').textContent = allPositions.length
-    ? `${allPositions.length} pos · live · ${fmtAud(totalNet)} after fees`
-    : 'AUD total';
+  // Live equivalent: what your portfolio WOULD be if every trade had used real
+  // money. Subtract estimated fees on open positions (if closed now) AND the
+  // estimated fees that would have been charged on already-closed positions.
+  const closedFees = closedFeesEstAud();
+  const liveEquivTotal = paperTotal - openEstFees - closedFees;
+
+  document.getElementById('s-port').textContent = fmtAud(paperTotal);
+  document.getElementById('s-port-sub').textContent =
+    `${allPositions.length} open · paper · live equiv ${fmtAud(liveEquivTotal)}`;
 
   const pnlEl = document.getElementById('s-pnl');
   pnlEl.textContent = fmtSignedAud(grossPnl);
   pnlEl.className = 'stat-value ' + (grossPnl>0?'up':grossPnl<0?'down':'');
-  const pnlSub = document.getElementById('s-pnl-sub');
-  const todayStr = Math.abs(todayPnlAud) > 0.005
-    ? `${fmtSignedAud(todayPnlAud)} today`
-    : 'gross · before fees';
-  pnlSub.textContent = `${todayStr} · net ${fmtSignedAud(netPnlIfClosed)}`;
+  const todayStr = Math.abs(todayPnlAud) > 0.005 ? `${fmtSignedAud(todayPnlAud)} today` : 'open · gross';
+  document.getElementById('s-pnl-sub').textContent = `${todayStr} · net ${fmtSignedAud(grossPnl - openEstFees)}`;
 
-  document.getElementById('s-trades').textContent = allTrades.length;
-  const buys = allTrades.filter(t=>t.action==='BUY').length;
-  const sells = allTrades.filter(t=>t.action==='SELL').length;
-  document.getElementById('s-trades-sub').textContent = `${buys} buy · ${sells} sell`;
+  // Realised P&L tile
+  const realisedEl = document.getElementById('s-realised');
+  const realisedSub = document.getElementById('s-realised-sub');
+  if(allClosed.length === 0){
+    realisedEl.textContent = '$0.00';
+    realisedEl.className = 'stat-value';
+    realisedSub.textContent = 'no closed positions';
+  } else {
+    const paperRealised = closedGrossPaperAud();
+    const liveRealised = closedNetLiveAud();
+    realisedEl.textContent = fmtSignedAud(paperRealised);
+    realisedEl.className = 'stat-value ' + (paperRealised>0.01?'up':paperRealised<-0.01?'down':'');
+    realisedSub.textContent = `${allClosed.length} closed · paper · live equiv ${fmtSignedAud(liveRealised)}`;
+  }
 
   const today = new Date().toISOString().slice(0,10);
   const todayCost = (tokenUsage.find(u=>u.date===today) || {}).cost_usd || 0;
@@ -732,7 +783,8 @@ function renderAllocation(){
     else if(mkt === 'derivatives') derivsVal += val;
     else cryptoVal += val;
   });
-  const cash = Math.max(0, STARTING_AUD - entryCost);
+  // Cash = starting capital minus what's still deployed plus paper proceeds from closed positions
+  const cash = Math.max(0, STARTING_AUD - entryCost + closedGrossPaperAud());
   const total = cash + cryptoVal + stocksVal + derivsVal || STARTING_AUD;
   const fmt = v => '$' + v.toLocaleString('en-AU', {minimumFractionDigits:0, maximumFractionDigits:0});
   const pct = v => total>0 ? Math.round(v/total*100)+'%' : '0%';
@@ -911,7 +963,10 @@ function renderClosedPositions(){
     return `<div class="closed-card">
       <div class="closed-header">
         <span class="closed-sym">${p.symbol}</span>
-        <span class="closed-net-badge ${netCls}">net ${fmtSignedAud(netAud)} (${fmtSignedPct(netPct)})</span>
+        <div style="text-align:right;">
+          <span class="closed-net-badge ${grossCls}">paper ${fmtSignedAud(grossAud)}</span>
+          <div style="font-size:10px;color:#9aa0a6;margin-top:3px;">live equiv ${fmtSignedAud(netAud)} (${fmtSignedPct(netPct)})</div>
+        </div>
       </div>
       <div class="closed-meta">${market} · held ${hold}${qtyLine}</div>
 
@@ -931,11 +986,15 @@ function renderClosedPositions(){
         </div>
       </div>
 
+      <div style="font-size:11px;color:#854d0e;background:#fffbeb;border:1px solid #fde68a;padding:7px 10px;border-radius:6px;margin-bottom:8px;line-height:1.5;">
+        <strong>Paper outcome:</strong> ${fmtAud(proceedsAud)} returned to cash. ${grossAud >= -0.01 && grossAud <= 0.01 ? 'No actual gain or loss.' : `Actual ${grossAud >= 0 ? 'gain' : 'loss'}: ${fmtSignedAud(grossAud)} added to portfolio.`} The breakdown below is what would have happened in <strong>live mode</strong>.
+      </div>
+
       <div class="closed-pnl-table">
         <div class="closed-pnl-k">Gross P&L (market move)</div>
         <div class="closed-pnl-v ${grossCls}">${fmtSignedAud(grossAud)} (${fmtSignedPct(pnlPct)})</div>
         ${feeLines.join('')}
-        <div class="closed-pnl-k closed-pnl-net-row">Net P&L${profile.buyPct+profile.sellPct+profile.fxOneWayPct > 0 ? ' (after est. fees)' : ''}</div>
+        <div class="closed-pnl-k closed-pnl-net-row">Live equivalent net P&L</div>
         <div class="closed-pnl-v ${netCls} closed-pnl-net-row">${fmtSignedAud(netAud)} (${fmtSignedPct(netPct)})</div>
       </div>
     </div>`;
