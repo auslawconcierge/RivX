@@ -97,25 +97,44 @@ class CoinSpotTrader:
         except Exception as e:
             log.debug(f"v1 fallback failed: {e}")
 
+        # Try 4: CoinGecko as last-resort fallback (uses cached prices to dodge rate limits)
+        try:
+            from bot.brain import get_market_data  # already used elsewhere in the bot
+            md = get_market_data([sym])
+            p = (md.get(sym) or {}).get("price")
+            if p and float(p) > 0:
+                return float(p)
+        except Exception as e:
+            log.debug(f"CoinGecko fallback failed: {e}")
+
         log.warning(f"Price unavailable for {sym} on CoinSpot — coin may not be tradeable")
         return 0.0
 
     def buy(self, symbol: str, aud_amount: float) -> dict | None:
         coin = symbol.lower()
         price = self.get_latest_price(coin)
-        if price == 0:
-            log.error(f"Cannot buy {symbol} — price unavailable")
-            return None
 
-        coin_amount = round(aud_amount / price, 8)
-        log.info(f"[{self.mode}] BUY {coin_amount} {symbol} (~${aud_amount:.2f} AUD) @ ${price:.4f}")
-
+        # PAPER mode: never block on missing price. Record the trade and let
+        # the snapshot loop backfill price/qty from market_data later.
+        # Previously: price==0 → return None → bot looked broken for hours.
         if PAPER_MODE:
+            coin_amount = round(aud_amount / price, 8) if price > 0 else 0.0
+            if price > 0:
+                log.info(f"[PAPER] BUY {coin_amount} {symbol} (~${aud_amount:.2f} AUD) @ ${price:.4f}")
+            else:
+                log.info(f"[PAPER] BUY {symbol} — ${aud_amount:.2f} AUD (price TBD; snapshot loop will backfill)")
             return {
                 "status": "ok", "paper_mode": True, "symbol": symbol,
                 "aud_amount": aud_amount, "coin_amount": coin_amount, "price": price,
             }
 
+        # LIVE mode: CoinSpot's actual API call needs a real rate
+        if price == 0:
+            log.error(f"Cannot buy {symbol} live — CoinSpot price lookup failed")
+            return None
+
+        coin_amount = round(aud_amount / price, 8)
+        log.info(f"[LIVE] BUY {coin_amount} {symbol} (~${aud_amount:.2f} AUD) @ ${price:.4f}")
         return self._post("/api/v2/my/buy/now", {
             "cointype": symbol.upper(),
             "amount": coin_amount,
@@ -126,10 +145,10 @@ class CoinSpotTrader:
     def sell(self, symbol: str, coin_amount: float = None, aud_amount: float = None) -> dict | None:
         coin = symbol.lower()
 
-        # Paper mode: simulate without touching any live API
+        # Paper mode: simulate without touching any live API; never block on price
         if PAPER_MODE:
             price = self.get_latest_price(coin)
-            log.info(f"[PAPER] SELL {symbol} @ ${price:.4f}")
+            log.info(f"[PAPER] SELL {symbol}{f' @ ${price:.4f}' if price > 0 else ' (price TBD)'}")
             return {
                 "status": "ok", "paper_mode": True, "symbol": symbol,
                 "coin_amount": coin_amount or 1.0, "price": price,
