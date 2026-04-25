@@ -451,52 +451,64 @@ Return:
 # ─── Crypto check (Haiku — cheap, skipped if nothing to decide) ────────────
 
 def crypto_check(db, positions: dict, approved_plan: dict) -> dict:
-    """24/7 crypto monitoring. Mechanical first, Claude only if scanner found setups."""
+    """
+    24/7 crypto monitoring. Mechanical first; Claude only if scanner found setups.
+
+    Decisive prompt design — HOLD is no longer in the action schema. The scanner
+    has pre-filtered for quality; Claude's job is to BUY qualified setups, not
+    to second-guess them. Skipping a setup requires a stated red flag in a
+    separate `skipped` list. Removes the bias toward inaction we saw on Haiku.
+    """
     from bot.scanner import get_crypto_movers
 
     actions = []
     reasons = []
     crypto_positions = {s: p for s, p in positions.items() if p.get("market") == "coinspot"}
 
-    # 1. Mechanical exits (no Claude call)
+    # 1. Mechanical exits (no Claude call) ─────────────────────────────────
     for sym, pos in crypto_positions.items():
         should_exit, reason = _should_force_exit(pos)
         if should_exit:
             actions.append({"symbol": sym, "action": "SELL", "reason": reason, "urgency": "immediate"})
             reasons.append(f"{sym}: {reason}")
 
-    # 2. Get scanner output (cheap — no Claude)
+    # 2. Get scanner output (cheap — no Claude) ────────────────────────────
     crypto_opps = []
     try:
         crypto_opps = get_crypto_movers() or []
     except Exception as e:
         log.warning(f"Scanner failed: {e}")
 
-    # 3. Decide if we should ask Claude at all
+    # 3. Decide if Claude is worth calling ─────────────────────────────────
     crypto_deployed = sum(p.get("aud_amount", 0) for p in crypto_positions.values())
     crypto_available = max(0, CRYPTO_MAX_DEPLOYED - crypto_deployed)
     open_count = len(crypto_positions)
+    free_slots = CRYPTO_MAX_POSITIONS - open_count
 
-    # Filter to high-conviction opportunities only
-    strong_opps = [o for o in crypto_opps if o.get("opportunity_score", 0) >= 2.5][:10]
+    # Filter to qualified opportunities — exclude already-held symbols
+    held_syms = set(crypto_positions.keys())
+    strong_opps = [o for o in crypto_opps
+                   if o.get("opportunity_score", 0) >= 2.5
+                   and o.get("symbol") not in held_syms][:10]
 
-    at_max_positions = open_count >= CRYPTO_MAX_POSITIONS
-    no_budget = crypto_available < 300
-    nothing_new = len(strong_opps) == 0
+    can_buy = free_slots > 0 and crypto_available >= 300 and len(strong_opps) > 0
     open_non_exiting = [s for s, p in crypto_positions.items()
-                       if not any(a["symbol"] == s for a in actions)]
+                        if not any(a["symbol"] == s for a in actions)]
+    has_management = len(open_non_exiting) > 0
 
-    # Skip Claude if: nothing to buy AND nothing to manage
-    if (at_max_positions or no_budget or nothing_new) and not open_non_exiting:
+    if not can_buy and not has_management:
+        skip_reason = []
+        if free_slots <= 0: skip_reason.append(f"max positions ({open_count}/{CRYPTO_MAX_POSITIONS})")
+        if crypto_available < 300: skip_reason.append(f"budget ${crypto_available:.0f} < $300 min")
+        if len(strong_opps) == 0: skip_reason.append("no setups score >= 2.5")
         return {
             "actions": actions,
-            "reasoning": f"No Claude call needed. {open_count}/{CRYPTO_MAX_POSITIONS} positions, "
-                         f"${crypto_available:.0f} budget, {len(strong_opps)} strong setups. "
-                         + (" | ".join(reasons) if reasons else ""),
+            "reasoning": ("No Claude call: " + ", ".join(skip_reason) +
+                          ((" | " + " | ".join(reasons)) if reasons else "")),
             "opportunities": crypto_opps,
         }
 
-    # 4. Claude call — but with Haiku, and trimmed context
+    # 4. Claude call — DECISIVE prompt, no HOLD in schema ──────────────────
     position_summary = {}
     for sym in open_non_exiting:
         pos = crypto_positions[sym]
@@ -505,42 +517,96 @@ def crypto_check(db, positions: dict, approved_plan: dict) -> dict:
             "age_hours": round(_position_age_hours(pos), 1),
         }
 
-    system = f"""You are RivX crypto trader. Mechanical exits already applied.
-Decide on new BUYs from opportunities, or discretionary SELLs on open positions.
-Budget: ${crypto_available:.0f} AUD. Slots: {CRYPTO_MAX_POSITIONS - open_count}/{CRYPTO_MAX_POSITIONS} free.
-Entry bar: opportunity_score >= 2.5, confidence 55%+. Cash is fine if nothing stands out.
-Valid JSON only."""
+    system = (
+        "You are RivX crypto trader. The scanner has ALREADY filtered the opportunities "
+        "below by score >= 2.5. Be DECISIVE — your job is to BUY qualified setups, not "
+        "to second-guess them. Default action is BUY. Skip a setup ONLY if the data "
+        "shows a specific red flag (e.g. RSI > 80 overbought, volume crashing > 50%, "
+        "score < 3.0 with momentum reversing). Mechanical stops/targets handle exits "
+        "automatically — your only job is allocation. Cash sitting idle is a waste of "
+        "capital. Valid JSON only."
+    )
+
+    suggested_size = min(CRYPTO_POSITION_SIZE, crypto_available // max(1, len(strong_opps)))
+    suggested_size = max(300, int(suggested_size))
 
     user = f"""Crypto check — {datetime.utcnow().strftime('%H:%M UTC')}
 
-OPEN POSITIONS:
-{json.dumps(position_summary, indent=1)}
+OPEN POSITIONS (your call to hold or exit early):
+{json.dumps(position_summary, indent=1) if position_summary else '(none)'}
 
-STRONG OPPORTUNITIES:
+QUALIFIED ENTRIES (top {len(strong_opps)}, all score >= 2.5, NOT already held):
 {json.dumps(strong_opps, indent=1)}
 
-Return:
-{{"actions":[{{"symbol":"X","action":"BUY|SELL|HOLD","reason":"brief","aud_amount":500}}],
-  "reasoning":"one sentence"}}"""
+CONSTRAINTS:
+- Budget remaining: ${crypto_available:.0f} AUD
+- Free slots: {free_slots}/{CRYPTO_MAX_POSITIONS}
+- Suggested size per buy: ${suggested_size} AUD (range $300-600)
 
-    result = _call_claude(db, system, user, MODEL_MONITORING, max_tokens=500)
+INSTRUCTIONS:
+- Default behaviour: BUY each qualified entry up to slot/budget limit.
+- If you SKIP a setup, you must put it in `skipped` with a specific data-driven red flag.
+- An empty `buys` array is only acceptable if EVERY setup has a documented red flag.
+- For OPEN positions: only suggest a SELL if there's a clear discretionary reason
+  (mechanical stops/targets are handled separately).
+
+Return:
+{{
+  "buys":    [{{"symbol":"X","aud_amount":500,"confidence":0.65,"reason":"brief"}}],
+  "sells":   [{{"symbol":"X","reason":"why exit early"}}],
+  "skipped": [{{"symbol":"X","red_flag":"specific data point that disqualifies"}}],
+  "reasoning": "one sentence summary of this round's decisions"
+}}"""
+
+    result = _call_claude(db, system, user, MODEL_MONITORING, max_tokens=700)
     if result:
-        reasons.append(result.get("reasoning", ""))
-        for act in result.get("actions", []):
-            if act.get("action") == "BUY":
-                requested = min(act.get("aud_amount", CRYPTO_POSITION_SIZE), 600)
-                if requested > crypto_available:
-                    reasons.append(f"Skipped {act.get('symbol')} — budget")
-                    continue
-                if open_count >= CRYPTO_MAX_POSITIONS:
-                    reasons.append(f"Skipped {act.get('symbol')} — max positions")
-                    continue
-                act["aud_amount"] = requested
-                actions.append(act)
-                crypto_available -= requested
-                open_count += 1
-            elif act.get("action") == "SELL":
-                actions.append(act)
+        if result.get("reasoning"):
+            reasons.append(result["reasoning"])
+
+        # Process buys with budget/slot enforcement
+        for buy in result.get("buys", []):
+            sym = buy.get("symbol")
+            if not sym:
+                continue
+            if sym in crypto_positions:
+                reasons.append(f"Skipped {sym}: already held")
+                continue
+            requested = buy.get("aud_amount", suggested_size)
+            try:
+                requested = min(int(requested), 600)
+            except Exception:
+                requested = suggested_size
+            if requested < 300:
+                requested = 300
+            if requested > crypto_available:
+                reasons.append(f"Skipped {sym}: requested ${requested} > available ${crypto_available:.0f}")
+                continue
+            if open_count >= CRYPTO_MAX_POSITIONS:
+                reasons.append(f"Skipped {sym}: {CRYPTO_MAX_POSITIONS} positions already open")
+                continue
+            actions.append({
+                "symbol": sym,
+                "action": "BUY",
+                "reason": buy.get("reason", "qualified entry"),
+                "aud_amount": requested,
+            })
+            crypto_available -= requested
+            open_count += 1
+
+        # Process discretionary sells
+        for sell in result.get("sells", []):
+            sym = sell.get("symbol")
+            if sym in crypto_positions and not any(a["symbol"] == sym for a in actions):
+                actions.append({
+                    "symbol": sym,
+                    "action": "SELL",
+                    "reason": sell.get("reason", "discretionary exit"),
+                    "urgency": "normal",
+                })
+
+        # Surface skipped setups in the reasoning so the user can audit
+        for skipped in result.get("skipped", []):
+            reasons.append(f"Skipped {skipped.get('symbol', '?')}: {skipped.get('red_flag', 'no reason given')}")
 
     return {
         "actions": actions,
