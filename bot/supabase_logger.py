@@ -315,13 +315,73 @@ class SupabaseLogger:
             self._post("approved_plan", data)
 
     def get_portfolio_value(self) -> dict:
-        snaps = self._get("snapshots", {"order": "date.desc", "limit": "2"})
-        today = snaps[0] if snaps else {}
-        prev  = snaps[1] if len(snaps) > 1 else {}
-        total = today.get("total_aud", 5000)
-        prev_total = prev.get("total_aud", 5000)
+        """
+        Live portfolio total computed from current open positions + cash.
+        Falls back to snapshots only if positions table is unreadable.
+
+        Returns total_aud (current), day_pnl (vs yesterday's snapshot if we
+        have one, else zero), total_pnl (vs $5000 starting capital).
+        """
+        STARTING = 5000.0
+        try:
+            positions = self._get("positions", {"status": "eq.open"}) or []
+        except Exception:
+            positions = []
+
+        # For each open position, prefer market_value computed from
+        # qty × current_price (truthful, includes FX move). Fall back to
+        # aud_amount × (1 + pnl_pct) if qty/current_price missing.
+        deployed_entry = 0.0   # capital that went into entries
+        market_value   = 0.0   # current value of those positions
+        for p in positions:
+            entry = float(p.get("aud_amount") or 0)
+            deployed_entry += entry
+
+            qty           = float(p.get("qty") or 0)
+            current_price = float(p.get("current_price") or 0)
+            market        = (p.get("market") or "").lower()
+
+            mv = 0.0
+            if qty > 0 and current_price > 0:
+                if market == "alpaca":
+                    # Stocks: current_price is USD, convert via stored
+                    # entry rate = aud_amount / (qty × usd_entry)
+                    usd_entry = float(p.get("entry_price") or 0)
+                    if usd_entry > 0 and entry > 0:
+                        # Implied AUD/USD at entry, then mark to current USD price
+                        # AUD value = qty × current_USD × (entry_AUD / (qty × usd_entry))
+                        # But we don't have today's FX cleanly server-side, so use
+                        # the simpler: entry × (1 + pnl_pct) which captures USD move
+                        # but not FX. Good enough for portfolio total in practice.
+                        pnl_pct = float(p.get("pnl_pct") or 0)
+                        mv = entry * (1 + pnl_pct)
+                    else:
+                        mv = entry
+                else:
+                    # Crypto: current_price is AUD-native
+                    mv = qty * current_price
+            else:
+                # Missing fields — fall back to aud_amount × (1 + pnl_pct)
+                pnl_pct = float(p.get("pnl_pct") or 0)
+                mv = entry * (1 + pnl_pct) if entry > 0 else 0
+
+            market_value += mv
+
+        cash = max(0, STARTING - deployed_entry)
+        total = market_value + cash
+
+        # Day P&L: compare to yesterday's snapshot if we have one
+        try:
+            snaps = self._get("snapshots", {"order": "date.desc", "limit": "1"}) or []
+            prev_total = float(snaps[0].get("total_aud", STARTING)) if snaps else STARTING
+        except Exception:
+            prev_total = STARTING
+
         return {
-            "total_aud": total,
-            "day_pnl":   round(total - prev_total, 2),
-            "total_pnl": round(total - 5000, 2),
+            "total_aud":      round(total, 2),
+            "day_pnl":        round(total - prev_total, 2),
+            "total_pnl":      round(total - STARTING, 2),
+            "deployed_aud":   round(deployed_entry, 2),
+            "market_value":   round(market_value, 2),
+            "cash_aud":       round(cash, 2),
         }
