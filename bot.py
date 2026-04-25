@@ -365,7 +365,67 @@ def run_question_poll(db, tg):
                      "id", str(qid))
 
 
-def run_morning_summary(db, tg):
+def run_4hr_summary(db, tg):
+    """Every 4 hours — brief portfolio status to Telegram. Pure Python, no Claude."""
+    try:
+        positions = db.get_positions()
+        trades = db.get_recent_trades(50)
+        from datetime import date, timedelta
+        today_str = date.today().isoformat()
+
+        # Today's trades
+        today_trades = [t for t in trades if t.get("created_at", "")[:10] == today_str]
+        last_4h = datetime.utcnow() - timedelta(hours=4)
+        recent_trades = [t for t in trades
+                        if t.get("created_at") and
+                        datetime.fromisoformat(t["created_at"].replace("Z", "+00:00")).replace(tzinfo=None) >= last_4h.replace(tzinfo=None)]
+
+        # Portfolio value from latest snapshot
+        try:
+            latest = db._get("intraday_snapshots",
+                            {"order": "recorded_at.desc", "limit": "1"})
+            total = float(latest[0]["total_aud"]) if latest else 5000
+        except Exception:
+            total = 5000
+
+        # Today's Claude cost
+        try:
+            usage = db._get("token_usage", {"date": f"eq.{today_str}"})
+            cost = float(usage[0].get("cost_usd", 0)) if usage else 0
+        except Exception:
+            cost = 0
+
+        net = total - 5000
+        lines = [
+            f"📊 RivX 4hr update — {aest_now().strftime('%a %d %b, %H:%M')}",
+            "",
+            f"Portfolio: ${total:,.2f} AUD ({'+' if net>=0 else ''}${net:.2f})",
+            f"Open positions: {len(positions)}",
+            f"Trades last 4hr: {len(recent_trades)}",
+            f"Trades today: {len(today_trades)}",
+            f"Claude cost today: ${cost:.3f} USD",
+        ]
+
+        if positions:
+            lines.append("")
+            lines.append("Holdings:")
+            for sym, pos in list(positions.items())[:6]:
+                pnl = (pos.get("pnl_pct", 0) or 0) * 100
+                lines.append(f"  {sym}: {pnl:+.1f}% ({pos.get('market', '?')})")
+
+        if recent_trades:
+            lines.append("")
+            lines.append("Recent trades:")
+            for t in recent_trades[:5]:
+                pnl = f" ({(t.get('pnl_pct', 0) or 0)*100:+.1f}%)" if t.get("pnl_pct") else ""
+                lines.append(f"  {t.get('action')} {t.get('symbol')}{pnl}")
+
+        tg.send("\n".join(lines))
+    except Exception as e:
+        log.warning(f"4hr summary failed: {e}")
+
+
+
     """6:30am AEST — overnight summary."""
     positions = db.get_positions()
     portfolio = db.get_portfolio_value()
@@ -437,6 +497,7 @@ def main():
     last_intraday = 0
     last_snapshot = 0
     last_question = 0
+    last_4hr_summary = time.time()  # don't fire immediately at startup
 
     while True:
         try:
@@ -449,8 +510,10 @@ def main():
             now = aest_now()
             today = now.date().isoformat()
 
-            # Evening briefing — STRICT gating: only minute 0-2 of hour 20, flag-locked
-            if (now.hour == EVENING_BRIEFING_HOUR_AEST
+            # Evening briefing — Mon-Fri ONLY, only minute 0-2 of hour 20, flag-locked
+            is_weekday = now.weekday() < 5  # 0=Mon, 4=Fri, 5=Sat, 6=Sun
+            if (is_weekday
+                and now.hour == EVENING_BRIEFING_HOUR_AEST
                 and now.minute < 3
                 and db.get_flag("last_evening_briefing") != today):
 
@@ -494,6 +557,11 @@ def main():
             if (now_ts - last_question) >= QUESTION_POLL_INTERVAL:
                 last_question = now_ts
                 run_question_poll(db, tg)
+
+            # 4-hourly Telegram summary — pure Python, no API cost
+            if (now_ts - last_4hr_summary) >= (4 * 60 * 60):
+                last_4hr_summary = now_ts
+                run_4hr_summary(db, tg)
 
             time.sleep(MAIN_TICK)
 
