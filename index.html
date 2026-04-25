@@ -62,22 +62,28 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .alloc-bar-fill{height:100%;transition:width 0.3s;}
 
 /* Positions */
-.pos-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px;}
-.pos-card{background:#fafbfc;border:1px solid #e8eaed;border-radius:8px;padding:12px 13px;cursor:pointer;transition:all 0.15s;}
+.pos-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px;}
+.pos-card{background:#fafbfc;border:1px solid #e8eaed;border-radius:8px;padding:14px 14px 12px;cursor:pointer;transition:all 0.15s;}
 .pos-card:hover{border-color:#0d1f38;}
 .pos-card.active{border-color:#0d1f38;box-shadow:0 0 0 1px #0d1f38;}
-.pos-card-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;}
-.pos-sym{font-size:14px;font-weight:700;color:#1a1a2e;}
-.pos-pnl{font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;}
-.pos-pnl.up{background:#e8f5e9;color:#1a7340;} .pos-pnl.down{background:#fdecea;color:#c0392b;} .pos-pnl.flat{background:#f5f6f8;color:#9aa0a6;}
-.pos-price-row{display:flex;align-items:baseline;gap:6px;margin-bottom:8px;}
-.pos-price{font-size:18px;font-weight:600;color:#1a1a2e;}
-.pos-price-unit{font-size:10px;color:#9aa0a6;font-weight:500;text-transform:uppercase;letter-spacing:0.05em;}
-.pos-stats{display:grid;grid-template-columns:auto 1fr;gap:3px 10px;font-size:11px;border-top:1px solid #eef0f2;padding-top:7px;}
-.pos-stat-k{color:#9aa0a6;}
-.pos-stat-v{color:#1a1a2e;font-weight:500;text-align:right;}
-.pos-stat-v.up{color:#1a7340;} .pos-stat-v.down{color:#c0392b;}
-.pos-meta{font-size:10px;color:#9aa0a6;margin-top:7px;padding-top:6px;border-top:1px solid #eef0f2;}
+.pos-card-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
+.pos-sym{font-size:14px;font-weight:700;color:#1a1a2e;letter-spacing:0.02em;}
+.pos-pct-badge{font-size:11px;font-weight:600;padding:2px 9px;border-radius:10px;}
+.pos-pct-badge.up{background:#e8f5e9;color:#1a7340;}
+.pos-pct-badge.down{background:#fdecea;color:#c0392b;}
+.pos-pct-badge.flat{background:#f5f6f8;color:#6b7280;}
+.pos-headline{font-size:24px;font-weight:700;letter-spacing:-0.5px;line-height:1.1;margin-bottom:2px;font-variant-numeric:tabular-nums;}
+.pos-headline.up{color:#1a7340;}
+.pos-headline.down{color:#c0392b;}
+.pos-headline.flat{color:#1a1a2e;}
+.pos-headline-sub{font-size:11px;color:#9aa0a6;margin-bottom:10px;}
+.pos-divider{height:1px;background:#eef0f2;margin:10px 0 8px;}
+.pos-row{display:flex;justify-content:space-between;font-size:11px;line-height:1.7;}
+.pos-row-k{color:#9aa0a6;}
+.pos-row-v{color:#1a1a2e;font-variant-numeric:tabular-nums;}
+.pos-row-v.up{color:#1a7340;}
+.pos-row-v.down{color:#c0392b;}
+.pos-foot{font-size:10px;color:#9aa0a6;margin-top:8px;padding-top:6px;border-top:1px solid #eef0f2;}
 
 /* Holding detail */
 .hd-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px;}
@@ -743,17 +749,23 @@ function renderStats(){
   const closedFees = closedFeesEstAud();
   const liveEquivTotal = paperTotal - openEstFees - closedFees;
 
-  document.getElementById('s-port').textContent = fmtAud(paperTotal);
+  // Portfolio tile — show live-equivalent (after-fees) as the headline number,
+  // since the user wants the realistic, after-everything figure as primary.
+  document.getElementById('s-port').textContent = fmtAud(liveEquivTotal);
   document.getElementById('s-port-sub').textContent =
-    `${allPositions.length} open · paper · live equiv ${fmtAud(liveEquivTotal)}`;
+    `${allPositions.length} open · after est. fees · paper ${fmtAud(paperTotal)}`;
 
+  // P&L tile — show NET (after-fees) as the headline.
+  const netOpen = grossPnl - openEstFees;
   const pnlEl = document.getElementById('s-pnl');
-  pnlEl.textContent = fmtSignedAud(grossPnl);
-  pnlEl.className = 'stat-value ' + (grossPnl>0?'up':grossPnl<0?'down':'');
-  const todayStr = Math.abs(todayPnlAud) > 0.005 ? `${fmtSignedAud(todayPnlAud)} today` : 'open · gross';
-  document.getElementById('s-pnl-sub').textContent = `${todayStr} · net ${fmtSignedAud(grossPnl - openEstFees)}`;
+  pnlEl.textContent = fmtSignedAud(netOpen);
+  pnlEl.className = 'stat-value ' + (netOpen>0?'up':netOpen<0?'down':'');
+  const todayStr = Math.abs(todayPnlAud) > 0.005 ? `${fmtSignedAud(todayPnlAud)} today · ` : '';
+  document.getElementById('s-pnl-sub').textContent = `${todayStr}open · net · gross ${fmtSignedAud(grossPnl)}`;
 
-  // Realised P&L tile
+  // Realised P&L tile — show LIVE equivalent as the headline (the truthful
+  // answer to "what did closed positions actually make/lose me"), with the
+  // paper figure in the subtitle.
   const realisedEl = document.getElementById('s-realised');
   const realisedSub = document.getElementById('s-realised-sub');
   if(allClosed.length === 0){
@@ -763,9 +775,9 @@ function renderStats(){
   } else {
     const paperRealised = closedGrossPaperAud();
     const liveRealised = closedNetLiveAud();
-    realisedEl.textContent = fmtSignedAud(paperRealised);
-    realisedEl.className = 'stat-value ' + (paperRealised>0.01?'up':paperRealised<-0.01?'down':'');
-    realisedSub.textContent = `${allClosed.length} closed · paper · live equiv ${fmtSignedAud(liveRealised)}`;
+    realisedEl.textContent = fmtSignedAud(liveRealised);
+    realisedEl.className = 'stat-value ' + (liveRealised>0.01?'up':liveRealised<-0.01?'down':'');
+    realisedSub.textContent = `${allClosed.length} closed · after est. fees · paper ${fmtSignedAud(paperRealised)}`;
   }
 
   const today = new Date().toISOString().slice(0,10);
@@ -812,48 +824,44 @@ function renderPositions(){
     return;
   }
   el.innerHTML = allPositions.map(p=>{
-    const grossPct = grossPnlPct(p);
-    const cls = grossPct>0.0005 ? 'up' : grossPct<-0.0005 ? 'down' : 'flat';
+    const grossAud  = grossPnlAud(p);
+    const fees      = estimatedFeesAud(p);
+    const netAud    = grossAud - fees.total;
+    const netPctVal = netPnlPct(p);
+    const grossPct  = grossPnlPct(p);
+
+    const cur       = currentPriceAud(p);
+    const entry     = entryPriceAud(p);
+    const valAud    = marketValueAud(p);
+    const entryCost = entryCostAud(p);
+    const qty       = Number(p.qty) || 0;
+
+    const cls = netAud > 0.01 ? 'up' : netAud < -0.01 ? 'down' : 'flat';
     const active = selectedHolding === p.symbol ? 'active' : '';
+    const grossSign = grossAud >= 0 ? '+' : '−';
+    const feeSign = fees.total > 0.005 ? '−' : '';
+    const netSign = netAud >= 0 ? '+' : '−';
 
-    const cur = currentPriceAud(p);
-    const entry = entryPriceAud(p);
-    const valAud = marketValueAud(p);
-    const grossAud = grossPnlAud(p);
-    const fees = estimatedFeesAud(p);
-    const netAud = grossAud - fees.total;
-    const netPct = netPnlPct(p);
-    const qty = Number(p.qty) || 0;
-
-    const grossCls = grossAud > 0.01 ? 'up' : grossAud < -0.01 ? 'down' : '';
-    const netCls = netAud > 0.01 ? 'up' : netAud < -0.01 ? 'down' : '';
-
-    const curLine = cur > 0
-      ? `<div class="pos-price-row"><span class="pos-price">${fmtPrice(cur)}</span><span class="pos-price-unit">AUD</span></div>`
-      : `<div class="pos-price-row"><span class="pos-price" style="color:#c4c7cc;">price syncing…</span></div>`;
-
-    const entryLine = entry > 0
-      ? `<div class="pos-stat-k">Entry</div><div class="pos-stat-v">${fmtPrice(entry)} AUD</div>`
-      : `<div class="pos-stat-k">Entry</div><div class="pos-stat-v" style="color:#c4c7cc;">syncing…</div>`;
-
-    const qtyLine = qty > 0
-      ? `<div class="pos-stat-k">${isStock(p)?'Shares':'Units'}</div><div class="pos-stat-v">${qty.toFixed(qty<1?6:(qty<100?4:2))}</div>`
+    const sharesLine = qty > 0
+      ? `${qty.toFixed(qty<1?6:(qty<100?4:2))} ${isStock(p)?'shares':'units'} @ ${fmtPrice(cur)} AUD`
       : '';
+    const entryLine = entry > 0
+      ? `entry ${fmtPrice(entry)} AUD/${isStock(p)?'sh':'unit'}`
+      : 'entry syncing';
 
     return `<div class="pos-card ${active}" onclick="selectHolding('${p.symbol}')">
-      <div class="pos-card-header">
+      <div class="pos-card-top">
         <span class="pos-sym">${p.symbol}</span>
-        <span class="pos-pnl ${cls}">${fmtSignedPct(grossPct)}</span>
+        <span class="pos-pct-badge ${cls}">${fmtSignedPct(netPctVal)} net</span>
       </div>
-      ${curLine}
-      <div class="pos-stats">
-        ${entryLine}
-        ${qtyLine}
-        <div class="pos-stat-k">Value</div><div class="pos-stat-v">${fmtAud(valAud)}</div>
-        <div class="pos-stat-k">Gross P&L</div><div class="pos-stat-v ${grossCls}">${fmtSignedAud(grossAud)}</div>
-        <div class="pos-stat-k">Net*</div><div class="pos-stat-v ${netCls}">${fmtSignedAud(netAud)} <span style="color:#9aa0a6;font-weight:400;">(${fmtSignedPct(netPct)})</span></div>
-      </div>
-      <div class="pos-meta">*after est. ${fmtAud(fees.total)} round-trip fees · ${p.market||'—'} · bought ${fmtRelativeFromIso(p.created_at)}</div>
+      <div class="pos-headline ${cls}">${netSign}$${Math.abs(netAud).toFixed(2)}</div>
+      <div class="pos-headline-sub">net P&L if sold now · after est. ${fmtAud(fees.total)} fees</div>
+      <div class="pos-divider"></div>
+      <div class="pos-row"><span class="pos-row-k">Capital deployed</span><span class="pos-row-v">${fmtAud(entryCost)}</span></div>
+      <div class="pos-row"><span class="pos-row-k">Worth now (gross)</span><span class="pos-row-v">${fmtAud(valAud)}</span></div>
+      <div class="pos-row"><span class="pos-row-k">Gross P&L</span><span class="pos-row-v ${grossAud>0.01?'up':grossAud<-0.01?'down':''}">${grossSign}${fmtAud(Math.abs(grossAud))} (${fmtSignedPct(grossPct)})</span></div>
+      <div class="pos-row"><span class="pos-row-k">Est. fees (round-trip)</span><span class="pos-row-v">${feeSign}${fmtAud(fees.total)}</span></div>
+      <div class="pos-foot">${sharesLine}${sharesLine?' · ':''}${entryLine} · ${p.market||'—'} · ${fmtRelativeFromIso(p.created_at)}</div>
     </div>`;
   }).join('');
 
@@ -964,8 +972,8 @@ function renderClosedPositions(){
       <div class="closed-header">
         <span class="closed-sym">${p.symbol}</span>
         <div style="text-align:right;">
-          <span class="closed-net-badge ${grossCls}">paper ${fmtSignedAud(grossAud)}</span>
-          <div style="font-size:10px;color:#9aa0a6;margin-top:3px;">live equiv ${fmtSignedAud(netAud)} (${fmtSignedPct(netPct)})</div>
+          <div class="pos-headline ${netCls}" style="font-size:20px;">${netAud>=0?'+':'−'}$${Math.abs(netAud).toFixed(2)}</div>
+          <div style="font-size:10px;color:#9aa0a6;">${fmtSignedPct(netPct)} after est. fees · paper ${fmtSignedAud(grossAud)}</div>
         </div>
       </div>
       <div class="closed-meta">${market} · held ${hold}${qtyLine}</div>
@@ -987,14 +995,14 @@ function renderClosedPositions(){
       </div>
 
       <div style="font-size:11px;color:#854d0e;background:#fffbeb;border:1px solid #fde68a;padding:7px 10px;border-radius:6px;margin-bottom:8px;line-height:1.5;">
-        <strong>Paper outcome:</strong> ${fmtAud(proceedsAud)} returned to cash. ${grossAud >= -0.01 && grossAud <= 0.01 ? 'No actual gain or loss.' : `Actual ${grossAud >= 0 ? 'gain' : 'loss'}: ${fmtSignedAud(grossAud)} added to portfolio.`} The breakdown below is what would have happened in <strong>live mode</strong>.
+        Paper mode: ${fmtAud(proceedsAud)} returned to cash, no actual fees deducted. Numbers above and below show what would have happened with real money.
       </div>
 
       <div class="closed-pnl-table">
         <div class="closed-pnl-k">Gross P&L (market move)</div>
         <div class="closed-pnl-v ${grossCls}">${fmtSignedAud(grossAud)} (${fmtSignedPct(pnlPct)})</div>
         ${feeLines.join('')}
-        <div class="closed-pnl-k closed-pnl-net-row">Live equivalent net P&L</div>
+        <div class="closed-pnl-k closed-pnl-net-row">Net P&L (real-money equivalent)</div>
         <div class="closed-pnl-v ${netCls} closed-pnl-net-row">${fmtSignedAud(netAud)} (${fmtSignedPct(netPct)})</div>
       </div>
     </div>`;
@@ -1029,9 +1037,11 @@ async function selectHolding(sym){
 
   const priceEl = document.getElementById('holding-price');
   if(cur > 0){
-    const chgColor = grossPct>=0 ? '#1a7340' : '#c0392b';
-    priceEl.innerHTML = `<div style="font-size:20px;font-weight:600;">${fmtPrice(cur)} <span style="font-size:11px;color:#9aa0a6;font-weight:500;">AUD</span></div>
-      <div style="font-size:11px;color:${chgColor};">${fmtSignedPct(grossPct)} since entry</div>`;
+    const netCls2 = netAud >= 0 ? 'up' : 'down';
+    const netColor = netAud >= 0 ? '#1a7340' : '#c0392b';
+    const netSign = netAud >= 0 ? '+' : '−';
+    priceEl.innerHTML = `<div style="font-size:22px;font-weight:700;color:${netColor};letter-spacing:-0.5px;">${netSign}$${Math.abs(netAud).toFixed(2)} <span style="font-size:11px;color:#9aa0a6;font-weight:500;">net AUD</span></div>
+      <div style="font-size:11px;color:#9aa0a6;">worth ${fmtAud(valAud)} · ${fmtSignedPct(netPct)} after fees</div>`;
   } else {
     priceEl.innerHTML = `<div style="font-size:13px;color:#c4c7cc;">price syncing…</div>`;
   }
