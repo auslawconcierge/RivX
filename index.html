@@ -790,6 +790,22 @@ const FEES = {
 };
 
 function isStock(pos){ return (pos.market || '').toLowerCase() === 'alpaca'; }
+
+// Returns 'open' | 'premarket' | 'afterhours' | 'closed' for US equity markets.
+// Naive but correct for labelling: NYSE 9:30am-4pm ET regular, 4am pre, 4-8pm after.
+// We approximate ET as UTC-4 (DST half the year) which is fine for a state label.
+function usMarketState(){
+  const now = new Date();
+  // Convert to ET — use Intl to be DST-correct
+  const et = new Date(now.toLocaleString('en-US', {timeZone: 'America/New_York'}));
+  const day = et.getDay(); // 0=Sun, 6=Sat
+  if(day === 0 || day === 6) return 'closed';
+  const mins = et.getHours() * 60 + et.getMinutes();
+  if(mins >= 4*60 && mins < 9*60+30) return 'premarket';
+  if(mins >= 9*60+30 && mins < 16*60) return 'open';
+  if(mins >= 16*60 && mins < 20*60) return 'afterhours';
+  return 'closed';
+}
 function feeProfile(pos){ return isStock(pos) ? FEES.alpaca : FEES.coinspot; }
 
 // Entry price per unit, in AUD. For stocks we use aud_amount/qty (locks in
@@ -1027,8 +1043,15 @@ function renderPositions(){
   // ── Group by category so the user can see what's what ─────────────────
   // Tickers alone (APLD, TAO, NOW…) don't say "stock vs crypto" — group
   // them under labelled sections with per-group totals.
+  const usState = usMarketState();
+  const usStateLabel = ({
+    open:       '· market open',
+    premarket:  '· pre-market',
+    afterhours: '· after-hours',
+    closed:     '· market closed',
+  })[usState] || '';
   const groups = [
-    { key: 'alpaca',   label: 'US stocks',  subtitle: 'Alpaca · USD-priced, AUD displayed' },
+    { key: 'alpaca',   label: 'US stocks',  subtitle: `Alpaca · USD-priced, AUD displayed ${usStateLabel}` },
     { key: 'coinspot', label: 'Crypto',     subtitle: 'CoinSpot · 24/7 trading' },
     { key: 'other',    label: 'Other',      subtitle: '' },
   ];
