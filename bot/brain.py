@@ -366,7 +366,12 @@ def _should_force_exit(pos: dict) -> tuple[bool, str]:
         if peak >= CRYPTO_TRAIL_TRIGGER and pnl_pct < CRYPTO_TRAIL_FLOOR:
             return True, f"Trailing stop — peaked at {peak:.2%}"
         age = _position_age_hours(pos)
-        if age >= CRYPTO_TIME_EXIT_HOURS and abs(pnl_pct) < 0.015:
+        # Time exit: only fire if we have a real entry price. A position with
+        # entry_price=0 will report pnl_pct=0 not because it's stagnant but
+        # because the entry was logged with no price (CoinSpot hiccup at buy).
+        # Killing it on the time rule would be wrong — wait for repair to backfill.
+        entry = float(pos.get("entry_price") or 0)
+        if entry > 0 and age >= CRYPTO_TIME_EXIT_HOURS and abs(pnl_pct) < 0.015:
             return True, f"Time exit after {age:.1f}hr — no movement ({pnl_pct:+.2%})"
 
     return False, ""
