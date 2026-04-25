@@ -70,6 +70,27 @@ class SupabaseLogger:
             log.error(f"DB PATCH {table}: {e}")
             return False
 
+    def _patch_with_fallback(self, table: str, data: dict, col: str, val: str) -> bool:
+        """
+        PATCH that retries without unknown columns if the first attempt fails.
+        Lets us add new fields (current_price, qty, last_priced_at, change_today)
+        without requiring the user to ALTER TABLE first. If the column exists, great.
+        If not, we drop it and keep going.
+        """
+        if self._patch(table, data, col, val):
+            return True
+        # Try with progressively fewer optional fields
+        optional = ["last_priced_at", "change_today", "qty", "current_price"]
+        trimmed = dict(data)
+        for field in optional:
+            if field in trimmed:
+                trimmed.pop(field)
+                if self._patch(table, trimmed, col, val):
+                    log.info(f"PATCH {table} succeeded after dropping '{field}' "
+                             f"— add this column in Supabase to persist it.")
+                    return True
+        return False
+
     # ── Trades ────────────────────────────────────────────────────────────────
 
     def log_trade(self, symbol: str, action: str, aud_amount: float,
@@ -120,15 +141,66 @@ class SupabaseLogger:
                         "id", str(existing[0]["id"]))
 
     def update_position_pnl(self, symbol: str, current_price: float):
-        """Update unrealised P&L for an open position."""
+        """Update unrealised P&L for an open position using a provided current price."""
         existing = self._get("positions",
                              {"symbol": f"eq.{symbol}", "status": "eq.open"})
         if existing:
             pos   = existing[0]
-            entry = pos.get("entry_price", current_price)
+            entry = pos.get("entry_price", current_price) or current_price
             pnl   = (current_price - entry) / entry if entry > 0 else 0
-            self._patch("positions", {"pnl_pct": round(pnl, 4)},
-                        "id", str(pos["id"]))
+            data = {
+                "pnl_pct": round(pnl, 4),
+                "current_price": round(current_price, 6),
+                "last_priced_at": datetime.utcnow().isoformat(),
+            }
+            self._patch_with_fallback("positions", data, "id", str(pos["id"]))
+
+    def update_position_pnl_direct(self, symbol: str, pnl_pct: float):
+        """
+        Write a pre-computed pnl_pct directly (e.g. from Alpaca's unrealized_plpc).
+        Used when we trust the upstream broker more than our own math.
+        """
+        existing = self._get("positions",
+                             {"symbol": f"eq.{symbol}", "status": "eq.open"})
+        if existing:
+            self._patch("positions",
+                        {"pnl_pct": round(pnl_pct, 4)},
+                        "id", str(existing[0]["id"]))
+
+    def update_position_from_alpaca(self, symbol: str, current_price: float,
+                                    pnl_pct: float, qty: float = None,
+                                    change_today: float = None,
+                                    avg_entry_price: float = None):
+        """
+        Push live Alpaca position data back to Supabase for the dashboard.
+
+        Also heals historical rows where entry_price was stored as 0 due to the
+        old bug — if the stored entry_price is 0 and Alpaca reports a non-zero
+        avg_entry_price, we overwrite.
+        """
+        existing = self._get("positions",
+                             {"symbol": f"eq.{symbol}", "status": "eq.open"})
+        if not existing:
+            return
+        pos = existing[0]
+
+        data = {
+            "pnl_pct": round(pnl_pct, 4),
+            "current_price": round(current_price, 6) if current_price else None,
+            "last_priced_at": datetime.utcnow().isoformat(),
+        }
+        if qty is not None:
+            data["qty"] = round(qty, 8)
+        if change_today is not None:
+            data["change_today"] = round(change_today, 6)
+
+        # Heal entry_price=0 rows (from the old bug where Alpaca fills weren't captured)
+        stored_entry = float(pos.get("entry_price") or 0)
+        if stored_entry == 0 and avg_entry_price and avg_entry_price > 0:
+            data["entry_price"] = round(avg_entry_price, 6)
+            log.info(f"Healed entry_price for {symbol}: 0 → {avg_entry_price:.4f}")
+
+        self._patch_with_fallback("positions", data, "id", str(pos["id"]))
 
     # ── Signal weights ────────────────────────────────────────────────────────
 
