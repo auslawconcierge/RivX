@@ -392,10 +392,16 @@ def run_snapshot(db, alpaca=None):
             market = (pos.get("market") or "").lower()
 
             if market == "alpaca" and sym in alpaca_data:
-                # Use live Alpaca data: amount * (1 + pnl_pct)
+                # AUD-correct market value: current_price_usd × qty × USD_TO_AUD.
+                # This includes FX impact, unlike just amt × (1 + USD pnl).
+                aud_value = alpaca_data[sym].get("market_value_aud", 0)
                 pnl = alpaca_data[sym]["pnl_pct"]
-                current_value += amt * (1 + pnl)
-                # Also update pnl_pct on the position row for dashboard
+                if aud_value > 0:
+                    current_value += aud_value
+                else:
+                    current_value += amt * (1 + pnl)
+                # Update pnl_pct on the position row (USD-based — dashboard does its
+                # own AUD math from current_price + qty + live FX).
                 try:
                     db.update_position_pnl_direct(sym, pnl)
                 except Exception:
