@@ -153,6 +153,38 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .fail-reason{color:#9aa0a6;flex:1;}
 .fail-time{color:#c4c7cc;font-size:11px;flex-shrink:0;}
 
+/* Closed positions */
+.closed-list{display:flex;flex-direction:column;gap:10px;}
+.closed-card{background:#fafbfc;border:1px solid #e8eaed;border-radius:8px;padding:14px;}
+.closed-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px;}
+.closed-sym{font-size:15px;font-weight:700;color:#1a1a2e;}
+.closed-net-badge{font-size:12px;font-weight:600;padding:3px 10px;border-radius:12px;}
+.closed-net-badge.up{background:#e8f5e9;color:#1a7340;}
+.closed-net-badge.down{background:#fdecea;color:#c0392b;}
+.closed-net-badge.flat{background:#f5f6f8;color:#6b7280;}
+.closed-meta{font-size:11px;color:#9aa0a6;margin-bottom:12px;}
+.closed-flow{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:10px;padding:10px 12px;background:white;border:1px solid #e8eaed;border-radius:6px;margin-bottom:10px;}
+.closed-flow-side{font-size:11px;}
+.closed-flow-label{font-size:9px;color:#9aa0a6;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:4px;font-weight:600;}
+.closed-flow-label.buy{color:#1a7340;}
+.closed-flow-label.sell{color:#c0392b;}
+.closed-flow-date{font-size:11px;color:#555;}
+.closed-flow-amt{font-size:14px;font-weight:600;color:#1a1a2e;margin-top:3px;}
+.closed-flow-price{font-size:11px;color:#9aa0a6;margin-top:1px;}
+.closed-arrow{font-size:18px;color:#c4c7cc;text-align:center;}
+.closed-pnl-table{display:grid;grid-template-columns:1fr auto;gap:5px 16px;font-size:12px;padding:10px 12px;background:white;border:1px solid #e8eaed;border-radius:6px;}
+.closed-pnl-k{color:#555;}
+.closed-pnl-v{text-align:right;font-variant-numeric:tabular-nums;color:#1a1a2e;}
+.closed-pnl-v.fee{color:#c0392b;}
+.closed-pnl-v.up{color:#1a7340;font-weight:600;}
+.closed-pnl-v.down{color:#c0392b;font-weight:600;}
+.closed-pnl-net-row{border-top:1px solid #e8eaed;padding-top:6px;margin-top:2px;font-weight:600;font-size:13px;}
+
+@media(max-width:480px){
+  .closed-flow{grid-template-columns:1fr;}
+  .closed-arrow{transform:rotate(90deg);}
+}
+
 @media(max-width:720px){
   .stats,.alloc{grid-template-columns:1fr 1fr;}
   .main{padding:12px;}
@@ -308,6 +340,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
         </div>
       </div>
 
+      <div class="card" id="closed-positions-card" style="display:none;">
+        <div class="card-row" style="margin-bottom:10px;">
+          <div class="card-title" style="margin-bottom:0;">Closed positions</div>
+          <div style="font-size:10px;color:#c4c7cc;" id="closed-count"></div>
+        </div>
+        <div class="closed-list" id="closed-list"></div>
+      </div>
+
       <div class="card">
         <div class="card-title">All trades</div>
         <div id="all-trades"><div class="empty">No trades yet</div></div>
@@ -398,7 +438,7 @@ const SYM_TO_CG = {
 
 let perfChart=null, holdingChart=null, costChart=null;
 let currentTf='24H', selectedHolding=null;
-let allSnapshots=[], allIntraday=[], allTrades=[], allPositions=[], allChecks=[], allQuestions=[], tokenUsage=[], holdingCache={};
+let allSnapshots=[], allIntraday=[], allTrades=[], allPositions=[], allClosed=[], allChecks=[], allQuestions=[], tokenUsage=[], holdingCache={};
 let livePrices={};
 
 function login(){
@@ -458,11 +498,12 @@ async function loadLivePrices(symbols){
 
 async function loadAll(){
   document.getElementById('last-updated').textContent = 'Loading...';
-  const [snaps, intraday, positions, trades, checks, questions, usage] = await Promise.all([
+  const [snaps, intraday, positions, closed, trades, checks, questions, usage] = await Promise.all([
     sb('snapshots', {order:'date.desc', limit:'400'}),
     sb('intraday_snapshots', {order:'recorded_at.desc', limit:'500'}),
     sb('positions', {status:'eq.open'}),
-    sb('trades', {order:'created_at.desc', limit:'50'}),
+    sb('positions', {status:'eq.closed', order:'closed_at.desc', limit:'100'}),
+    sb('trades', {order:'created_at.desc', limit:'100'}),
     sb('crypto_checks', {order:'checked_at.desc', limit:'50'}),
     sb('user_questions', {order:'asked_at.desc', limit:'30'}),
     sb('token_usage', {order:'date.desc', limit:'30'}),
@@ -470,6 +511,7 @@ async function loadAll(){
   allSnapshots = snaps || [];
   allIntraday = intraday || [];
   allPositions = positions || [];
+  allClosed = closed || [];
   allTrades = trades || [];
   allChecks = checks || [];
   allQuestions = questions || [];
@@ -484,6 +526,7 @@ async function loadAll(){
 
 function renderAll(){
   renderStats(); renderAllocation(); renderPositions();
+  renderClosedPositions();
   renderTrades(); renderChart(currentTf);
   renderIntelligence(); renderQA();
   renderCostWidget();
@@ -779,6 +822,124 @@ function fmtRelativeFromIso(iso){
   if(h < 24) return `${h}h ago`;
   const d = Math.round(h/24);
   return `${d}d ago`;
+}
+
+function fmtDateTime(iso){
+  if(!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleDateString('en-AU',{day:'numeric', month:'short'}) + ' · ' +
+         d.toLocaleTimeString('en-AU',{hour:'2-digit', minute:'2-digit'});
+}
+
+function fmtHoldDuration(fromIso, toIso){
+  if(!fromIso || !toIso) return '—';
+  const ms = new Date(toIso).getTime() - new Date(fromIso).getTime();
+  if(ms < 0) return '—';
+  const mins = Math.round(ms / 60000);
+  if(mins < 60) return `${mins}m`;
+  const hours = Math.round(mins / 60);
+  if(hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  const remHours = hours % 24;
+  return remHours > 0 ? `${days}d ${remHours}h` : `${days}d`;
+}
+
+function renderClosedPositions(){
+  const card = document.getElementById('closed-positions-card');
+  const list = document.getElementById('closed-list');
+  if(!allClosed.length){
+    card.style.display = 'none';
+    return;
+  }
+  card.style.display = 'block';
+  document.getElementById('closed-count').textContent =
+    `${allClosed.length} closed · realised P&L tracked`;
+
+  // For closed positions, recompute everything in AUD terms.
+  // entry_price/exit_price are in stored units (USD for stocks, AUD for crypto).
+  // Most reliable AUD numbers come from aud_amount (entry cost) and pnl_pct (broker-reported return).
+  list.innerHTML = allClosed.map(p => {
+    const stock = (p.market || '').toLowerCase() === 'alpaca';
+    const profile = stock ? FEES.alpaca : FEES.coinspot;
+    const entryAud = Number(p.aud_amount) || 0;
+    const pnlPct = Number(p.pnl_pct) || 0;
+    const proceedsAud = entryAud * (1 + pnlPct);
+    const grossAud = proceedsAud - entryAud;
+
+    // Per-unit AUD prices (best-effort)
+    const qty = Number(p.qty) || 0;
+    let entryPerUnitAud, exitPerUnitAud;
+    if(stock){
+      // Stocks: entry AUD/share = aud_amount/qty (locks in entry FX)
+      // Exit AUD/share: derive from proceeds_aud/qty (locks in exit FX implicitly via pnl_pct)
+      entryPerUnitAud = qty > 0 ? entryAud / qty : 0;
+      exitPerUnitAud  = qty > 0 ? proceedsAud / qty : 0;
+    } else {
+      entryPerUnitAud = Number(p.entry_price) || 0;
+      exitPerUnitAud  = Number(p.exit_price) || (entryPerUnitAud * (1 + pnlPct));
+    }
+
+    // Fees breakdown — same model as open positions, but both sides are now realised
+    const buyFee = entryAud * profile.buyPct;
+    const sellFee = proceedsAud * profile.sellPct;
+    const fxIn  = entryAud * profile.fxOneWayPct;
+    const fxOut = proceedsAud * profile.fxOneWayPct;
+    const totalFees = buyFee + sellFee + fxIn + fxOut;
+
+    const netAud = grossAud - totalFees;
+    const netPct = entryAud > 0 ? netAud / entryAud : 0;
+
+    const grossCls = grossAud > 0.01 ? 'up' : grossAud < -0.01 ? 'down' : 'flat';
+    const netCls   = netAud > 0.01 ? 'up' : netAud < -0.01 ? 'down' : 'flat';
+
+    const feeLines = [];
+    if(profile.buyPct > 0)
+      feeLines.push(`<div class="closed-pnl-k">Buy fee (${(profile.buyPct*100).toFixed(2)}%, paid at entry)</div><div class="closed-pnl-v fee">−${fmtAud(buyFee)}</div>`);
+    if(profile.sellPct > 0)
+      feeLines.push(`<div class="closed-pnl-k">Sell fee (${(profile.sellPct*100).toFixed(2)}%, paid at exit)</div><div class="closed-pnl-v fee">−${fmtAud(sellFee)}</div>`);
+    if(profile.fxOneWayPct > 0){
+      feeLines.push(`<div class="closed-pnl-k">FX in (${(profile.fxOneWayPct*100).toFixed(2)}%, AUD→USD)</div><div class="closed-pnl-v fee">−${fmtAud(fxIn)}</div>`);
+      feeLines.push(`<div class="closed-pnl-k">FX out (${(profile.fxOneWayPct*100).toFixed(2)}%, USD→AUD)</div><div class="closed-pnl-v fee">−${fmtAud(fxOut)}</div>`);
+    }
+
+    const hold = fmtHoldDuration(p.created_at, p.closed_at);
+    const market = stock ? 'Alpaca · US stock' : 'CoinSpot · crypto';
+    const entryPrice = entryPerUnitAud > 0 ? `@ ${fmtPrice(entryPerUnitAud)} AUD` : '';
+    const exitPrice  = exitPerUnitAud  > 0 ? `@ ${fmtPrice(exitPerUnitAud)}  AUD` : '';
+    const qtyLine    = qty > 0 ? ` · ${qty.toFixed(qty<1?6:(qty<100?4:2))} ${stock?'shares':'units'}` : '';
+
+    return `<div class="closed-card">
+      <div class="closed-header">
+        <span class="closed-sym">${p.symbol}</span>
+        <span class="closed-net-badge ${netCls}">net ${fmtSignedAud(netAud)} (${fmtSignedPct(netPct)})</span>
+      </div>
+      <div class="closed-meta">${market} · held ${hold}${qtyLine}</div>
+
+      <div class="closed-flow">
+        <div class="closed-flow-side">
+          <div class="closed-flow-label buy">BOUGHT</div>
+          <div class="closed-flow-date">${fmtDateTime(p.created_at)}</div>
+          <div class="closed-flow-amt">${fmtAud(entryAud)}</div>
+          <div class="closed-flow-price">${entryPrice}</div>
+        </div>
+        <div class="closed-arrow">→</div>
+        <div class="closed-flow-side" style="text-align:right;">
+          <div class="closed-flow-label sell">SOLD</div>
+          <div class="closed-flow-date">${fmtDateTime(p.closed_at)}</div>
+          <div class="closed-flow-amt">${fmtAud(proceedsAud)}</div>
+          <div class="closed-flow-price">${exitPrice}</div>
+        </div>
+      </div>
+
+      <div class="closed-pnl-table">
+        <div class="closed-pnl-k">Gross P&L (market move)</div>
+        <div class="closed-pnl-v ${grossCls}">${fmtSignedAud(grossAud)} (${fmtSignedPct(pnlPct)})</div>
+        ${feeLines.join('')}
+        <div class="closed-pnl-k closed-pnl-net-row">Net P&L${profile.buyPct+profile.sellPct+profile.fxOneWayPct > 0 ? ' (after est. fees)' : ''}</div>
+        <div class="closed-pnl-v ${netCls} closed-pnl-net-row">${fmtSignedAud(netAud)} (${fmtSignedPct(netPct)})</div>
+      </div>
+    </div>`;
+  }).join('');
 }
 
 async function selectHolding(sym){
