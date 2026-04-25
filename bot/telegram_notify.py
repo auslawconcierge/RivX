@@ -3,21 +3,41 @@ telegram_notify.py — Sends alerts to your Telegram and waits for CONFIRM/CANCE
 
 Kill switch architecture:
   - Persistent flag in Supabase: flags['kill_switch']
-  - To halt: send "STOP ALL" in Telegram OR set the flag manually
-  - To resume: DELETE FROM flags WHERE key = 'kill_switch'  THEN restart Render
+  - To halt: send "STOP ALL" or /pause in Telegram, OR toggle on dashboard
+  - To resume: send /resume, OR toggle on dashboard
   - On startup, ALL existing Telegram messages are acknowledged so old STOP ALLs
     don't keep retriggering
   - One alert at activation, then silence. No spam.
+
+Slash commands (added):
+  /summary, /positions, /cash, /pause, /resume, /sell SYMBOL, /help
+  Each command runs inside the same message-consumption loop as the kill switch
+  so there's no second poller fighting over the update watermark.
 """
 
 import logging
 import time
+import json
 import requests
+from datetime import datetime
 from bot.config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, PAPER_MODE
 
 log = logging.getLogger(__name__)
 
 BASE = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+
+# Allocation constants (mirrored from bot/brain.py — duplicated here so we don't
+# create a circular import). If you change them in brain.py, change them here.
+STARTING_CAPITAL_AUD  = 5000
+STOCK_MAX_DEPLOYED    = 1500
+STOCK_MAX_POSITIONS   = 3
+CRYPTO_MAX_DEPLOYED   = 3000
+CRYPTO_MAX_POSITIONS  = 6
+
+
+def _truthy_flag(v: str) -> bool:
+    """Accept multiple sentinel values for kill switch flag."""
+    return (v or "").lower() in ("on", "1", "true", "yes")
 
 
 class TelegramNotifier:
@@ -107,58 +127,62 @@ class TelegramNotifier:
         updates = self._get_updates()
         return updates[-1]["update_id"] if updates else None
 
-    # ─── Kill switch ───────────────────────────────────────────────────────
+    # ─── Kill switch + command dispatch (single message-consumption pass) ──
 
     def check_kill_switch(self, db=None) -> bool:
         """
-        Halt-check called by main loop. Two layers:
-          1. Persistent Supabase flag — once set, stays set across restarts
-          2. Fresh Telegram STOP ALL during this run — sets the flag, halts
+        Halt-check called every main-loop tick. Three things happen:
+          1. Check Supabase flag — if on, return True (halted)
+          2. Drain old Telegram messages on first call (suppresses STOP ALLs
+             sent before this run started)
+          3. Process fresh messages — STOP ALL → halt, /command → dispatch
 
-        Args:
-          db: SupabaseLogger — required for persistent flag
+        Slash commands run inside this same loop so we never spawn a second
+        poller (which would fight over `_last_seen_update_id` and could
+        accidentally double-respond).
         """
-        # Layer 1: Supabase persistent flag
+        halted = False
+
+        # ── Layer 1: persistent flag ──────────────────────────────────────
         if db is not None:
             try:
-                if db.get_flag("kill_switch") == "1":
+                flag = db.get_flag("kill_switch")
+                if _truthy_flag(flag):
+                    halted = True
                     if not self._kill_switch_announced:
                         self._kill_switch_announced = True
-                        self.send("🛑 Kill switch is active. Bot halted. To resume: run "
-                                 "<code>DELETE FROM flags WHERE key = 'kill_switch';</code> "
-                                 "in Supabase, then restart Render.")
+                        self.send("🛑 Kill switch active. Bot halted. "
+                                  "Send /resume to re-enable trading.")
                         log.warning("Kill switch flag is set — bot halted")
-                    return True
+                else:
+                    # Flag cleared (e.g. /resume) — reset so re-pause re-announces
+                    self._kill_switch_announced = False
             except Exception as e:
                 log.debug(f"Kill switch flag read failed: {e}")
 
-        # Layer 2: Telegram polling — STARTUP, drain everything
+        # ── Layer 2: startup drain — DO NOT ACT on old messages ───────────
         if self._last_seen_update_id is None:
             try:
                 updates = self._get_updates()
                 if updates:
-                    # ACK all existing updates so they're consumed and never returned again.
-                    # ANY STOP ALL sitting in history is dropped here.
                     last_id = updates[-1]["update_id"]
-                    # The +1 offset tells Telegram "I've seen everything ≤ last_id"
                     self._get_updates(offset=last_id + 1)
                     self._last_seen_update_id = last_id
-                    log.info(f"Kill switch startup: drained {len(updates)} old Telegram message(s). "
-                             f"Watermark = {last_id}")
+                    log.info(f"Telegram startup: drained {len(updates)} old "
+                             f"message(s). Watermark = {last_id}")
                 else:
                     self._last_seen_update_id = 0
-                    log.info("Kill switch startup: no old messages")
+                    log.info("Telegram startup: no old messages")
             except Exception as e:
-                log.warning(f"Kill switch startup drain failed: {e}")
+                log.warning(f"Telegram startup drain failed: {e}")
                 self._last_seen_update_id = 0
-            # Never halt on startup, only on fresh messages thereafter
-            return False
+            return halted
 
-        # Layer 2: Telegram polling — RUNTIME, only fresh messages
+        # ── Layer 3: process fresh messages ───────────────────────────────
         try:
             updates = self._get_updates(offset=self._last_seen_update_id + 1)
         except Exception:
-            return False
+            return halted
 
         for update in updates:
             uid = update.get("update_id", 0)
@@ -166,26 +190,260 @@ class TelegramNotifier:
                 self._last_seen_update_id = uid
 
             msg = update.get("message", {})
-            text = (msg.get("text", "") or "").strip().upper()
+            text_raw = (msg.get("text", "") or "").strip()
+            text_upper = text_raw.upper()
             chat = str(msg.get("chat", {}).get("id", ""))
 
             if chat != str(self.chat_id):
                 continue
-            if text != "STOP ALL":
+            if not text_raw:
                 continue
 
-            log.warning(f"Fresh STOP ALL received (update_id {uid}) — setting flag")
-            if db is not None:
+            # STOP ALL — kill switch trigger (existing behaviour)
+            if text_upper == "STOP ALL":
+                log.warning(f"Fresh STOP ALL received (update_id {uid}) — setting flag")
+                if db is not None:
+                    try:
+                        db.set_flag("kill_switch", "on")
+                    except Exception as e:
+                        log.error(f"Could not persist kill switch flag: {e}")
+                if not self._kill_switch_announced:
+                    self._kill_switch_announced = True
+                    self.send("🛑 Bot halted. Send /resume to re-enable trading.")
+                halted = True
+                continue
+
+            # Slash commands
+            if text_raw.startswith("/"):
                 try:
-                    db.set_flag("kill_switch", "1")
+                    self._handle_command(text_raw, db)
                 except Exception as e:
-                    log.error(f"Could not persist kill switch flag: {e}")
+                    log.error(f"Command handling failed for '{text_raw}': {e}",
+                              exc_info=True)
+                continue
 
-            if not self._kill_switch_announced:
-                self._kill_switch_announced = True
-                self.send("🛑 Kill switch activated. Bot halted. To resume: run "
-                         "<code>DELETE FROM flags WHERE key = 'kill_switch';</code> "
-                         "in Supabase, then restart Render.")
-            return True
+            # Anything else — silent ignore. Do NOT reply (avoids loops).
 
-        return False
+        # Re-check flag in case /pause just set it
+        if not halted and db is not None:
+            try:
+                if _truthy_flag(db.get_flag("kill_switch")):
+                    halted = True
+            except Exception:
+                pass
+
+        return halted
+
+    # ─── Slash-command dispatch ────────────────────────────────────────────
+
+    def _handle_command(self, text: str, db) -> None:
+        parts = text.strip().split()
+        if not parts:
+            return
+        # Strip leading slash and any @botname suffix (Telegram convention)
+        cmd = parts[0].lstrip("/").lower()
+        if "@" in cmd:
+            cmd = cmd.split("@", 1)[0]
+        args = parts[1:]
+
+        if cmd in ("summary", "s"):
+            self._cmd_summary(db)
+        elif cmd in ("positions", "pos", "p"):
+            self._cmd_positions(db)
+        elif cmd == "cash":
+            self._cmd_cash(db)
+        elif cmd in ("pause", "stop", "halt"):
+            self._cmd_pause(db)
+        elif cmd in ("resume", "start", "go"):
+            self._cmd_resume(db)
+        elif cmd == "sell":
+            self._cmd_sell(args, db)
+        elif cmd in ("help", "commands", "h"):
+            self._cmd_help()
+        # Unknown commands: silent ignore (avoids reply storms if someone
+        # forwards a message starting with "/" by accident)
+
+    def _cmd_summary(self, db) -> None:
+        if db is None:
+            self.send("Cannot read state — db unavailable")
+            return
+        try:
+            portfolio = db.get_portfolio_value()
+            positions = db.get_positions()
+        except Exception as e:
+            self.send(f"Could not load summary: {e}")
+            return
+
+        total = portfolio.get("total_aud", 0)
+        day = portfolio.get("day_pnl", 0)
+        all_time = portfolio.get("total_pnl", 0)
+        emoji = "📈" if day >= 0 else "📉"
+
+        pos_lines = []
+        for sym, p in positions.items():
+            pnl_pct = (p.get("pnl_pct") or 0) * 100
+            market = (p.get("market") or "")[:6]
+            aud = p.get("aud_amount") or 0
+            pos_lines.append(f"  • <b>{sym}</b> ({market}): ${aud:.0f} → {pnl_pct:+.2f}%")
+
+        msg = (
+            f"{emoji} <b>RivX summary</b>\n\n"
+            f"Portfolio: <b>${total:,.2f} AUD</b>\n"
+            f"Today: {'+' if day >= 0 else ''}${day:.2f}\n"
+            f"All-time: {'+' if all_time >= 0 else ''}${all_time:.2f}\n\n"
+            f"<b>Open ({len(positions)})</b>:\n"
+            f"{chr(10).join(pos_lines) if pos_lines else '  (none)'}"
+        )
+        self.send(msg)
+
+    def _cmd_positions(self, db) -> None:
+        if db is None:
+            self.send("Cannot read positions — db unavailable")
+            return
+        try:
+            positions = db.get_positions()
+        except Exception as e:
+            self.send(f"Could not load positions: {e}")
+            return
+
+        if not positions:
+            self.send("No open positions.")
+            return
+
+        # Group by market for clarity
+        stocks  = {s: p for s, p in positions.items() if (p.get("market") or "").lower() == "alpaca"}
+        crypto  = {s: p for s, p in positions.items() if (p.get("market") or "").lower() == "coinspot"}
+        other   = {s: p for s, p in positions.items() if s not in stocks and s not in crypto}
+
+        sections = []
+        for label, group in [("US stocks", stocks), ("Crypto", crypto), ("Other", other)]:
+            if not group:
+                continue
+            lines = [f"<b>{label}</b>"]
+            for sym, p in group.items():
+                pnl_pct = (p.get("pnl_pct") or 0) * 100
+                aud = p.get("aud_amount") or 0
+                lines.append(f"  • {sym}: ${aud:.0f} → {pnl_pct:+.2f}%")
+            sections.append("\n".join(lines))
+
+        self.send("📋 <b>Open positions</b>\n\n" + "\n\n".join(sections))
+
+    def _cmd_cash(self, db) -> None:
+        if db is None:
+            self.send("Cannot read state — db unavailable")
+            return
+        try:
+            positions = db.get_positions()
+        except Exception as e:
+            self.send(f"Could not load: {e}")
+            return
+
+        stock_pos = [p for p in positions.values() if (p.get("market") or "").lower() == "alpaca"]
+        crypto_pos = [p for p in positions.values() if (p.get("market") or "").lower() == "coinspot"]
+        stock_dep = sum((p.get("aud_amount") or 0) for p in stock_pos)
+        crypto_dep = sum((p.get("aud_amount") or 0) for p in crypto_pos)
+        free_cash = max(0, STARTING_CAPITAL_AUD - stock_dep - crypto_dep)
+
+        def status(dep, free, slots, max_dep, max_pos, min_size=300):
+            if slots <= 0:
+                return f"⛔ at position cap ({max_pos}/{max_pos})"
+            if free < min_size:
+                return f"⚠ budget full (${free:.0f} left)"
+            return f"✅ ${free:.0f} budget + {slots} slots free"
+
+        stock_free  = STOCK_MAX_DEPLOYED  - stock_dep
+        crypto_free = CRYPTO_MAX_DEPLOYED - crypto_dep
+        stock_slots  = STOCK_MAX_POSITIONS  - len(stock_pos)
+        crypto_slots = CRYPTO_MAX_POSITIONS - len(crypto_pos)
+
+        msg = (
+            f"💰 <b>Cash &amp; capacity</b>\n\n"
+            f"Free cash: <b>${free_cash:,.2f}</b> of ${STARTING_CAPITAL_AUD}\n\n"
+            f"<b>Stocks</b>: ${stock_dep:.0f}/{STOCK_MAX_DEPLOYED} · "
+            f"{len(stock_pos)}/{STOCK_MAX_POSITIONS} pos\n"
+            f"  → {status(stock_dep, stock_free, stock_slots, STOCK_MAX_DEPLOYED, STOCK_MAX_POSITIONS)}\n\n"
+            f"<b>Crypto</b>: ${crypto_dep:.0f}/{CRYPTO_MAX_DEPLOYED} · "
+            f"{len(crypto_pos)}/{CRYPTO_MAX_POSITIONS} pos\n"
+            f"  → {status(crypto_dep, crypto_free, crypto_slots, CRYPTO_MAX_DEPLOYED, CRYPTO_MAX_POSITIONS)}"
+        )
+        self.send(msg)
+
+    def _cmd_pause(self, db) -> None:
+        if db is None:
+            self.send("Cannot pause — db unavailable")
+            return
+        try:
+            db.set_flag("kill_switch", "on")
+        except Exception as e:
+            self.send(f"Could not pause: {e}")
+            return
+        # Suppress layer-1 re-announcement so the user only sees this one reply
+        self._kill_switch_announced = True
+        self.send("⏸ <b>Trading paused</b>\n\n"
+                  "Snapshots and force-sells still work. "
+                  "Send /resume to re-enable trading.")
+
+    def _cmd_resume(self, db) -> None:
+        if db is None:
+            self.send("Cannot resume — db unavailable")
+            return
+        try:
+            db.set_flag("kill_switch", "off")
+        except Exception as e:
+            self.send(f"Could not resume: {e}")
+            return
+        self._kill_switch_announced = False
+        self.send("▶ <b>Trading resumed.</b>")
+
+    def _cmd_sell(self, args, db) -> None:
+        if not args:
+            self.send("Usage: <code>/sell SYMBOL</code>\nExample: <code>/sell APLD</code>")
+            return
+        if db is None:
+            self.send("Cannot queue sell — db unavailable")
+            return
+
+        sym = args[0].upper()
+        try:
+            positions = db.get_positions()
+        except Exception as e:
+            self.send(f"Could not check positions: {e}")
+            return
+
+        if sym not in positions:
+            open_list = ", ".join(positions.keys()) or "(none)"
+            self.send(f"No open position for <b>{sym}</b>.\nOpen: {open_list}")
+            return
+
+        market = positions[sym].get("market")
+        try:
+            result = db._post("manual_orders", {
+                "symbol":       sym,
+                "action":       "SELL",
+                "market":       market,
+                "requested_at": datetime.utcnow().isoformat(),
+                "status":       "pending",
+            })
+        except Exception as e:
+            self.send(f"Sell queue failed: {e}")
+            return
+
+        if result:
+            self.send(f"📥 Force-sell queued for <b>{sym}</b>. "
+                      f"Will execute on next cycle (~30 sec).")
+        else:
+            self.send(f"Could not queue sell for {sym} — does the "
+                      f"<code>manual_orders</code> table exist?")
+
+    def _cmd_help(self) -> None:
+        self.send(
+            "<b>RivX commands</b>\n\n"
+            "/summary — portfolio overview\n"
+            "/positions — open positions list\n"
+            "/cash — free cash &amp; budget headroom\n"
+            "/pause — pause trading\n"
+            "/resume — resume trading\n"
+            "/sell SYMBOL — force-sell a position\n"
+            "/help — this list\n\n"
+            "Or send <b>STOP ALL</b> to halt the bot completely."
+        )
