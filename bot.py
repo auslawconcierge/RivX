@@ -1,777 +1,1092 @@
 """
-RivX brain.py — cost-controlled trading intelligence.
+RivX AutoTrader — main scheduler.
 
-Design principles:
-  1. MECHANICAL FIRST. Stops/targets/time exits are pure Python. No Claude.
-  2. CLAUDE ONLY WHEN NEEDED. Skip the call if there's nothing to decide.
-  3. CHEAP MODEL FOR MONITORING. Haiku ($1/$5) for crypto_check & intraday_check.
-  4. GOOD MODEL FOR BRIEFING. Sonnet ($3/$15) for evening planning + Q&A only.
-  5. HARD TOKEN BUDGET. Stops calling Claude if daily spend exceeds $2.
+Cost-optimised loop intervals:
+  - Evening briefing     — 8pm AEST, once/day (Sonnet ~$0.05)
+  - Crypto check         — every 15 min, 24/7 (Haiku ~$0.003, often skipped)
+  - Intraday stock check — every 5 min during US hours (Haiku ~$0.003, often skipped)
+  - Snapshot             — every 5 min (pure Python, no cost)
+  - Question polling     — every 60 sec (Sonnet ~$0.012/question, only when asked)
 
-Three modes:
-  evening_briefing  — daily plan (Sonnet, ~$0.05/call)
-  intraday_check    — stock monitoring (Haiku, ~$0.003/call, skipped if nothing to decide)
-  crypto_check      — crypto monitoring (Haiku, ~$0.003/call, skipped if nothing to decide)
+Target: ~$25 USD/month total Claude spend with hard $2/day cap.
 """
 
-import json
+import time
 import logging
-import requests
-import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta, timezone, date
-import anthropic
+import json
+from datetime import datetime, timezone, timedelta
+
 from bot.config import (
-    ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_DATA_URL,
-    ANTHROPIC_API_KEY, PORTFOLIO, AUD_USD_FALLBACK
+    PORTFOLIO, PAPER_MODE,
+    EVENING_BRIEFING_HOUR_AEST, MORNING_SUMMARY_HOUR_AEST,
+    APPROVAL_TIMEOUT_SECONDS, MIN_CONFIDENCE_TO_TRADE,
+    ANTHROPIC_API_KEY,
 )
+from bot.brain import (
+    evening_briefing, intraday_check, crypto_check, get_market_data,
+    MODEL_QA,
+    CRYPTO_MAX_POSITIONS, CRYPTO_MAX_DEPLOYED, CRYPTO_POSITION_SIZE,
+    STOCK_MAX_POSITIONS,  STOCK_MAX_DEPLOYED,  STOCK_POSITION_SIZE,
+)
+from bot.alpaca_trader  import AlpacaTrader, get_aud_usd_rate
+from bot.coinspot_trader import CoinSpotTrader
+from bot.supabase_logger import SupabaseLogger
+from bot.telegram_notify import TelegramNotifier
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
-
-HEADERS = {
-    "APCA-API-KEY-ID":     ALPACA_API_KEY,
-    "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
-}
 
 AEST = timezone(timedelta(hours=10))
 
-# ─── Model selection (cost control) ────────────────────────────────────────
-MODEL_BRIEFING   = "claude-sonnet-4-5"      # Nightly plan — needs reasoning
-MODEL_MONITORING = "claude-haiku-4-5"       # Crypto/intraday checks — cheap & fast
-MODEL_QA         = "claude-sonnet-4-5"      # Your dashboard questions — needs reasoning
-
-# Token prices (USD per million tokens) for budget tracking
-PRICES = {
-    "claude-sonnet-4-5": {"input": 3.00,  "output": 15.00},
-    "claude-haiku-4-5":  {"input": 1.00,  "output": 5.00},
-}
-
-# Daily budget ceiling — if we hit this, no more Claude calls today.
-# Mechanical stops still fire to protect positions.
-DAILY_BUDGET_USD = 2.00
-
-# ─── Strategy constants (moderate-hot day trading) ─────────────────────────
-CRYPTO_TAKE_PROFIT_PCT = 0.05   # 5% — clears CoinSpot 0.1% fees comfortably
-CRYPTO_STOP_LOSS_PCT   = 0.025  # 2.5%
-CRYPTO_TIME_EXIT_HOURS = 4      # sell if stagnant
-CRYPTO_TRAIL_TRIGGER   = 0.03   # once +3%, start trailing
-CRYPTO_TRAIL_FLOOR     = 0.015  # lock in min +1.5%
-CRYPTO_MAX_POSITIONS   = 6
-CRYPTO_MAX_DEPLOYED    = 3000
-CRYPTO_POSITION_SIZE   = 500
-
-STOCK_TAKE_PROFIT_PCT  = 0.03
-STOCK_STOP_LOSS_PCT    = 0.015
-STOCK_MAX_POSITIONS    = 3
-STOCK_MAX_DEPLOYED     = 1500
-STOCK_POSITION_SIZE    = 500
-
-MIN_CASH_RESERVE = 1000
-
-# Close stocks 15 min before US close (Fri-only — weekdays we check futures)
-STOCK_EXIT_BEFORE_CLOSE_MIN = 15
-
-_CRYPTO_LIST = ["BTC","ETH","SOL","XRP","ADA","DOGE","AVAX","LINK","LTC","BCH",
-                "DOT","UNI","AAVE","MATIC","ATOM","ALGO","NEAR","FTM","SAND",
-                "MANA","CRV","GRT","SUSHI","MKR","SNX","PEPE","SHIB","FLOKI",
-                "WIF","BONK","FET","RNDR","TAO",
-                # Layer-2s and newer L1s the scanner now sees
-                "OP","APT","ARB","FIL","INJ","RUNE","IMX","STX","SEI","TIA",
-                "JUP","ORDI","PYTH","JTO","WLD","ENA","SUI","TON","ICP","HBAR",
-                "VET","TRX"]
+# Loop intervals (seconds)
+CRYPTO_LOOP_INTERVAL   = 15 * 60   # 15 min (was 5)
+INTRADAY_LOOP_INTERVAL = 5 * 60    # 5 min (was 2)
+SNAPSHOT_INTERVAL      = 5 * 60    # 5 min (pure Python, cheap)
+QUESTION_POLL_INTERVAL = 60        # 1 min (only spends tokens if question asked)
+MAIN_TICK              = 15        # how often the main loop wakes to check schedules
 
 
-# ─── Budget tracking ───────────────────────────────────────────────────────
+# ─── Time helpers ──────────────────────────────────────────────────────────
 
-def _check_budget(db) -> tuple[bool, float]:
-    """Returns (under_budget, spent_today_usd). Reads token_usage table."""
-    try:
-        today = date.today().isoformat()
-        rows = db._get("token_usage", {"date": f"eq.{today}"})
-        if not rows:
-            return True, 0.0
-        spent = float(rows[0].get("cost_usd", 0))
-        return spent < DAILY_BUDGET_USD, spent
-    except Exception:
-        return True, 0.0  # on error, default to allowing calls
+def aest_now() -> datetime:
+    return datetime.now(AEST)
 
 
-def _record_usage(db, model: str, input_tokens: int, output_tokens: int):
-    """Upsert today's token usage in Supabase."""
-    try:
-        price = PRICES.get(model, PRICES["claude-sonnet-4-5"])
-        cost = (input_tokens * price["input"] + output_tokens * price["output"]) / 1_000_000
-        today = date.today().isoformat()
-        existing = db._get("token_usage", {"date": f"eq.{today}"})
-        if existing:
-            row = existing[0]
-            db._patch("token_usage",
-                      {"input_tokens":  int(row.get("input_tokens", 0)) + input_tokens,
-                       "output_tokens": int(row.get("output_tokens", 0)) + output_tokens,
-                       "cost_usd":      round(float(row.get("cost_usd", 0)) + cost, 4),
-                       "call_count":    int(row.get("call_count", 0)) + 1},
-                      "date", today)
-        else:
-            db._post("token_usage", {
-                "date": today,
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "cost_usd": round(cost, 4),
-                "call_count": 1,
-            })
-    except Exception as e:
-        log.warning(f"Token usage record failed: {e}")
+def is_us_market_hours() -> bool:
+    """True during US market hours expressed in AEST (11:30pm–6am weekdays)."""
+    now = aest_now()
+    if now.weekday() >= 5:  # Sat/Sun
+        return False
+    hour, minute = now.hour, now.minute
+    return (hour == 23 and minute >= 30) or (hour < 6)
 
 
-# ─── Market data ───────────────────────────────────────────────────────────
+# ─── Trade execution ───────────────────────────────────────────────────────
 
-def get_aud_usd() -> float:
-    try:
-        r = requests.get("https://api.frankfurter.app/latest?from=AUD&to=USD", timeout=5)
-        return r.json()["rates"]["USD"]
-    except Exception:
-        return AUD_USD_FALLBACK
-
-
-# Cached CoinSpot price map. Used as a fallback for crypto symbols Alpaca
-# doesn't cover (TON, ATOM, FIL, JUP, ORDI, etc.). Refreshed every 5 minutes.
-_COINSPOT_PRICES = {"data": {}, "ts": 0.0}
-
-def _coinspot_prices_aud() -> dict:
-    """Return {SYM: last_aud} for everything CoinSpot lists. 5-min cache."""
-    import time as _t
-    if _t.time() - _COINSPOT_PRICES["ts"] < 300 and _COINSPOT_PRICES["data"]:
-        return _COINSPOT_PRICES["data"]
-    out = {}
-    for url in [
-        "https://www.coinspot.com.au/pubapi/v2/latest",
-        "https://www.coinspot.com.au/pubapi/latest",
-    ]:
+def _fetch_alpaca_fill_price(trader, symbol: str, retries: int = 5) -> float:
+    """
+    After placing a market order with Alpaca, poll /v2/positions/{symbol}
+    to get the actual fill price. Returns 0.0 if it can't be resolved.
+    """
+    for attempt in range(retries):
+        time.sleep(1.5)
         try:
-            r = requests.get(url, timeout=8)
-            if r.status_code != 200:
-                continue
-            data = r.json()
-            prices = data.get("prices") or data
-            if not isinstance(prices, dict):
-                continue
-            for sym_raw, entry in prices.items():
-                sym = sym_raw.upper()
-                if isinstance(entry, dict):
-                    try:
-                        out[sym] = float(entry.get("last") or 0)
-                    except (TypeError, ValueError):
-                        pass
-                else:
-                    try:
-                        out[sym] = float(entry)
-                    except (TypeError, ValueError):
-                        pass
-            if out:
-                _COINSPOT_PRICES["data"] = out
-                _COINSPOT_PRICES["ts"] = _t.time()
-                return out
+            pos = trader.get_position(symbol)
+            if pos:
+                price = float(pos.get("avg_entry_price", 0) or 0)
+                if price > 0:
+                    return price
         except Exception as e:
-            log.debug(f"CoinSpot {url} failed: {e}")
-    # Return whatever we had cached, even if stale
-    return _COINSPOT_PRICES["data"]
+            log.debug(f"Alpaca fill lookup attempt {attempt+1} for {symbol}: {e}")
+    log.warning(f"Could not resolve Alpaca fill price for {symbol} after {retries} tries")
+    return 0.0
 
 
-def _fetch_bars(symbol: str, days: int = 30) -> pd.DataFrame:
-    try:
-        start = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
-        is_crypto = symbol in _CRYPTO_LIST or PORTFOLIO.get(symbol, {}).get("type") == "crypto"
-
-        if is_crypto:
-            # Alpaca crypto pairs all follow {SYM}/USD. If a symbol isn't on
-            # Alpaca, the response just returns no bars for it — empty DataFrame,
-            # the caller handles the no-data case. We don't need a hardcoded
-            # whitelist anymore.
-            pair = f"{symbol.upper()}/USD"
-            r = requests.get(f"{ALPACA_DATA_URL}/v1beta3/crypto/us/bars",
-                             headers=HEADERS,
-                             params={"symbols": pair, "timeframe": "1Day", "start": start},
-                             timeout=10)
-            r.raise_for_status()
-            bars = r.json().get("bars", {}).get(pair, [])
-        else:
-            r = requests.get(f"{ALPACA_DATA_URL}/v2/stocks/{symbol}/bars",
-                             headers=HEADERS,
-                             params={"timeframe": "1Day", "start": start},
-                             timeout=10)
-            r.raise_for_status()
-            bars = r.json().get("bars", [])
-
-        if not bars:
-            return pd.DataFrame()
-        df = pd.DataFrame(bars)
-        df.rename(columns={"c": "close", "o": "open", "h": "high", "l": "low", "v": "volume"}, inplace=True)
-        return df
-    except Exception as e:
-        log.debug(f"fetch_bars {symbol}: {e}")
-        return pd.DataFrame()
-
-
-def get_market_data(symbols: list) -> dict:
-    """Build market context for symbols. Returns price + RSI + trend.
-
-    Crypto pricing rule (post 2026-04-25 fix): CoinSpot AUD is the ONLY
-    source of truth for current crypto price. Alpaca's USD bars are still
-    used for RSI/MACD/trend signals (they're free and reliable), but the
-    `price` field is always the CoinSpot last AUD. This guarantees
-    entry_price and current_price use the same source so P&L isn't
-    polluted by USD/AUD FX drift between the buy and the snapshot.
+def execute_action(symbol, action, reason, alpaca, coinspot, db, tg,
+                   positions, market_data, confidence=1.0, notify=True,
+                   aud_amount=None, market=None):
     """
-    data = {}
-    coinspot_map = None  # lazy-load only when a crypto symbol is requested
+    Execute a single trade. Defensive: never calls .buy/.sell on None.
 
-    for sym in symbols:
-        is_crypto = sym in _CRYPTO_LIST or PORTFOLIO.get(sym, {}).get("type") == "crypto"
-        df = _fetch_bars(sym)
+    Returns a tuple (success: bool, error_reason: str|None) so callers can
+    track per-action outcomes. When the loop already knows the venue (e.g.
+    run_crypto_loop knows it's crypto), pass `market` explicitly to skip
+    symbol-based classification.
+    """
+    crypto_coins = ["BTC","ETH","SOL","XRP","ADA","DOGE","AVAX","LINK","LTC",
+                    "BCH","DOT","UNI","AAVE","MATIC","ATOM","ALGO","NEAR",
+                    "FTM","SAND","MANA","CRV","GRT","SUSHI","MKR","SNX",
+                    "PEPE","SHIB","FLOKI","WIF","BONK","FET","RNDR","TAO",
+                    # Layer-2s and newer L1s the scanner now returns
+                    "OP","APT","ARB","FIL","INJ","RUNE","IMX","STX","SEI",
+                    "TIA","JUP","ORDI","PYTH","JTO","WLD","ENA","SUI","TON"]
 
-        if is_crypto:
-            # ALWAYS resolve crypto price via CoinSpot, regardless of whether
-            # Alpaca bars were available.
-            if coinspot_map is None:
-                coinspot_map = _coinspot_prices_aud()
-            spot_aud = coinspot_map.get(sym.upper(), 0)
-
-            if df.empty:
-                # No Alpaca bars (e.g. TON, FIL, ATOM). Spot only, no technicals.
-                if spot_aud > 0:
-                    data[sym] = {
-                        "price":      round(spot_aud, 6),
-                        "currency":   "AUD",
-                        "source":     "coinspot_spot",
-                        "rsi":        None,
-                        "above_ma20": None,
-                        "above_ma50": None,
-                        "change_1d":  0,
-                        "change_7d":  0,
-                    }
-                else:
-                    data[sym] = {"price": 0, "error": "no data"}
-                continue
-
-            # Have Alpaca bars (BTC, ETH, etc.). Use them for technicals,
-            # but price still comes from CoinSpot. If CoinSpot's down for
-            # this symbol, fall through to Alpaca-converted as a safety net.
-            closes = df["close"].astype(float)
-            delta = closes.diff()
-            gain  = delta.clip(lower=0).rolling(14).mean()
-            loss  = (-delta.clip(upper=0)).rolling(14).mean()
-            rs    = gain / loss.replace(0, np.nan)
-            rsi   = (100 - (100 / (1 + rs))).iloc[-1]
-            ma20  = closes.rolling(20).mean().iloc[-1] if len(closes) >= 20 else None
-            ma50  = closes.rolling(50).mean().iloc[-1] if len(closes) >= 50 else None
-
-            if spot_aud > 0:
-                price = spot_aud
-                source = "coinspot_spot+alpaca_technicals"
-            else:
-                # Last-resort: convert Alpaca USD to AUD. Better than zero.
-                aud_usd = get_aud_usd()
-                usd_to_aud = (1.0 / aud_usd) if aud_usd > 0 else 1.55
-                price = float(closes.iloc[-1]) * usd_to_aud
-                source = "alpaca_bars_converted"
-
-            data[sym] = {
-                "price":      round(price, 6),
-                "change_1d":  round(float((closes.iloc[-1] - closes.iloc[-2]) / closes.iloc[-2] * 100), 2) if len(closes) >= 2 else 0,
-                "change_7d":  round(float((closes.iloc[-1] - closes.iloc[-7]) / closes.iloc[-7] * 100), 2) if len(closes) >= 7 else 0,
-                "rsi":        round(float(rsi), 1) if not pd.isna(rsi) else None,
-                "above_ma20": bool(closes.iloc[-1] > ma20) if ma20 else None,
-                "above_ma50": bool(closes.iloc[-1] > ma50) if ma50 else None,
-                "currency":   "AUD",
-                "source":     source,
-            }
-            continue
-
-        # Stocks: USD via Alpaca, no change.
-        if df.empty:
-            data[sym] = {"price": 0, "error": "no data"}
-            continue
-        closes = df["close"].astype(float)
-        delta = closes.diff()
-        gain  = delta.clip(lower=0).rolling(14).mean()
-        loss  = (-delta.clip(upper=0)).rolling(14).mean()
-        rs    = gain / loss.replace(0, np.nan)
-        rsi   = (100 - (100 / (1 + rs))).iloc[-1]
-        ma20  = closes.rolling(20).mean().iloc[-1] if len(closes) >= 20 else None
-        ma50  = closes.rolling(50).mean().iloc[-1] if len(closes) >= 50 else None
-
-        data[sym] = {
-            "price":      round(float(closes.iloc[-1]), 4),
-            "change_1d":  round(float((closes.iloc[-1] - closes.iloc[-2]) / closes.iloc[-2] * 100), 2) if len(closes) >= 2 else 0,
-            "change_7d":  round(float((closes.iloc[-1] - closes.iloc[-7]) / closes.iloc[-7] * 100), 2) if len(closes) >= 7 else 0,
-            "rsi":        round(float(rsi), 1) if not pd.isna(rsi) else None,
-            "above_ma20": bool(closes.iloc[-1] > ma20) if ma20 else None,
-            "above_ma50": bool(closes.iloc[-1] > ma50) if ma50 else None,
-            "currency":   "USD",
-            "source":     "alpaca_bars",
-        }
-    return data
-
-
-def get_news(symbols: list) -> list:
-    try:
-        stock_syms = [s for s in symbols if s not in _CRYPTO_LIST]
-        if not stock_syms:
-            return []
-        r = requests.get(f"{ALPACA_DATA_URL}/v1beta1/news",
-                         headers=HEADERS,
-                         params={"symbols": ",".join(stock_syms), "limit": 8},
-                         timeout=10)
-        r.raise_for_status()
-        return [{"headline": a["headline"], "symbols": a.get("symbols", [])}
-                for a in r.json().get("news", [])[:6]]
-    except Exception as e:
-        log.debug(f"News fetch failed: {e}")
-        return []
-
-
-# ─── Position helpers ──────────────────────────────────────────────────────
-
-def _position_age_hours(pos: dict) -> float:
-    opened = pos.get("opened_at") or pos.get("created_at")
-    if not opened:
-        return 0.0
-    try:
-        if isinstance(opened, str):
-            opened = opened.replace("Z", "+00:00")
-            dt = datetime.fromisoformat(opened)
+    if market is None:
+        if symbol in PORTFOLIO:
+            config = PORTFOLIO[symbol]
+            market = config.get("market", "coinspot")
+            default_amount = config.get("allocated_aud", 400)
         else:
-            dt = opened
-        now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.utcnow()
-        return (now - dt).total_seconds() / 3600
-    except Exception:
-        return 0.0
+            market = "coinspot" if symbol in crypto_coins else "alpaca"
+            default_amount = 400
+    else:
+        default_amount = (PORTFOLIO.get(symbol, {}).get("allocated_aud", 400)
+                          if symbol in PORTFOLIO else 400)
 
+    allocated = aud_amount if aud_amount else default_amount
 
-def _should_force_exit(pos: dict) -> tuple[bool, str]:
-    """Pure-Python mechanical exit rules. No Claude call needed."""
-    pnl_pct = pos.get("pnl_pct", 0) or 0
-    is_crypto = pos.get("market") == "coinspot"
+    # Resolve trader object safely
+    trader = alpaca if market == "alpaca" else coinspot
+    if trader is None:
+        if market == "alpaca" and coinspot is not None:
+            log.info(f"Rerouting {symbol} from alpaca to coinspot (loop scope)")
+            market = "coinspot"
+            trader = coinspot
+        else:
+            err = f"no {market} trader available in this loop"
+            log.warning(f"Skip {symbol} — {err}")
+            return False, err
 
-    stop = CRYPTO_STOP_LOSS_PCT if is_crypto else STOCK_STOP_LOSS_PCT
-    take = CRYPTO_TAKE_PROFIT_PCT if is_crypto else STOCK_TAKE_PROFIT_PCT
-
-    if pnl_pct <= -stop:
-        return True, f"Stop-loss at {pnl_pct:.2%}"
-    if pnl_pct >= take:
-        return True, f"Take-profit at {pnl_pct:.2%}"
-
-    if is_crypto:
-        peak = pos.get("peak_pnl_pct", pnl_pct)
-        if peak >= CRYPTO_TRAIL_TRIGGER and pnl_pct < CRYPTO_TRAIL_FLOOR:
-            return True, f"Trailing stop — peaked at {peak:.2%}"
-        age = _position_age_hours(pos)
-        if age >= CRYPTO_TIME_EXIT_HOURS and abs(pnl_pct) < 0.015:
-            return True, f"Time exit after {age:.1f}hr — no movement ({pnl_pct:+.2%})"
-
-    return False, ""
-
-
-# ─── Claude wrapper (budget-aware) ─────────────────────────────────────────
-
-def _call_claude(db, system: str, user: str, model: str, max_tokens: int = 1000) -> dict | None:
-    """Returns parsed JSON or None. Records token usage. Skips if over budget."""
-    under_budget, spent = _check_budget(db)
-    if not under_budget:
-        log.warning(f"Skipping Claude call — daily budget hit (${spent:.2f}/{DAILY_BUDGET_USD})")
-        return None
-
-    try:
-        client   = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        response = client.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            system=system,
-            messages=[{"role": "user", "content": user}]
-        )
-        # Record usage BEFORE parsing — even if JSON parse fails, we still spent the tokens
+    if action == "BUY" and symbol not in positions:
+        log.info(f"Executing BUY {symbol} on {market} ({allocated} AUD) — {reason}")
         try:
-            _record_usage(db, model, response.usage.input_tokens, response.usage.output_tokens)
-        except Exception:
-            pass
+            order = trader.buy(symbol, allocated)
+        except Exception as e:
+            err = f"{type(e).__name__}: {str(e)[:120]}"
+            log.error(f"BUY call failed for {symbol}: {err}")
+            return False, err
+        if not order:
+            err = f"{market} returned no order (likely unsupported symbol or API rejection)"
+            log.error(f"BUY {symbol} on {market}: {err}")
+            return False, err
 
-        raw = response.content[0].text.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        return json.loads(raw.strip())
-    except json.JSONDecodeError as e:
-        log.error(f"Claude JSON parse error: {e}")
-        return None
-    except Exception as e:
-        log.error(f"Claude API error ({model}): {e}")
-        return None
+        # Resolve entry price. For Alpaca we need to wait for the fill
+        # and pull the actual avg_entry_price — market_data is crypto-only.
+        price = market_data.get(symbol, {}).get("price", 0) or 0
+        if market == "alpaca":
+            fill_price = _fetch_alpaca_fill_price(trader, symbol)
+            if fill_price > 0:
+                price = fill_price
+                log.info(f"Alpaca fill: {symbol} @ ${price:.4f} USD")
 
+        db.log_trade(symbol, "BUY", allocated, order, confidence, reason)
+        db.save_position(symbol, price, allocated, market)
+        if notify:
+            tg.send(f"{'[PAPER] ' if PAPER_MODE else ''}Bought {symbol} — {reason}")
+        return True, None
 
-# ─── Evening briefing (Sonnet — daily, ~$0.05/call) ────────────────────────
+    elif action == "SELL" and symbol in positions:
+        log.info(f"Executing SELL {symbol} on {market} — {reason}")
+        try:
+            order = trader.sell(symbol)
+        except Exception as e:
+            err = f"{type(e).__name__}: {str(e)[:120]}"
+            log.error(f"SELL call failed for {symbol}: {err}")
+            return False, err
+        if not order:
+            err = f"{market} sell returned no order"
+            log.error(f"SELL {symbol}: {err}")
+            return False, err
 
-def evening_briefing(db, positions: dict, trade_history: list, signal_weights: dict) -> dict:
-    """Full nightly plan. Called once per day at 8pm AEST."""
-    from bot.scanner import run_full_scan
+        pos = positions[symbol]
+        price = market_data.get(symbol, {}).get("price", 0) or 0
+        if market == "alpaca":
+            stored_current = float(pos.get("current_price", 0) or 0)
+            if stored_current > 0:
+                price = stored_current
+        pnl = pos.get("pnl_pct", 0)
+        db.log_trade(symbol, "SELL", pos.get("aud_amount", 0), order, confidence, reason)
+        db.close_position(symbol, price, pnl)
+        if notify:
+            tg.send(f"{'[PAPER] ' if PAPER_MODE else ''}Sold {symbol} — {reason} — P&L {pnl:+.1%}")
+        return True, None
 
-    aud_usd = get_aud_usd()
-    log.info("Evening briefing: running market scan...")
-    scan        = run_full_scan()
-    stock_opps  = (scan or {}).get("stock_opportunities", [])[:15]  # trim to control tokens
-    crypto_opps = (scan or {}).get("crypto_opportunities", [])[:15]
-    news        = (scan or {}).get("news", [])[:5]
-
-    position_context = {
-        sym: {"entry_price": pos.get("entry_price"), "pnl_pct": pos.get("pnl_pct"),
-              "aud_amount": pos.get("aud_amount"), "market": pos.get("market")}
-        for sym, pos in positions.items()
-    }
-
-    deployed_aud    = sum(p.get("aud_amount", 0) for p in position_context.values())
-    crypto_deployed = sum(p.get("aud_amount", 0) for p in position_context.values() if p.get("market") == "coinspot")
-    stock_deployed  = sum(p.get("aud_amount", 0) for p in position_context.values() if p.get("market") == "alpaca")
-    crypto_available = max(0, CRYPTO_MAX_DEPLOYED - crypto_deployed)
-    stock_available  = max(0, STOCK_MAX_DEPLOYED - stock_deployed)
-
-    system = f"""You are RivX, an autonomous INTRADAY day trader managing $5,000 AUD paper capital.
-
-STRATEGY:
-- Many small trades, 3-8% target gains
-- Crypto: +{CRYPTO_TAKE_PROFIT_PCT:.0%} take / -{CRYPTO_STOP_LOSS_PCT:.1%} stop, time-exit after {CRYPTO_TIME_EXIT_HOURS}hr
-- Stocks: +{STOCK_TAKE_PROFIT_PCT:.0%} take / -{STOCK_STOP_LOSS_PCT:.1%} stop, close by US close
-- Max {CRYPTO_MAX_POSITIONS} crypto + {STOCK_MAX_POSITIONS} stock positions
-- Position size $300-600 AUD, confidence 55%+
-
-RULES:
-- Never exceed available budget given below
-- ${MIN_CASH_RESERVE} cash reserve mandatory
-- Cash is a valid position — don't force trades
-
-Respond with valid JSON only, no prose."""
-
-    user = f"""Evening briefing — {datetime.now().strftime('%A %d %b %Y')}
-AUD/USD: {aud_usd:.4f}
-Budget: ${crypto_available:.0f} crypto / ${stock_available:.0f} stocks available
-
-TOP STOCKS:
-{json.dumps(stock_opps, indent=1)}
-
-TOP CRYPTO:
-{json.dumps(crypto_opps, indent=1)}
-
-NEWS:
-{json.dumps(news, indent=1)}
-
-OPEN POSITIONS:
-{json.dumps(position_context, indent=1)}
-
-Pick 3-6 trades for tonight. Return:
-{{
-  "decisions": {{
-    "SYMBOL": {{"action":"BUY|HOLD|SELL","confidence":0.0,"reasoning":"one sentence",
-               "aud_amount":500,"market":"coinspot|alpaca","type":"crypto|stock"}}
-  }},
-  "market_summary":"2 sentences",
-  "risk_level":"LOW|MEDIUM|HIGH",
-  "portfolio_health":"one sentence",
-  "watch_for_overnight":"one sentence"
-}}"""
-
-    result = _call_claude(db, system, user, MODEL_BRIEFING, max_tokens=2000)
-    if result:
-        result["scan_data"] = scan
-        # Enforce stops/targets regardless of what Claude says
-        for sym, dec in result.get("decisions", {}).items():
-            is_crypto = dec.get("market") == "coinspot" or dec.get("type") == "crypto"
-            dec["stop_loss_pct"]   = CRYPTO_STOP_LOSS_PCT if is_crypto else STOCK_STOP_LOSS_PCT
-            dec["take_profit_pct"] = CRYPTO_TAKE_PROFIT_PCT if is_crypto else STOCK_TAKE_PROFIT_PCT
-    return result or _hold_all()
+    err = f"unhandled: action={action}, in_positions={symbol in positions}"
+    return False, err
 
 
-# ─── Intraday check (Haiku — cheap, skipped if nothing to decide) ──────────
+# ─── Loops ─────────────────────────────────────────────────────────────────
 
-def intraday_check(db, positions: dict, approved_plan: dict) -> dict:
-    """Stock monitoring during US hours. Mechanical first, Claude only if needed."""
-    actions = []
-    reasons = []
+def run_evening_briefing(db, tg, alpaca, coinspot):
+    """Runs ONCE per day, gated by flag + minute < 3."""
+    log.info("Evening briefing starting")
+    tg.send("RivX is analysing the market for tonight. Give me a moment...")
 
-    # 1. Mechanical stops/targets (no Claude call)
-    for sym, pos in positions.items():
-        if pos.get("market") != "alpaca":
+    positions = db.get_positions()
+    trade_history = db.get_recent_trades(30)
+    weights = db.get_signal_weights()
+
+    analysis = evening_briefing(db, positions, trade_history, weights)
+    if not analysis or not analysis.get("decisions"):
+        tg.send("Evening briefing: no strong setups tonight. Holding existing positions.")
+        db.save_approved_plan({})
+        return
+
+    decisions = analysis.get("decisions", {})
+    lines = [
+        f"RivX evening briefing — {aest_now().strftime('%d %b %Y')}",
+        "",
+        f"Market: {analysis.get('market_summary', 'N/A')}",
+        f"Risk: {analysis.get('risk_level', 'MEDIUM')}",
+        f"Portfolio: {analysis.get('portfolio_health', '')}",
+        "",
+        "Plan:",
+    ]
+
+    buys = sells = holds = 0
+    for sym, dec in decisions.items():
+        action = dec.get("action", "HOLD")
+        conf = dec.get("confidence", 0)
+        reasoning = dec.get("reasoning", "")
+        lines.append(f"  {action} {sym} ({conf:.0%}) — {reasoning}")
+        if action == "BUY": buys += 1
+        elif action == "SELL": sells += 1
+        else: holds += 1
+
+    lines += [
+        "",
+        f"Summary: {buys} buys, {sells} sells, {holds} holds",
+        f"Watch: {analysis.get('watch_for_overnight', '')}",
+        "",
+        "Reply YES to approve or NO to skip.",
+        "Auto-approves in 1 hour if no response.",
+    ]
+
+    approved = tg.send_and_wait("\n".join(lines), timeout_seconds=APPROVAL_TIMEOUT_SECONDS)
+
+    if not approved:
+        tg.send("Tonight's plan cancelled. Bot will only manage stops overnight.")
+        db.save_approved_plan({})
+        return
+
+    tg.send("Plan approved. RivX on watch overnight.")
+
+    # Execute approved trades
+    positions = db.get_positions()
+    market_data = analysis.get("market_data", {})
+    for sym, dec in decisions.items():
+        action = dec.get("action", "HOLD")
+        conf = dec.get("confidence", 0)
+        if conf < MIN_CONFIDENCE_TO_TRADE or action == "HOLD":
             continue
-        should_exit, reason = _should_force_exit(pos)
-        if should_exit:
-            actions.append({"symbol": sym, "action": "SELL", "reason": reason, "urgency": "immediate"})
-            reasons.append(f"{sym}: {reason}")
+        execute_action(
+            sym, action, dec.get("reasoning", ""),
+            alpaca, coinspot, db, tg,
+            positions, market_data, confidence=conf,
+            notify=True, aud_amount=dec.get("aud_amount"),
+        )
 
-    # 2. Friday end-of-day stock close (simple rule — weekend coming)
-    now_aest = datetime.now(AEST)
-    is_friday = now_aest.weekday() == 4
-    approaching_close = (now_aest.hour == 5 and now_aest.minute >= (60 - STOCK_EXIT_BEFORE_CLOSE_MIN))
-    if is_friday and approaching_close:
-        for sym, pos in positions.items():
-            if pos.get("market") == "alpaca" and not any(a["symbol"] == sym for a in actions):
-                actions.append({"symbol": sym, "action": "SELL",
-                               "reason": "Friday EOD — no weekend stock exposure",
-                               "urgency": "immediate"})
-                reasons.append(f"{sym}: Friday EOD exit")
-
-    # 3. Only call Claude if there's something discretionary to decide
-    open_stocks = [s for s, p in positions.items() if p.get("market") == "alpaca"
-                   and not any(a["symbol"] == s for a in actions)]
-    plan_buys = [s for s, d in (approved_plan.get("decisions") or {}).items()
-                 if d.get("action") == "BUY" and s not in positions]
-
-    if not open_stocks and not plan_buys:
-        return {"actions": actions, "reasoning": " | ".join(reasons) or "No stock positions, no buys pending"}
-
-    market_data = get_market_data(open_stocks + plan_buys)
-    position_summary = {}
-    for sym in open_stocks:
-        pos = positions[sym]
-        current = market_data.get(sym, {}).get("price", 0)
-        entry = pos.get("entry_price", current)
-        pnl_pct = ((current - entry) / entry) if entry > 0 else 0
-        position_summary[sym] = {
-            "pnl_pct": round(pnl_pct * 100, 2),
-            "age_hours": round(_position_age_hours(pos), 1),
-            "current_price": current,
-        }
-
-    system = "You are RivX intraday stock monitor. Mechanical exits already handled. Only flag discretionary exits or new entries with clear momentum change. Valid JSON only."
-    user = f"""US intraday check — {datetime.utcnow().strftime('%H:%M UTC')}
-
-OPEN STOCKS:
-{json.dumps(position_summary, indent=1)}
-
-MARKET DATA:
-{json.dumps(market_data, indent=1)}
-
-PLAN BUYS NOT YET TAKEN:
-{json.dumps({s: approved_plan.get('decisions', {}).get(s) for s in plan_buys}, indent=1)}
-
-Return:
-{{"actions":[{{"symbol":"X","action":"BUY|SELL|HOLD","reason":"brief","urgency":"immediate|normal"}}],
-  "reasoning":"one sentence"}}"""
-
-    result = _call_claude(db, system, user, MODEL_MONITORING, max_tokens=400)
-    if result:
-        for act in result.get("actions", []):
-            if act.get("action") in ("BUY", "SELL"):
-                actions.append(act)
-        reasons.append(result.get("reasoning", ""))
-
-    return {"actions": actions, "reasoning": " | ".join(r for r in reasons if r) or "Monitoring"}
+    db.save_approved_plan(analysis)
+    log.info("Evening briefing complete")
 
 
-# ─── Crypto check (Haiku — cheap, skipped if nothing to decide) ────────────
+def run_intraday_loop(db, tg, alpaca, coinspot):
+    """Every 5 min during US market hours."""
+    positions = db.get_positions()
+    approved_plan = db.get_approved_plan()
 
-def crypto_check(db, positions: dict, approved_plan: dict) -> dict:
-    """
-    24/7 crypto monitoring. Mechanical first; Claude only if scanner found setups.
+    result = intraday_check(db, positions, approved_plan)
+    actions = result.get("actions", [])
 
-    Decisive prompt design — HOLD is no longer in the action schema. The scanner
-    has pre-filtered for quality; Claude's job is to BUY qualified setups, not
-    to second-guess them. Skipping a setup requires a stated red flag in a
-    separate `skipped` list. Removes the bias toward inaction we saw on Haiku.
-    """
-    from bot.scanner import get_crypto_movers
+    if not actions:
+        log.debug("Intraday: no actions")
+        return
 
-    actions = []
-    reasons = []
-    crypto_positions = {s: p for s, p in positions.items() if p.get("market") == "coinspot"}
+    market_data = {}
+    failed = []
+    for act in actions:
+        sym = act.get("symbol")
+        action = act.get("action")
+        reason = act.get("reason", "")
+        if action not in ("BUY", "SELL"):
+            continue
+        if sym not in market_data:
+            market_data.update(get_market_data([sym]))
+        positions = db.get_positions()
+        success, err = execute_action(sym, action, reason, alpaca, coinspot, db, tg,
+                                      positions, market_data, confidence=0.8, notify=True,
+                                      market="alpaca")
+        if not success:
+            failed.append({"symbol": sym, "action": action, "error": err})
 
-    # 1. Mechanical exits (no Claude call) ─────────────────────────────────
-    for sym, pos in crypto_positions.items():
-        should_exit, reason = _should_force_exit(pos)
-        if should_exit:
-            actions.append({"symbol": sym, "action": "SELL", "reason": reason, "urgency": "immediate"})
-            reasons.append(f"{sym}: {reason}")
+    if failed and tg:
+        msg = "Intraday actions FAILED: " + "; ".join(
+            f"{f['action']} {f['symbol']} ({(f['error'] or '')[:60]})" for f in failed
+        )
+        tg.send(msg)
 
-    # 2. Get scanner output (cheap — no Claude) ────────────────────────────
-    crypto_opps = []
+
+def run_crypto_loop(db, tg, coinspot):
+    """Every 15 min, 24/7. Mechanical exits + optional Claude entries."""
+    positions = db.get_positions()
+    approved_plan = db.get_approved_plan()
+
+    result = crypto_check(db, positions, approved_plan)
+    actions = result.get("actions", [])
+    reasoning = result.get("reasoning", "")
+    opportunities = result.get("opportunities", [])
+    skipped = result.get("skipped", [])  # structured skip list from Claude
+
+    # Execute actions and track per-symbol outcomes
+    executions = []
+    if actions:
+        market_data = get_market_data(["BTC", "ETH"])
+        for act in actions:
+            sym = act.get("symbol")
+            action = act.get("action")
+            reason = act.get("reason", "")
+            aud = act.get("aud_amount")
+            if action not in ("BUY", "SELL"):
+                executions.append({"symbol": sym, "action": action, "success": False,
+                                   "error": "invalid action", "aud_amount": aud})
+                continue
+            if sym not in market_data:
+                market_data.update(get_market_data([sym]))
+            positions = db.get_positions()
+            success, err = execute_action(sym, action, reason, None, coinspot, db, tg,
+                                          positions, market_data, confidence=0.75,
+                                          notify=True, aud_amount=aud,
+                                          market="coinspot")  # we KNOW it's crypto
+            executions.append({
+                "symbol": sym, "action": action,
+                "aud_amount": aud,
+                "success": success,
+                "error": err,
+            })
+
+    # Log every check so the dashboard can display activity, including which
+    # buys actually succeeded and which failed. This is what the user needs to
+    # debug "why isn't it trading" without reading server logs.
     try:
-        crypto_opps = get_crypto_movers() or []
+        db._post_with_fallback("crypto_checks", {
+            "checked_at": datetime.utcnow().isoformat(),
+            "reasoning": reasoning,
+            "actions": json.dumps(actions),
+            "executions": json.dumps(executions),
+            "skipped_setups": json.dumps(skipped),
+            "opportunities": json.dumps(opportunities[:10]) if opportunities else "[]",
+        }, optional_fields=["executions", "skipped_setups", "opportunities"])
     except Exception as e:
-        log.warning(f"Scanner failed: {e}")
+        log.warning(f"crypto_checks log failed: {e}")
 
-    # 3. Decide if Claude is worth calling ─────────────────────────────────
-    crypto_deployed = sum(p.get("aud_amount", 0) for p in crypto_positions.values())
-    crypto_available = max(0, CRYPTO_MAX_DEPLOYED - crypto_deployed)
-    open_count = len(crypto_positions)
-    free_slots = CRYPTO_MAX_POSITIONS - open_count
+    if not actions:
+        log.debug(f"Crypto: no actions — {reasoning}")
+        return
 
-    # Filter to qualified opportunities — exclude already-held symbols
-    held_syms = set(crypto_positions.keys())
-    strong_opps = [o for o in crypto_opps
-                   if o.get("opportunity_score", 0) >= 2.5
-                   and o.get("symbol") not in held_syms][:10]
+    # Surface failed buys to telegram so the user knows immediately
+    failed = [e for e in executions if not e["success"]]
+    if failed and tg:
+        msg = "Crypto buys FAILED: " + "; ".join(
+            f"{e['symbol']} ({e['error'][:60]})" for e in failed
+        )
+        tg.send(msg)
 
-    can_buy = free_slots > 0 and crypto_available >= 300 and len(strong_opps) > 0
-    open_non_exiting = [s for s, p in crypto_positions.items()
-                        if not any(a["symbol"] == s for a in actions)]
-    has_management = len(open_non_exiting) > 0
 
-    if not can_buy and not has_management:
-        skip_reason = []
-        if free_slots <= 0: skip_reason.append(f"max positions ({open_count}/{CRYPTO_MAX_POSITIONS})")
-        if crypto_available < 300: skip_reason.append(f"budget ${crypto_available:.0f} < $300 min")
-        if len(strong_opps) == 0: skip_reason.append("no setups score >= 2.5")
-        return {
-            "actions": actions,
-            "reasoning": ("No Claude call: " + ", ".join(skip_reason) +
-                          ((" | " + " | ".join(reasons)) if reasons else "")),
-            "opportunities": crypto_opps,
-            "skipped": [],
-        }
+def _sync_alpaca_positions(db, alpaca):
+    """
+    Pull live data for every Alpaca-held position and push it into Supabase.
+    Returns {symbol: {current_price_usd, pnl_pct, qty, market_value_usd, market_value_aud}}
+    so the caller can use it for the snapshot total.
+    """
+    out = {}
+    if not alpaca:
+        return out
+    try:
+        alp_positions = alpaca.get_all_positions()
+    except Exception as e:
+        log.warning(f"Alpaca get_all_positions failed: {e}")
+        return out
 
-    # 4. Claude call — DECISIVE prompt, no HOLD in schema ──────────────────
-    position_summary = {}
-    for sym in open_non_exiting:
-        pos = crypto_positions[sym]
-        position_summary[sym] = {
-            "pnl_pct": round((pos.get("pnl_pct", 0) or 0) * 100, 2),
-            "age_hours": round(_position_age_hours(pos), 1),
-        }
+    if not alp_positions:
+        return out
 
-    system = (
-        "You are RivX crypto trader. The scanner has ALREADY filtered the opportunities "
-        "below by score >= 2.5. Be DECISIVE — your job is to BUY qualified setups, not "
-        "to second-guess them. Default action is BUY. Skip a setup ONLY if the data "
-        "shows a specific red flag (e.g. RSI > 80 overbought, volume crashing > 50%, "
-        "score < 3.0 with momentum reversing). Mechanical stops/targets handle exits "
-        "automatically — your only job is allocation. Cash sitting idle is a waste of "
-        "capital. Valid JSON only."
-    )
+    # FX rate for AUD conversion
+    try:
+        aud_to_usd = get_aud_usd_rate()  # 1 AUD = X USD
+    except Exception:
+        aud_to_usd = 0.635
+    usd_to_aud = (1.0 / aud_to_usd) if aud_to_usd else 1.57
 
-    suggested_size = min(CRYPTO_POSITION_SIZE, crypto_available // max(1, len(strong_opps)))
-    suggested_size = max(300, int(suggested_size))
-
-    user = f"""Crypto check — {datetime.utcnow().strftime('%H:%M UTC')}
-
-OPEN POSITIONS (your call to hold or exit early):
-{json.dumps(position_summary, indent=1) if position_summary else '(none)'}
-
-QUALIFIED ENTRIES (top {len(strong_opps)}, all score >= 2.5, NOT already held):
-{json.dumps(strong_opps, indent=1)}
-
-CONSTRAINTS:
-- Budget remaining: ${crypto_available:.0f} AUD
-- Free slots: {free_slots}/{CRYPTO_MAX_POSITIONS}
-- Suggested size per buy: ${suggested_size} AUD (range $300-600)
-
-INSTRUCTIONS:
-- Default behaviour: BUY each qualified entry up to slot/budget limit.
-- If you SKIP a setup, you must put it in `skipped` with a specific data-driven red flag.
-- An empty `buys` array is only acceptable if EVERY setup has a documented red flag.
-- For OPEN positions: only suggest a SELL if there's a clear discretionary reason
-  (mechanical stops/targets are handled separately).
-
-Return:
-{{
-  "buys":    [{{"symbol":"X","aud_amount":500,"confidence":0.65,"reason":"brief"}}],
-  "sells":   [{{"symbol":"X","reason":"why exit early"}}],
-  "skipped": [{{"symbol":"X","red_flag":"specific data point that disqualifies"}}],
-  "reasoning": "one sentence summary of this round's decisions"
-}}"""
-
-    result = _call_claude(db, system, user, MODEL_MONITORING, max_tokens=700)
-    if result:
-        if result.get("reasoning"):
-            reasons.append(result["reasoning"])
-
-        # Process buys with budget/slot enforcement
-        for buy in result.get("buys", []):
-            sym = buy.get("symbol")
+    for ap in alp_positions:
+        try:
+            sym = ap.get("symbol")
             if not sym:
                 continue
-            if sym in crypto_positions:
-                reasons.append(f"Skipped {sym}: already held")
-                continue
-            requested = buy.get("aud_amount", suggested_size)
+            current_price_usd = float(ap.get("current_price", 0) or 0)
+            avg_entry_usd = float(ap.get("avg_entry_price", 0) or 0)
+            qty = float(ap.get("qty", 0) or 0)
+            market_value_usd = float(ap.get("market_value", 0) or 0)
+            pnl_pct = float(ap.get("unrealized_plpc", 0) or 0)
+            change_today = float(ap.get("change_today", 0) or 0)  # today's % change
+
+            out[sym] = {
+                "current_price_usd": current_price_usd,
+                "avg_entry_usd": avg_entry_usd,
+                "pnl_pct": pnl_pct,
+                "qty": qty,
+                "market_value_usd": market_value_usd,
+                "market_value_aud": round(market_value_usd * usd_to_aud, 2),
+                "change_today": change_today,
+            }
+
+            # Push to Supabase. update_position_from_alpaca also heals entry_price=0 rows.
             try:
-                requested = min(int(requested), 600)
+                db.update_position_from_alpaca(
+                    symbol=sym,
+                    current_price=current_price_usd,
+                    pnl_pct=pnl_pct,
+                    qty=qty,
+                    change_today=change_today,
+                    avg_entry_price=avg_entry_usd,
+                )
+            except Exception as e:
+                log.warning(f"update_position_from_alpaca({sym}) failed: {e}")
+        except Exception as e:
+            log.warning(f"Alpaca sync row failed: {e}")
+    return out
+
+
+def _repair_crypto_entry_prices(db):
+    """
+    Idempotent backfill: any open crypto position with entry_price <= 0 gets
+    its entry set from CoinSpot's current spot AUD. Used to fix positions
+    saved before the paper-mode price fix (where buy logged with price=0
+    and the snapshot loop never wrote it back to entry_price).
+
+    Approximation note: this uses CURRENT spot, not the exact spot at buy
+    time. For a freshly-created position that's seconds old, it's accurate.
+    For older positions it means "P&L from when the bot first looked again,"
+    which is the best we can do without a price-at-purchase record.
+    """
+    try:
+        rows = db._get("positions", {"status": "eq.open"})
+    except Exception as e:
+        log.warning(f"Repair: couldn't read positions: {e}")
+        return
+
+    crypto_rows = [r for r in (rows or [])
+                   if (r.get("market") or "").lower() != "alpaca"
+                   and float(r.get("entry_price", 0) or 0) <= 0]
+
+    if not crypto_rows:
+        log.info("Entry-price repair: nothing to fix")
+        return
+
+    log.info(f"Entry-price repair: backfilling {len(crypto_rows)} crypto positions")
+    # Lazy import to avoid circular: bot.brain imports things that eventually
+    # touch bot.coinspot_trader at module-init.
+    from bot.brain import _coinspot_prices_aud
+    coinspot_map = _coinspot_prices_aud()
+    if not coinspot_map:
+        log.warning("Repair: CoinSpot prices unavailable, skipping")
+        return
+
+    for row in crypto_rows:
+        sym = row["symbol"]
+        spot = coinspot_map.get(sym.upper(), 0)
+        if spot <= 0:
+            log.warning(f"Repair: no CoinSpot price for {sym}, skipping")
+            continue
+        try:
+            db._patch("positions",
+                      {"entry_price": round(spot, 6),
+                       "current_price": round(spot, 6),
+                       "pnl_pct": 0,
+                       "last_priced_at": datetime.utcnow().isoformat()},
+                      "id", str(row["id"]))
+            log.info(f"Repair: {sym} entry=${spot:.6f} AUD (was 0)")
+        except Exception as e:
+            log.warning(f"Repair: patch failed for {sym}: {e}")
+
+
+def run_snapshot(db, alpaca=None):
+    """
+    Pure Python. Every 5 min.
+    Writes portfolio value with live prices (CoinSpot for crypto, Alpaca for stocks).
+    Also pushes live Alpaca position data back to Supabase so the dashboard sees it.
+    """
+    try:
+        positions = db.get_positions()
+
+        # 1) Live crypto prices via get_market_data (CoinSpot AUD prices)
+        crypto_symbols = [s for s, p in positions.items()
+                          if (p.get("market") or "").lower() != "alpaca"]
+        market_data = get_market_data(crypto_symbols) if crypto_symbols else {}
+
+        # 2) Live Alpaca positions — also writes fresh data into Supabase
+        alpaca_data = _sync_alpaca_positions(db, alpaca)
+
+        # 3) Compute portfolio total with mark-to-market
+        current_value = 0.0
+        deployed_entry = 0.0
+        for sym, pos in positions.items():
+            entry = float(pos.get("entry_price", 0) or 0)
+            amt = float(pos.get("aud_amount", 0) or 0)
+            deployed_entry += amt
+            market = (pos.get("market") or "").lower()
+
+            if market == "alpaca" and sym in alpaca_data:
+                # AUD-correct market value: current_price_usd × qty × USD_TO_AUD.
+                # This includes FX impact, unlike just amt × (1 + USD pnl).
+                aud_value = alpaca_data[sym].get("market_value_aud", 0)
+                pnl = alpaca_data[sym]["pnl_pct"]
+                if aud_value > 0:
+                    current_value += aud_value
+                else:
+                    current_value += amt * (1 + pnl)
+                # Update pnl_pct on the position row (USD-based — dashboard does its
+                # own AUD math from current_price + qty + live FX).
+                try:
+                    db.update_position_pnl_direct(sym, pnl)
+                except Exception:
+                    pass
+            else:
+                # Crypto path
+                price = market_data.get(sym, {}).get("price", 0) or 0
+                if entry > 0 and price > 0:
+                    pnl = (price - entry) / entry
+                    current_value += amt * (1 + pnl)
+                    try:
+                        db.update_position_pnl(sym, price)
+                    except Exception:
+                        pass
+                else:
+                    current_value += amt
+
+        cash = max(0, 5000 - deployed_entry)
+        total = current_value + cash
+
+        db._post("intraday_snapshots", {
+            "recorded_at": datetime.utcnow().isoformat(),
+            "total_aud": round(total, 2),
+            "deployed_aud": round(current_value, 2),
+            "cash_aud": round(cash, 2),
+            "open_positions": len(positions),
+        })
+    except Exception as e:
+        log.warning(f"Snapshot failed: {e}")
+
+
+def run_question_poll(db, tg):
+    """Every 60s. Uses Sonnet only when there's a pending question."""
+    try:
+        pending = db._get("user_questions",
+                         {"status": "eq.pending", "order": "asked_at.asc", "limit": "3"})
+    except Exception as e:
+        log.debug(f"Q poll failed: {e}")
+        return
+
+    if not pending:
+        return
+
+    import anthropic
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+    for q in pending:
+        qid = q.get("id")
+        question = (q.get("question") or "").strip()
+        if not question:
+            continue
+
+        # Build a rich context so Claude can answer accurately about both
+        # what's happening NOW (open positions) and what HAS happened (closed
+        # positions, recent trades, recent crypto scans). Without this Claude
+        # hallucinates — e.g. claiming the bot doesn't trade crypto when it does,
+        # or claiming capital is fully deployed when only stocks are at their cap.
+        try:
+            positions = db.get_positions()
+            trades = db.get_recent_trades(20)
+            closed = db._get("positions",
+                             {"status": "eq.closed", "order": "closed_at.desc", "limit": "10"}) or []
+            crypto_scans = db._get("crypto_checks",
+                                   {"order": "checked_at.desc", "limit": "5"}) or []
+            plan = db.get_approved_plan()
+            portfolio = db.get_portfolio_value()
+        except Exception:
+            positions = {}; trades = []; closed = []; crypto_scans = []; plan = {}; portfolio = {}
+
+        # ── Compute per-market allocation state — without this Claude guesses ──
+        STARTING_CAPITAL = 5000  # AUD seed
+        stock_positions  = {s: p for s, p in positions.items() if (p.get("market") or "").lower() == "alpaca"}
+        crypto_positions = {s: p for s, p in positions.items() if (p.get("market") or "").lower() == "coinspot"}
+        stock_deployed   = sum((p.get("aud_amount") or 0) for p in stock_positions.values())
+        crypto_deployed  = sum((p.get("aud_amount") or 0) for p in crypto_positions.values())
+        stock_free_budget  = max(0, STOCK_MAX_DEPLOYED  - stock_deployed)
+        crypto_free_budget = max(0, CRYPTO_MAX_DEPLOYED - crypto_deployed)
+        stock_free_slots   = max(0, STOCK_MAX_POSITIONS  - len(stock_positions))
+        crypto_free_slots  = max(0, CRYPTO_MAX_POSITIONS - len(crypto_positions))
+        # Cash buffer = starting capital minus what's deployed (entry cost basis)
+        free_cash = max(0, STARTING_CAPITAL - stock_deployed - crypto_deployed)
+
+        # Why each market can or cannot buy right now
+        def _market_status(deployed, free_budget, free_slots, max_dep, max_pos, min_size):
+            if free_slots <= 0:
+                return f"AT POSITION CAP ({max_pos}/{max_pos} open) — must close something before buying"
+            if free_budget < min_size:
+                return f"BUDGET FULL (${deployed:.0f} of ${max_dep} deployed, only ${free_budget:.0f} left, need >=${min_size})"
+            return f"READY TO BUY: ${free_budget:.0f} budget left + {free_slots} slot(s) available"
+
+        stock_status  = _market_status(stock_deployed,  stock_free_budget,  stock_free_slots,
+                                       STOCK_MAX_DEPLOYED,  STOCK_MAX_POSITIONS,  300)
+        crypto_status = _market_status(crypto_deployed, crypto_free_budget, crypto_free_slots,
+                                       CRYPTO_MAX_DEPLOYED, CRYPTO_MAX_POSITIONS, 300)
+
+        budget_state = {
+            "starting_capital_aud": STARTING_CAPITAL,
+            "free_cash_aud":        round(free_cash, 2),
+            "stocks": {
+                "deployed":  round(stock_deployed, 2),
+                "max_budget": STOCK_MAX_DEPLOYED,
+                "open_count": len(stock_positions),
+                "max_positions": STOCK_MAX_POSITIONS,
+                "status": stock_status,
+            },
+            "crypto": {
+                "deployed":  round(crypto_deployed, 2),
+                "max_budget": CRYPTO_MAX_DEPLOYED,
+                "open_count": len(crypto_positions),
+                "max_positions": CRYPTO_MAX_POSITIONS,
+                "status": crypto_status,
+            },
+        }
+
+        # Compact summaries so token usage stays reasonable
+        open_summary = {
+            s: {k: v for k, v in p.items()
+                if k in ['entry_price','pnl_pct','aud_amount','market','current_price','qty']}
+            for s, p in positions.items()
+        }
+        closed_summary = [{
+            'symbol': p.get('symbol'),
+            'market': p.get('market'),
+            'aud_amount': p.get('aud_amount'),
+            'pnl_pct': p.get('pnl_pct'),
+            'opened': (p.get('created_at') or '')[:10],
+            'closed': (p.get('closed_at') or '')[:10],
+        } for p in closed]
+        recent_trades_summary = [{
+            'symbol': t.get('symbol'),
+            'action': t.get('action'),
+            'aud_amount': t.get('aud_amount'),
+            'when': (t.get('created_at') or '')[:16],
+            'detail': (t.get('details') or '')[:120],
+        } for t in trades[:12]]
+        recent_scans_summary = [{
+            'when': (c.get('checked_at') or '')[:16],
+            'reasoning': (c.get('reasoning') or '')[:240],
+            'actions':   (c.get('actions') or '')[:200],
+        } for c in crypto_scans]
+
+        system = (
+            "You are RivX, an autonomous paper-trading bot. You actively trade BOTH "
+            "US stocks (via Alpaca) AND crypto (via CoinSpot). Crypto is scanned every "
+            "15 min, 24/7. Stocks are scanned every 5 min during US market hours. "
+            "Mechanical stops/targets execute automatically; the rest goes through "
+            "Claude Haiku for decision-making. "
+            "\n\nCRITICAL: The two markets have SEPARATE budgets and SEPARATE position caps. "
+            "When asked about cash or capacity, ALWAYS reference BUDGET_STATE — never "
+            "invent or assume. If stocks are at their position cap but crypto has "
+            "headroom, say so explicitly. If a recent crypto scan recommended buys but "
+            "actions came back empty, that's a Claude-hesitation issue (now patched with "
+            "a mechanical fallback in newer code) — say that, don't blame missing capital. "
+            "\n\nANSWER ONLY FROM THE CONTEXT BELOW. Do not invent trades, strategies, "
+            "or facts not present in the data. If something isn't in the context, say so. "
+            "Closed positions are real history — reference them. Paper mode means no real "
+            "money at risk, but the trades are otherwise real decisions. Under 200 words."
+        )
+        user_msg = (
+            f"Q: {question}\n\n"
+            f"BUDGET STATE (THIS IS THE TRUTH ABOUT CASH AND CAPACITY):\n{json.dumps(budget_state, indent=1)}\n\n"
+            f"PORTFOLIO TOTALS: {json.dumps(portfolio)}\n\n"
+            f"OPEN POSITIONS ({len(open_summary)}):\n{json.dumps(open_summary, indent=1)}\n\n"
+            f"CLOSED POSITIONS ({len(closed_summary)} most recent):\n{json.dumps(closed_summary, indent=1)}\n\n"
+            f"RECENT TRADES ({len(recent_trades_summary)} most recent):\n{json.dumps(recent_trades_summary, indent=1)}\n\n"
+            f"RECENT CRYPTO SCANS ({len(recent_scans_summary)} most recent — `actions` array shows what the bot ACTUALLY DID, `reasoning` shows what Claude was thinking):\n{json.dumps(recent_scans_summary, indent=1)}\n\n"
+            f"PLAN ACTIVE: {'yes' if plan else 'no'}"
+        )
+
+        try:
+            resp = client.messages.create(
+                model=MODEL_QA,
+                max_tokens=500,
+                system=system,
+                messages=[{"role": "user", "content": user_msg}],
+            )
+            # Record Q&A token usage
+            try:
+                from bot.brain import _record_usage
+                _record_usage(db, MODEL_QA, resp.usage.input_tokens, resp.usage.output_tokens)
             except Exception:
-                requested = suggested_size
-            if requested < 300:
-                requested = 300
-            if requested > crypto_available:
-                reasons.append(f"Skipped {sym}: requested ${requested} > available ${crypto_available:.0f}")
-                continue
-            if open_count >= CRYPTO_MAX_POSITIONS:
-                reasons.append(f"Skipped {sym}: {CRYPTO_MAX_POSITIONS} positions already open")
-                continue
-            actions.append({
-                "symbol": sym,
-                "action": "BUY",
-                "reason": buy.get("reason", "qualified entry"),
-                "aud_amount": requested,
-            })
-            crypto_available -= requested
-            open_count += 1
+                pass
+            answer = resp.content[0].text.strip()
+            db._patch("user_questions",
+                     {"answer": answer, "answered_at": datetime.utcnow().isoformat(),
+                      "status": "answered"},
+                     "id", str(qid))
+        except Exception as e:
+            log.error(f"Q#{qid} failed: {e}")
+            db._patch("user_questions",
+                     {"answer": f"Sorry — couldn't answer: {str(e)[:100]}",
+                      "answered_at": datetime.utcnow().isoformat(), "status": "failed"},
+                     "id", str(qid))
 
-        # Process discretionary sells
-        for sell in result.get("sells", []):
-            sym = sell.get("symbol")
-            if sym in crypto_positions and not any(a["symbol"] == sym for a in actions):
-                actions.append({
-                    "symbol": sym,
-                    "action": "SELL",
-                    "reason": sell.get("reason", "discretionary exit"),
-                    "urgency": "normal",
-                })
 
-        # Surface skipped setups in the reasoning so the user can audit
-        for skipped in result.get("skipped", []):
-            reasons.append(f"Skipped {skipped.get('symbol', '?')}: {skipped.get('red_flag', 'no reason given')}")
+def run_4hr_summary(db, tg):
+    """Every 4 hours — brief portfolio status to Telegram. Pure Python, no Claude."""
+    try:
+        positions = db.get_positions()
+        trades = db.get_recent_trades(50)
+        from datetime import date, timedelta
+        today_str = date.today().isoformat()
 
-    # ── Mechanical fallback ──────────────────────────────────────────────
-    # If Claude returned nothing useful (no buys, no skipped flags) despite
-    # the scanner finding qualified setups, buy the top picks mechanically.
-    # Claude is meant to FILTER, not gatekeep — silence is consent.
-    has_buy_action = any(a.get("action") == "BUY" for a in actions)
-    skipped_syms = set()
-    if result:
-        skipped_syms = {s.get("symbol") for s in result.get("skipped", []) if s.get("symbol")}
+        # Today's trades
+        today_trades = [t for t in trades if t.get("created_at", "")[:10] == today_str]
+        last_4h = datetime.utcnow() - timedelta(hours=4)
+        recent_trades = [t for t in trades
+                        if t.get("created_at") and
+                        datetime.fromisoformat(t["created_at"].replace("Z", "+00:00")).replace(tzinfo=None) >= last_4h.replace(tzinfo=None)]
 
-    if not has_buy_action and len(strong_opps) > 0 and crypto_available >= 300 and open_count < CRYPTO_MAX_POSITIONS:
-        fallback_count = 0
-        for opp in strong_opps:
-            if open_count >= CRYPTO_MAX_POSITIONS or crypto_available < 300:
-                break
-            sym = opp.get("symbol")
-            if not sym or sym in crypto_positions or sym in skipped_syms:
-                continue
-            score = opp.get("opportunity_score", 0)
-            chg24 = opp.get("change_24h", 0)  # already a percent (from CoinPaprika)
-            actions.append({
-                "symbol": sym,
-                "action": "BUY",
-                "reason": f"mechanical fallback (Claude hesitated): score {score:.1f}, 24h {chg24:+.1f}%",
-                "aud_amount": suggested_size,
-            })
-            crypto_available -= suggested_size
-            open_count += 1
-            fallback_count += 1
-            reasons.append(f"FALLBACK BUY {sym} (score {score:.1f}) — Claude returned no buys nor skip flag")
-        if fallback_count > 0:
-            log.warning(f"Crypto: mechanical fallback fired — bought {fallback_count} setups Claude didn't decide on")
+        # Portfolio value from latest snapshot
+        try:
+            latest = db._get("intraday_snapshots",
+                            {"order": "recorded_at.desc", "limit": "1"})
+            total = float(latest[0]["total_aud"]) if latest else 5000
+        except Exception:
+            total = 5000
 
-    return {
-        "actions": actions,
-        "reasoning": " | ".join(r for r in reasons if r) or "Monitoring",
-        "opportunities": crypto_opps,
-        "skipped": (result.get("skipped", []) if result else []),
+        # Today's Claude cost
+        try:
+            usage = db._get("token_usage", {"date": f"eq.{today_str}"})
+            cost = float(usage[0].get("cost_usd", 0)) if usage else 0
+        except Exception:
+            cost = 0
+
+        net = total - 5000
+        lines = [
+            f"📊 RivX 4hr update — {aest_now().strftime('%a %d %b, %H:%M')}",
+            "",
+            f"Portfolio: ${total:,.2f} AUD ({'+' if net>=0 else ''}${net:.2f})",
+            f"Open positions: {len(positions)}",
+            f"Trades last 4hr: {len(recent_trades)}",
+            f"Trades today: {len(today_trades)}",
+            f"Claude cost today: ${cost:.3f} USD",
+        ]
+
+        if positions:
+            lines.append("")
+            lines.append("Holdings:")
+            for sym, pos in list(positions.items())[:6]:
+                pnl = (pos.get("pnl_pct", 0) or 0) * 100
+                lines.append(f"  {sym}: {pnl:+.1f}% ({pos.get('market', '?')})")
+
+        if recent_trades:
+            lines.append("")
+            lines.append("Recent trades:")
+            for t in recent_trades[:5]:
+                pnl = f" ({(t.get('pnl_pct', 0) or 0)*100:+.1f}%)" if t.get("pnl_pct") else ""
+                lines.append(f"  {t.get('action')} {t.get('symbol')}{pnl}")
+
+        tg.send("\n".join(lines))
+    except Exception as e:
+        log.warning(f"4hr summary failed: {e}")
+
+
+def run_morning_summary(db, tg):
+    """6:30am AEST — overnight summary."""
+    positions = db.get_positions()
+    portfolio = db.get_portfolio_value()
+    trades = db.get_recent_trades(20)
+
+    from datetime import date
+    today_trades = [t for t in trades if t.get("created_at", "")[:10] == date.today().isoformat()]
+
+    lines = [
+        f"RivX morning report — {aest_now().strftime('%d %b')}",
+        "",
+        f"Portfolio: ${portfolio.get('total_aud', 5000):,.2f} AUD",
+        f"Overnight: {'+' if portfolio.get('day_pnl', 0) >= 0 else ''}${portfolio.get('day_pnl', 0):.2f}",
+        "",
+    ]
+
+    if today_trades:
+        lines.append("Overnight trades:")
+        for t in today_trades:
+            pnl = f" ({t.get('pnl_pct', 0)*100:+.1f}%)" if t.get("pnl_pct") else ""
+            lines.append(f"  {t.get('action')} {t.get('symbol')}{pnl}")
+    else:
+        lines.append("No trades overnight.")
+
+    if positions:
+        lines.append("")
+        lines.append("Open positions:")
+        for sym, pos in positions.items():
+            pnl = pos.get("pnl_pct", 0) or 0
+            lines.append(f"  {sym}: {pnl*100:+.1f}%")
+
+    # Cost report
+    try:
+        today = date.today().isoformat()
+        usage = db._get("token_usage", {"date": f"eq.{today}"})
+        if usage:
+            cost = float(usage[0].get("cost_usd", 0))
+            calls = int(usage[0].get("call_count", 0))
+            lines.append("")
+            lines.append(f"Yesterday's Claude cost: ${cost:.2f} USD ({calls} calls)")
+    except Exception:
+        pass
+
+    tg.send("\n".join(lines))
+    db.save_approved_plan({})
+    db.save_snapshot(portfolio.get("total_aud", 5000),
+                     portfolio.get("day_pnl", 0),
+                     portfolio.get("total_pnl", 0))
+
+
+# ─── Main loop ─────────────────────────────────────────────────────────────
+
+def run_manual_orders(db, tg, alpaca, coinspot):
+    """
+    Poll the `manual_orders` table for user-submitted force-sells/buys from
+    the dashboard. Each row goes through execute_action and gets marked
+    done/error so the dashboard can show feedback.
+    """
+    try:
+        pending = db._get("manual_orders",
+                          {"status": "eq.pending", "order": "requested_at.asc",
+                           "limit": "10"}) or []
+    except Exception as e:
+        log.debug(f"manual_orders poll failed: {e}")
+        return
+
+    if not pending:
+        return
+
+    positions = db.get_positions()
+    market_data = {}
+
+    for order in pending:
+        oid    = order.get("id")
+        sym    = (order.get("symbol") or "").upper()
+        action = (order.get("action")  or "").upper()
+        market_hint = order.get("market") or None
+        aud    = order.get("aud_amount")
+
+        if not sym or action not in ("BUY", "SELL"):
+            db._patch("manual_orders",
+                      {"status": "error", "error": "invalid order",
+                       "executed_at": datetime.utcnow().isoformat()},
+                      "id", str(oid))
+            continue
+
+        if sym not in market_data:
+            market_data.update(get_market_data([sym]))
+
+        success, err = execute_action(
+            sym, action, f"manual {action.lower()} from dashboard",
+            alpaca, coinspot, db, tg,
+            positions, market_data,
+            confidence=1.0, notify=True,
+            aud_amount=float(aud) if aud else None,
+            market=market_hint,
+        )
+        db._patch("manual_orders", {
+            "status":      "done" if success else "error",
+            "error":       err if not success else None,
+            "executed_at": datetime.utcnow().isoformat(),
+        }, "id", str(oid))
+        log.info(f"Manual {action} {sym}: {'OK' if success else 'FAILED — ' + (err or 'unknown')}")
+
+
+def run_daily_cleanup(db):
+    """
+    Trim old chatter so the dashboard and Supabase tables don't bloat.
+
+    Keep:
+      - trades (audit trail) — forever
+      - positions (closed/open) — forever
+      - flags — forever (state)
+
+    Trim:
+      - user_questions older than 7 days  (Q&A is conversational, not learned-from)
+      - crypto_checks  older than 7 days  (just shows scanner activity)
+      - intraday_snapshots older than 30 days  (chart history we don't need long-term)
+      - usage_log     older than 60 days  (cost tracking)
+
+    The bot's actual learning happens in evening_briefing via signal_weights,
+    which reads from `trades` (kept forever) — so deleting Q&A history is safe.
+    """
+    cutoffs = {
+        "user_questions":     7,
+        "crypto_checks":      7,
+        "intraday_snapshots": 30,
+        "usage_log":          60,
     }
+    deleted_total = 0
+    for table, days in cutoffs.items():
+        cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        try:
+            # Supabase REST: DELETE with filter on created_at/checked_at/snapshot_time/date
+            time_col = {
+                "user_questions":     "asked_at",
+                "crypto_checks":      "checked_at",
+                "intraday_snapshots": "snapshot_time",
+                "usage_log":          "date",
+            }[table]
+            # Use _patch_with_fallback's underlying mechanism via a raw DELETE
+            url = f"{db.base}/rest/v1/{table}?{time_col}=lt.{cutoff}"
+            import requests
+            r = requests.delete(url, headers={**db.headers, "Prefer": "return=representation"}, timeout=15)
+            if r.ok:
+                rows = r.json() if r.headers.get("content-type", "").startswith("application/json") else []
+                count = len(rows) if isinstance(rows, list) else 0
+                deleted_total += count
+                if count > 0:
+                    log.info(f"Cleanup: removed {count} rows from {table} older than {days}d")
+            else:
+                log.warning(f"Cleanup {table}: HTTP {r.status_code} — {r.text[:120]}")
+        except Exception as e:
+            log.warning(f"Cleanup {table} failed: {e}")
+    log.info(f"Daily cleanup complete — {deleted_total} total rows removed")
 
 
-def _hold_all() -> dict:
-    return {
-        "decisions": {},
-        "market_summary": "Claude unavailable or over budget. No trades tonight.",
-        "risk_level": "LOW",
-        "portfolio_health": "Safe mode — no new trades.",
-        "watch_for_overnight": "Nothing — mechanical stops still active.",
-        "scan_data": {},
-    }
+def main():
+    # Wrap the entire setup phase in a try/except so a startup crash logs
+    # loudly instead of silently exiting and going into Render's restart loop.
+    # Anything that fails before the main loop (DB init, Telegram drain, env
+    # var lookups, brain.py imports) lands here.
+    import sys, traceback
+    try:
+        log.info(f"RivX starting — {'PAPER' if PAPER_MODE else 'LIVE'} mode")
+        sys.stdout.flush()  # paranoid: make sure this line is visible
+
+        db = SupabaseLogger()
+        log.info("SupabaseLogger ready")
+        tg = TelegramNotifier()
+        log.info("TelegramNotifier ready")
+        alpaca = AlpacaTrader()
+        log.info("AlpacaTrader ready")
+        coinspot = CoinSpotTrader()
+        log.info("CoinSpotTrader ready")
+
+        # One-time startup announcement per day
+        today = aest_now().date().isoformat()
+        if db.get_flag("last_startup") != today:
+            db.set_flag("last_startup", today)
+            tg.send(f"RivX is online. {'PAPER' if PAPER_MODE else 'LIVE'} trading mode.")
+
+        # One-shot repair: any open crypto position whose entry_price is 0
+        # (because the paper-mode short-circuit logged with no price) gets
+        # backfilled from CoinSpot. Idempotent — only runs if entry is missing.
+        try:
+            _repair_crypto_entry_prices(db)
+        except Exception as e:
+            log.warning(f"Entry-price repair failed (non-fatal): {e}")
+
+        log.info("Setup complete — entering main loop")
+        sys.stdout.flush()
+    except Exception as setup_err:
+        # Print to stderr AND try Telegram so we always see what happened.
+        tb = traceback.format_exc()
+        sys.stderr.write(f"\n!!! SETUP CRASH !!!\n{tb}\n")
+        sys.stderr.flush()
+        try:
+            from bot.config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
+            if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
+                import requests
+                requests.post(
+                    f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                    json={"chat_id": TELEGRAM_CHAT_ID,
+                          "text": f"RivX SETUP CRASH:\n\n{type(setup_err).__name__}: {str(setup_err)[:300]}"},
+                    timeout=5,
+                )
+        except Exception:
+            pass
+        # Sleep before exiting so Render's log capture catches the traceback
+        time.sleep(5)
+        raise
+
+    # Timers
+    last_crypto = 0
+    last_intraday = 0
+    last_snapshot = 0
+    last_question = 0
+    last_manual = 0
+    last_4hr_summary = time.time()  # don't fire immediately at startup
+
+    while True:
+        try:
+            # Kill switch — Telegram-message based (existing) OR dashboard flag (new).
+            # Dashboard sets the `kill_switch` flag to "on" via the new toggle button.
+            # When set, all trading loops are paused but snapshots and the manual-orders
+            # processor still run, so the user can force-sell things by hand.
+            tg_killed = tg.check_kill_switch(db)
+            dash_killed = db.get_flag("kill_switch") == "on"
+            trading_paused = tg_killed or dash_killed
+
+            now_ts = time.time()
+            now = aest_now()
+            today = now.date().isoformat()
+
+            # Snapshots and manual orders run REGARDLESS of kill-switch state
+            if (now_ts - last_snapshot) >= SNAPSHOT_INTERVAL:
+                last_snapshot = now_ts
+                run_snapshot(db, alpaca=alpaca)
+
+            if (now_ts - last_manual) >= 30:  # poll every 30s
+                last_manual = now_ts
+                run_manual_orders(db, tg, alpaca, coinspot)
+
+            if (now_ts - last_question) >= QUESTION_POLL_INTERVAL:
+                last_question = now_ts
+                run_question_poll(db, tg)
+
+            if trading_paused:
+                if dash_killed and not tg_killed:
+                    log.debug("Trading paused via dashboard kill switch")
+                time.sleep(MAIN_TICK)
+                continue
+
+            # ── Trading loops below this line — only run when NOT paused ──
+
+            # Evening briefing — Mon-Fri ONLY, only minute 0-2 of hour 20, flag-locked
+            is_weekday = now.weekday() < 5
+            if (is_weekday
+                and now.hour == EVENING_BRIEFING_HOUR_AEST
+                and now.minute < 3
+                and db.get_flag("last_evening_briefing") != today):
+
+                db.set_flag("last_evening_briefing", today)
+                time.sleep(1)
+                if db.get_flag("last_evening_briefing") == today:
+                    log.info(f"Briefing flag set for {today} — running")
+                    run_evening_briefing(db, tg, alpaca, coinspot)
+                else:
+                    log.error("Flag did not persist — check flags table permissions")
+                    tg.send("RivX: flag error — skipping briefing. Check Supabase.")
+                    time.sleep(180)
+
+            # Morning summary
+            if (now.hour == MORNING_SUMMARY_HOUR_AEST and now.minute >= 30
+                and db.get_flag("last_morning_summary") != today):
+                db.set_flag("last_morning_summary", today)
+                time.sleep(1)
+                if db.get_flag("last_morning_summary") == today:
+                    run_morning_summary(db, tg)
+
+            # Daily cleanup — once per day at 3am AEST
+            if (now.hour == 3 and now.minute < 5
+                and db.get_flag("last_cleanup") != today):
+                db.set_flag("last_cleanup", today)
+                time.sleep(1)
+                if db.get_flag("last_cleanup") == today:
+                    run_daily_cleanup(db)
+
+            # Crypto check — every 15 min
+            if (now_ts - last_crypto) >= CRYPTO_LOOP_INTERVAL:
+                last_crypto = now_ts
+                run_crypto_loop(db, tg, coinspot)
+
+            # Intraday stock check — every 5 min during US hours
+            if is_us_market_hours() and (now_ts - last_intraday) >= INTRADAY_LOOP_INTERVAL:
+                last_intraday = now_ts
+                run_intraday_loop(db, tg, alpaca, coinspot)
+
+            # 4-hourly Telegram summary
+            if (now_ts - last_4hr_summary) >= (4 * 60 * 60):
+                last_4hr_summary = now_ts
+                run_4hr_summary(db, tg)
+
+            time.sleep(MAIN_TICK)
+
+        except KeyboardInterrupt:
+            log.info("Stopped by user")
+            tg.send("RivX stopped manually.")
+            break
+        except Exception as e:
+            log.error(f"Main loop error: {e}", exc_info=True)
+            # Don't spam Telegram on every error — only severe ones
+            time.sleep(60)
+
+
+if __name__ == "__main__":
+    main()
