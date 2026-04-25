@@ -1,8 +1,13 @@
 """
 telegram_notify.py — Sends alerts to your Telegram and waits for CONFIRM/CANCEL.
-This is the human-in-the-loop layer before every real money trade.
-You have a configurable window (default 5 mins) to cancel any trade.
-If you don't respond in time, the bot proceeds automatically.
+
+Kill switch architecture:
+  - Persistent flag in Supabase: flags['kill_switch']
+  - To halt: send "STOP ALL" in Telegram OR set the flag manually
+  - To resume: DELETE FROM flags WHERE key = 'kill_switch'  THEN restart Render
+  - On startup, ALL existing Telegram messages are acknowledged so old STOP ALLs
+    don't keep retriggering
+  - One alert at activation, then silence. No spam.
 """
 
 import logging
@@ -19,11 +24,12 @@ class TelegramNotifier:
 
     def __init__(self):
         self.chat_id = TELEGRAM_CHAT_ID
+        self._last_seen_update_id = None
+        self._kill_switch_announced = False
         if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
             log.warning("Telegram not configured — alerts disabled")
 
     def send(self, message: str) -> bool:
-        """Send a plain text message to your Telegram."""
         if not TELEGRAM_TOKEN:
             log.info(f"[TELEGRAM DISABLED] {message}")
             return True
@@ -40,13 +46,6 @@ class TelegramNotifier:
             return False
 
     def send_and_wait(self, message: str, timeout_seconds: int = 300) -> bool:
-        """
-        Send a trade alert and wait for the user to reply CONFIRM or CANCEL.
-        Returns True if confirmed (or timed out — default is to proceed).
-        Returns False only if the user explicitly replies CANCEL.
-
-        In paper mode, always returns True without waiting.
-        """
         if PAPER_MODE:
             log.info(f"[PAPER MODE] Would send: {message}")
             return True
@@ -54,41 +53,30 @@ class TelegramNotifier:
         full_msg = f"{message}\n\n⏱ Auto-confirming in {timeout_seconds // 60} mins if no reply."
         self.send(full_msg)
 
-        # Poll for a reply
-        last_update_id = self._get_last_update_id()
+        last_id = self._get_latest_update_id() or 0
         deadline = time.time() + timeout_seconds
-        poll_interval = 5  # check every 5 seconds
 
         while time.time() < deadline:
-            time.sleep(poll_interval)
-            updates = self._get_updates(offset=last_update_id + 1 if last_update_id else None)
+            time.sleep(5)
+            updates = self._get_updates(offset=last_id + 1)
             for update in updates:
-                last_update_id = update["update_id"]
-                text = update.get("message", {}).get("text", "").strip().upper()
+                last_id = max(last_id, update.get("update_id", 0))
+                text = (update.get("message", {}).get("text", "") or "").strip().upper()
                 chat = str(update.get("message", {}).get("chat", {}).get("id", ""))
-                if chat == str(self.chat_id):
-                    if "CONFIRM" in text or "YES" in text or "Y" == text:
-                        self.send("✓ Confirmed — executing trade now.")
-                        return True
-                    elif "CANCEL" in text or "NO" in text or "N" == text:
-                        self.send("✗ Cancelled — trade aborted.")
-                        return False
+                if chat != str(self.chat_id):
+                    continue
+                if "CONFIRM" in text or text in ("YES", "Y"):
+                    self.send("✓ Confirmed — executing trade now.")
+                    return True
+                elif "CANCEL" in text or text in ("NO", "N"):
+                    self.send("✗ Cancelled — trade aborted.")
+                    return False
 
-        # Timed out — auto-confirm
         self.send("⏱ No response — auto-confirming and executing trade.")
         return True
 
-    def send_stop_loss_alert(self, symbol: str, pnl_pct: float):
-        """Stop-loss alerts fire immediately — no confirmation needed."""
-        self.send(
-            f"⚠️ <b>Stop-loss triggered — {symbol}</b>\n"
-            f"Position down {pnl_pct:.1%}. Selling now to protect capital.\n"
-            f"This trade executed automatically."
-        )
-
     def send_daily_summary(self, total_aud: float, day_pnl: float,
                            total_pnl: float, actions: list):
-        """End-of-day summary message."""
         pnl_emoji = "📈" if day_pnl >= 0 else "📉"
         action_str = "\n".join(f"  • {a}" for a in actions) if actions else "  • No trades today"
         self.send(
@@ -100,33 +88,104 @@ class TelegramNotifier:
             f"Reply <b>STOP ALL</b> to halt the bot."
         )
 
+    # ─── Telegram polling ──────────────────────────────────────────────────
+
     def _get_updates(self, offset: int = None) -> list:
+        """Raw getUpdates. Pass offset to acknowledge updates with id < offset."""
         params = {"timeout": 1}
         if offset:
             params["offset"] = offset
         try:
             resp = requests.get(f"{BASE}/getUpdates", params=params, timeout=5)
             resp.raise_for_status()
-            return resp.json().get("result", [])
-        except Exception:
+            return resp.json().get("result", []) or []
+        except Exception as e:
+            log.debug(f"Telegram getUpdates failed: {e}")
             return []
 
-    def _get_last_update_id(self) -> int | None:
+    def _get_latest_update_id(self) -> int | None:
         updates = self._get_updates()
-        if updates:
-            return updates[-1]["update_id"]
-        return None
+        return updates[-1]["update_id"] if updates else None
 
-    def check_kill_switch(self) -> bool:
+    # ─── Kill switch ───────────────────────────────────────────────────────
+
+    def check_kill_switch(self, db=None) -> bool:
         """
-        Check if the user has sent 'STOP ALL' in the last few messages.
-        Call this at the start of each bot run.
+        Halt-check called by main loop. Two layers:
+          1. Persistent Supabase flag — once set, stays set across restarts
+          2. Fresh Telegram STOP ALL during this run — sets the flag, halts
+
+        Args:
+          db: SupabaseLogger — required for persistent flag
         """
-        updates = self._get_updates()
-        for update in updates[-10:]:  # check last 10 messages
-            text = update.get("message", {}).get("text", "").strip().upper()
-            chat = str(update.get("message", {}).get("chat", {}).get("id", ""))
-            if chat == str(self.chat_id) and "STOP ALL" in text:
-                self.send("🛑 Kill switch activated. Bot halted. No more trades will execute.")
-                return True
+        # Layer 1: Supabase persistent flag
+        if db is not None:
+            try:
+                if db.get_flag("kill_switch") == "1":
+                    if not self._kill_switch_announced:
+                        self._kill_switch_announced = True
+                        self.send("🛑 Kill switch is active. Bot halted. To resume: run "
+                                 "<code>DELETE FROM flags WHERE key = 'kill_switch';</code> "
+                                 "in Supabase, then restart Render.")
+                        log.warning("Kill switch flag is set — bot halted")
+                    return True
+            except Exception as e:
+                log.debug(f"Kill switch flag read failed: {e}")
+
+        # Layer 2: Telegram polling — STARTUP, drain everything
+        if self._last_seen_update_id is None:
+            try:
+                updates = self._get_updates()
+                if updates:
+                    # ACK all existing updates so they're consumed and never returned again.
+                    # ANY STOP ALL sitting in history is dropped here.
+                    last_id = updates[-1]["update_id"]
+                    # The +1 offset tells Telegram "I've seen everything ≤ last_id"
+                    self._get_updates(offset=last_id + 1)
+                    self._last_seen_update_id = last_id
+                    log.info(f"Kill switch startup: drained {len(updates)} old Telegram message(s). "
+                             f"Watermark = {last_id}")
+                else:
+                    self._last_seen_update_id = 0
+                    log.info("Kill switch startup: no old messages")
+            except Exception as e:
+                log.warning(f"Kill switch startup drain failed: {e}")
+                self._last_seen_update_id = 0
+            # Never halt on startup, only on fresh messages thereafter
+            return False
+
+        # Layer 2: Telegram polling — RUNTIME, only fresh messages
+        try:
+            updates = self._get_updates(offset=self._last_seen_update_id + 1)
+        except Exception:
+            return False
+
+        for update in updates:
+            uid = update.get("update_id", 0)
+            if uid > self._last_seen_update_id:
+                self._last_seen_update_id = uid
+
+            msg = update.get("message", {})
+            text = (msg.get("text", "") or "").strip().upper()
+            chat = str(msg.get("chat", {}).get("id", ""))
+
+            if chat != str(self.chat_id):
+                continue
+            if text != "STOP ALL":
+                continue
+
+            log.warning(f"Fresh STOP ALL received (update_id {uid}) — setting flag")
+            if db is not None:
+                try:
+                    db.set_flag("kill_switch", "1")
+                except Exception as e:
+                    log.error(f"Could not persist kill switch flag: {e}")
+
+            if not self._kill_switch_announced:
+                self._kill_switch_announced = True
+                self.send("🛑 Kill switch activated. Bot halted. To resume: run "
+                         "<code>DELETE FROM flags WHERE key = 'kill_switch';</code> "
+                         "in Supabase, then restart Render.")
+            return True
+
         return False
