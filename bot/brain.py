@@ -133,6 +133,50 @@ def get_aud_usd() -> float:
         return AUD_USD_FALLBACK
 
 
+# Cached CoinSpot price map. Used as a fallback for crypto symbols Alpaca
+# doesn't cover (TON, ATOM, FIL, JUP, ORDI, etc.). Refreshed every 5 minutes.
+_COINSPOT_PRICES = {"data": {}, "ts": 0.0}
+
+def _coinspot_prices_aud() -> dict:
+    """Return {SYM: last_aud} for everything CoinSpot lists. 5-min cache."""
+    import time as _t
+    if _t.time() - _COINSPOT_PRICES["ts"] < 300 and _COINSPOT_PRICES["data"]:
+        return _COINSPOT_PRICES["data"]
+    out = {}
+    for url in [
+        "https://www.coinspot.com.au/pubapi/v2/latest",
+        "https://www.coinspot.com.au/pubapi/latest",
+    ]:
+        try:
+            r = requests.get(url, timeout=8)
+            if r.status_code != 200:
+                continue
+            data = r.json()
+            prices = data.get("prices") or data
+            if not isinstance(prices, dict):
+                continue
+            for sym_raw, entry in prices.items():
+                sym = sym_raw.upper()
+                if isinstance(entry, dict):
+                    try:
+                        out[sym] = float(entry.get("last") or 0)
+                    except (TypeError, ValueError):
+                        pass
+                else:
+                    try:
+                        out[sym] = float(entry)
+                    except (TypeError, ValueError):
+                        pass
+            if out:
+                _COINSPOT_PRICES["data"] = out
+                _COINSPOT_PRICES["ts"] = _t.time()
+                return out
+        except Exception as e:
+            log.debug(f"CoinSpot {url} failed: {e}")
+    # Return whatever we had cached, even if stale
+    return _COINSPOT_PRICES["data"]
+
+
 def _fetch_bars(symbol: str, days: int = 30) -> pd.DataFrame:
     try:
         start = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
@@ -169,24 +213,92 @@ def _fetch_bars(symbol: str, days: int = 30) -> pd.DataFrame:
 
 
 def get_market_data(symbols: list) -> dict:
-    """Build market context for symbols. Returns price + RSI + trend."""
+    """Build market context for symbols. Returns price + RSI + trend.
+
+    Crypto pricing rule (post 2026-04-25 fix): CoinSpot AUD is the ONLY
+    source of truth for current crypto price. Alpaca's USD bars are still
+    used for RSI/MACD/trend signals (they're free and reliable), but the
+    `price` field is always the CoinSpot last AUD. This guarantees
+    entry_price and current_price use the same source so P&L isn't
+    polluted by USD/AUD FX drift between the buy and the snapshot.
+    """
     data = {}
+    coinspot_map = None  # lazy-load only when a crypto symbol is requested
+
     for sym in symbols:
+        is_crypto = sym in _CRYPTO_LIST or PORTFOLIO.get(sym, {}).get("type") == "crypto"
         df = _fetch_bars(sym)
+
+        if is_crypto:
+            # ALWAYS resolve crypto price via CoinSpot, regardless of whether
+            # Alpaca bars were available.
+            if coinspot_map is None:
+                coinspot_map = _coinspot_prices_aud()
+            spot_aud = coinspot_map.get(sym.upper(), 0)
+
+            if df.empty:
+                # No Alpaca bars (e.g. TON, FIL, ATOM). Spot only, no technicals.
+                if spot_aud > 0:
+                    data[sym] = {
+                        "price":      round(spot_aud, 6),
+                        "currency":   "AUD",
+                        "source":     "coinspot_spot",
+                        "rsi":        None,
+                        "above_ma20": None,
+                        "above_ma50": None,
+                        "change_1d":  0,
+                        "change_7d":  0,
+                    }
+                else:
+                    data[sym] = {"price": 0, "error": "no data"}
+                continue
+
+            # Have Alpaca bars (BTC, ETH, etc.). Use them for technicals,
+            # but price still comes from CoinSpot. If CoinSpot's down for
+            # this symbol, fall through to Alpaca-converted as a safety net.
+            closes = df["close"].astype(float)
+            delta = closes.diff()
+            gain  = delta.clip(lower=0).rolling(14).mean()
+            loss  = (-delta.clip(upper=0)).rolling(14).mean()
+            rs    = gain / loss.replace(0, np.nan)
+            rsi   = (100 - (100 / (1 + rs))).iloc[-1]
+            ma20  = closes.rolling(20).mean().iloc[-1] if len(closes) >= 20 else None
+            ma50  = closes.rolling(50).mean().iloc[-1] if len(closes) >= 50 else None
+
+            if spot_aud > 0:
+                price = spot_aud
+                source = "coinspot_spot+alpaca_technicals"
+            else:
+                # Last-resort: convert Alpaca USD to AUD. Better than zero.
+                aud_usd = get_aud_usd()
+                usd_to_aud = (1.0 / aud_usd) if aud_usd > 0 else 1.55
+                price = float(closes.iloc[-1]) * usd_to_aud
+                source = "alpaca_bars_converted"
+
+            data[sym] = {
+                "price":      round(price, 6),
+                "change_1d":  round(float((closes.iloc[-1] - closes.iloc[-2]) / closes.iloc[-2] * 100), 2) if len(closes) >= 2 else 0,
+                "change_7d":  round(float((closes.iloc[-1] - closes.iloc[-7]) / closes.iloc[-7] * 100), 2) if len(closes) >= 7 else 0,
+                "rsi":        round(float(rsi), 1) if not pd.isna(rsi) else None,
+                "above_ma20": bool(closes.iloc[-1] > ma20) if ma20 else None,
+                "above_ma50": bool(closes.iloc[-1] > ma50) if ma50 else None,
+                "currency":   "AUD",
+                "source":     source,
+            }
+            continue
+
+        # Stocks: USD via Alpaca, no change.
         if df.empty:
             data[sym] = {"price": 0, "error": "no data"}
             continue
         closes = df["close"].astype(float)
-
         delta = closes.diff()
         gain  = delta.clip(lower=0).rolling(14).mean()
         loss  = (-delta.clip(upper=0)).rolling(14).mean()
         rs    = gain / loss.replace(0, np.nan)
         rsi   = (100 - (100 / (1 + rs))).iloc[-1]
-
-        ma20 = closes.rolling(20).mean().iloc[-1] if len(closes) >= 20 else None
-        ma50 = closes.rolling(50).mean().iloc[-1] if len(closes) >= 50 else None
-        is_crypto = sym in _CRYPTO_LIST
+        ma20  = closes.rolling(20).mean().iloc[-1] if len(closes) >= 20 else None
+        ma50  = closes.rolling(50).mean().iloc[-1] if len(closes) >= 50 else None
 
         data[sym] = {
             "price":      round(float(closes.iloc[-1]), 4),
@@ -195,7 +307,8 @@ def get_market_data(symbols: list) -> dict:
             "rsi":        round(float(rsi), 1) if not pd.isna(rsi) else None,
             "above_ma20": bool(closes.iloc[-1] > ma20) if ma20 else None,
             "above_ma50": bool(closes.iloc[-1] > ma50) if ma50 else None,
-            "currency":   "AUD" if is_crypto else "USD",
+            "currency":   "USD",
+            "source":     "alpaca_bars",
         }
     return data
 
@@ -631,11 +744,11 @@ Return:
             if not sym or sym in crypto_positions or sym in skipped_syms:
                 continue
             score = opp.get("opportunity_score", 0)
-            daily = opp.get("daily_change", 0)
+            chg24 = opp.get("change_24h", 0)  # already a percent (from CoinPaprika)
             actions.append({
                 "symbol": sym,
                 "action": "BUY",
-                "reason": f"mechanical fallback (Claude hesitated): score {score:.1f}, daily {daily*100:+.1f}%",
+                "reason": f"mechanical fallback (Claude hesitated): score {score:.1f}, 24h {chg24:+.1f}%",
                 "aud_amount": suggested_size,
             })
             crypto_available -= suggested_size
