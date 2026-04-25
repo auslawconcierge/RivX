@@ -437,17 +437,12 @@ def main():
     last_intraday = 0
     last_snapshot = 0
     last_question = 0
-    kill_switch_announced = False  # prevents repeat "kill switch activated" messages
 
     while True:
         try:
-            # Kill switch — send ONE message, then halt silently
-            if tg.check_kill_switch():
-                if not kill_switch_announced:
-                    log.warning("Kill switch activated — bot halting")
-                    tg.send("🛑 Kill switch activated. Bot halted. No more trades will execute.")
-                    kill_switch_announced = True
-                # Sleep longer while halted to reduce noise
+            # Kill switch — persistent Supabase flag + fresh Telegram messages
+            if tg.check_kill_switch(db):
+                # No spam — telegram_notify handles single-fire announcement
                 time.sleep(60)
                 continue
 
