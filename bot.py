@@ -26,7 +26,7 @@ from bot.brain import (
     evening_briefing, intraday_check, crypto_check, get_market_data,
     MODEL_QA,
 )
-from bot.alpaca_trader  import AlpacaTrader
+from bot.alpaca_trader  import AlpacaTrader, get_aud_usd_rate
 from bot.coinspot_trader import CoinSpotTrader
 from bot.supabase_logger import SupabaseLogger
 from bot.telegram_notify import TelegramNotifier
@@ -60,6 +60,25 @@ def is_us_market_hours() -> bool:
 
 
 # ─── Trade execution ───────────────────────────────────────────────────────
+
+def _fetch_alpaca_fill_price(trader, symbol: str, retries: int = 5) -> float:
+    """
+    After placing a market order with Alpaca, poll /v2/positions/{symbol}
+    to get the actual fill price. Returns 0.0 if it can't be resolved.
+    """
+    for attempt in range(retries):
+        time.sleep(1.5)
+        try:
+            pos = trader.get_position(symbol)
+            if pos:
+                price = float(pos.get("avg_entry_price", 0) or 0)
+                if price > 0:
+                    return price
+        except Exception as e:
+            log.debug(f"Alpaca fill lookup attempt {attempt+1} for {symbol}: {e}")
+    log.warning(f"Could not resolve Alpaca fill price for {symbol} after {retries} tries")
+    return 0.0
+
 
 def execute_action(symbol, action, reason, alpaca, coinspot, db, tg,
                    positions, market_data, confidence=1.0, notify=True,
@@ -99,7 +118,15 @@ def execute_action(symbol, action, reason, alpaca, coinspot, db, tg,
             log.error(f"BUY call failed for {symbol}: {e}")
             return False
         if order:
-            price = market_data.get(symbol, {}).get("price", 0)
+            # Resolve entry price. For Alpaca we need to wait for the fill
+            # and pull the actual avg_entry_price — market_data is crypto-only.
+            price = market_data.get(symbol, {}).get("price", 0) or 0
+            if market == "alpaca":
+                fill_price = _fetch_alpaca_fill_price(trader, symbol)
+                if fill_price > 0:
+                    price = fill_price
+                    log.info(f"Alpaca fill: {symbol} @ ${price:.4f} USD")
+
             db.log_trade(symbol, "BUY", allocated, order, confidence, reason)
             db.save_position(symbol, price, allocated, market)
             if notify:
@@ -115,7 +142,13 @@ def execute_action(symbol, action, reason, alpaca, coinspot, db, tg,
             return False
         if order:
             pos = positions[symbol]
-            price = market_data.get(symbol, {}).get("price", 0)
+            price = market_data.get(symbol, {}).get("price", 0) or 0
+            # For Alpaca, prefer the last known current_price from the position
+            # (stored by the snapshot sync) over market_data which is crypto-only.
+            if market == "alpaca":
+                stored_current = float(pos.get("current_price", 0) or 0)
+                if stored_current > 0:
+                    price = stored_current
             pnl = pos.get("pnl_pct", 0)
             db.log_trade(symbol, "SELL", pos.get("aud_amount", 0), order, confidence, reason)
             db.close_position(symbol, price, pnl)
@@ -268,24 +301,117 @@ def run_crypto_loop(db, tg, coinspot):
                       notify=True, aud_amount=aud)
 
 
-def run_snapshot(db):
-    """Pure Python. Writes portfolio value with live prices every 5 min."""
+def _sync_alpaca_positions(db, alpaca):
+    """
+    Pull live data for every Alpaca-held position and push it into Supabase.
+    Returns {symbol: {current_price_usd, pnl_pct, qty, market_value_usd, market_value_aud}}
+    so the caller can use it for the snapshot total.
+    """
+    out = {}
+    if not alpaca:
+        return out
+    try:
+        alp_positions = alpaca.get_all_positions()
+    except Exception as e:
+        log.warning(f"Alpaca get_all_positions failed: {e}")
+        return out
+
+    if not alp_positions:
+        return out
+
+    # FX rate for AUD conversion
+    try:
+        aud_to_usd = get_aud_usd_rate()  # 1 AUD = X USD
+    except Exception:
+        aud_to_usd = 0.635
+    usd_to_aud = (1.0 / aud_to_usd) if aud_to_usd else 1.57
+
+    for ap in alp_positions:
+        try:
+            sym = ap.get("symbol")
+            if not sym:
+                continue
+            current_price_usd = float(ap.get("current_price", 0) or 0)
+            avg_entry_usd = float(ap.get("avg_entry_price", 0) or 0)
+            qty = float(ap.get("qty", 0) or 0)
+            market_value_usd = float(ap.get("market_value", 0) or 0)
+            pnl_pct = float(ap.get("unrealized_plpc", 0) or 0)
+            change_today = float(ap.get("change_today", 0) or 0)  # today's % change
+
+            out[sym] = {
+                "current_price_usd": current_price_usd,
+                "avg_entry_usd": avg_entry_usd,
+                "pnl_pct": pnl_pct,
+                "qty": qty,
+                "market_value_usd": market_value_usd,
+                "market_value_aud": round(market_value_usd * usd_to_aud, 2),
+                "change_today": change_today,
+            }
+
+            # Push to Supabase. update_position_from_alpaca also heals entry_price=0 rows.
+            try:
+                db.update_position_from_alpaca(
+                    symbol=sym,
+                    current_price=current_price_usd,
+                    pnl_pct=pnl_pct,
+                    qty=qty,
+                    change_today=change_today,
+                    avg_entry_price=avg_entry_usd,
+                )
+            except Exception as e:
+                log.warning(f"update_position_from_alpaca({sym}) failed: {e}")
+        except Exception as e:
+            log.warning(f"Alpaca sync row failed: {e}")
+    return out
+
+
+def run_snapshot(db, alpaca=None):
+    """
+    Pure Python. Every 5 min.
+    Writes portfolio value with live prices (CoinGecko for crypto, Alpaca for stocks).
+    Also pushes live Alpaca position data back to Supabase so the dashboard sees it.
+    """
     try:
         positions = db.get_positions()
-        symbols = list(positions.keys())
-        market_data = get_market_data(symbols) if symbols else {}
 
+        # 1) Live crypto prices via get_market_data (CoinGecko under the hood)
+        crypto_symbols = [s for s, p in positions.items()
+                          if (p.get("market") or "").lower() != "alpaca"]
+        market_data = get_market_data(crypto_symbols) if crypto_symbols else {}
+
+        # 2) Live Alpaca positions — also writes fresh data into Supabase
+        alpaca_data = _sync_alpaca_positions(db, alpaca)
+
+        # 3) Compute portfolio total with mark-to-market
         current_value = 0.0
         deployed_entry = 0.0
         for sym, pos in positions.items():
-            entry = pos.get("entry_price", 0) or 0
-            amt = pos.get("aud_amount", 0) or 0
+            entry = float(pos.get("entry_price", 0) or 0)
+            amt = float(pos.get("aud_amount", 0) or 0)
             deployed_entry += amt
-            price = market_data.get(sym, {}).get("price", 0) or 0
-            if entry > 0 and price > 0:
-                current_value += amt * (price / entry)
+            market = (pos.get("market") or "").lower()
+
+            if market == "alpaca" and sym in alpaca_data:
+                # Use live Alpaca data: amount * (1 + pnl_pct)
+                pnl = alpaca_data[sym]["pnl_pct"]
+                current_value += amt * (1 + pnl)
+                # Also update pnl_pct on the position row for dashboard
+                try:
+                    db.update_position_pnl_direct(sym, pnl)
+                except Exception:
+                    pass
             else:
-                current_value += amt
+                # Crypto path
+                price = market_data.get(sym, {}).get("price", 0) or 0
+                if entry > 0 and price > 0:
+                    pnl = (price - entry) / entry
+                    current_value += amt * (1 + pnl)
+                    try:
+                        db.update_position_pnl(sym, price)
+                    except Exception:
+                        pass
+                else:
+                    current_value += amt
 
         cash = max(0, 5000 - deployed_entry)
         total = current_value + cash
@@ -335,7 +461,7 @@ def run_question_poll(db, tg):
                   "Under 200 words.")
         user_msg = (f"Q: {question}\n\n"
                    f"Portfolio: {json.dumps(portfolio)}\n"
-                   f"Positions: {json.dumps({s: {k:v for k,v in p.items() if k in ['entry_price','pnl_pct','aud_amount','market']} for s,p in positions.items()})}\n"
+                   f"Positions: {json.dumps({s: {k:v for k,v in p.items() if k in ['entry_price','pnl_pct','aud_amount','market','current_price','qty']} for s,p in positions.items()})}\n"
                    f"Recent trades: {len(trades)}\n"
                    f"Plan active: {'yes' if plan else 'no'}")
 
@@ -425,7 +551,7 @@ def run_4hr_summary(db, tg):
         log.warning(f"4hr summary failed: {e}")
 
 
-
+def run_morning_summary(db, tg):
     """6:30am AEST — overnight summary."""
     positions = db.get_positions()
     portfolio = db.get_portfolio_value()
@@ -548,10 +674,10 @@ def main():
                 last_intraday = now_ts
                 run_intraday_loop(db, tg, alpaca, coinspot)
 
-            # Snapshot — every 5 min (pure Python)
+            # Snapshot — every 5 min (pure Python). Now includes Alpaca live sync.
             if (now_ts - last_snapshot) >= SNAPSHOT_INTERVAL:
                 last_snapshot = now_ts
-                run_snapshot(db)
+                run_snapshot(db, alpaca=alpaca)
 
             # Question poll — every 60s (only calls Claude if pending questions)
             if (now_ts - last_question) >= QUESTION_POLL_INTERVAL:
