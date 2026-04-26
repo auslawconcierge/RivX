@@ -1,7 +1,19 @@
+# RIVX_VERSION: v2.2-supabase-logger-fixed-2026-04-26
 """
 RivX supabase_logger.py
 Stores all bot state between loop iterations.
-Tables: trades, positions, signal_weights, snapshots, approved_plan, crypto_checks
+Tables: trades, positions, signal_weights, snapshots, approved_plan,
+        crypto_checks, bot_flags
+
+v2.2 changes from v1:
+  - set_flag / get_flag now write to the dedicated `bot_flags` table
+    (key/value/updated_at columns) instead of JSON-inside-approved_plan.
+    The dashboard + safety circuit breakers all read from bot_flags so
+    everything reconciles.
+  - STARTING capital constant is 10000 (was 5000) to match the v2 strategy.
+
+Everything else is byte-identical to the v1 file so existing position/trade/
+snapshot/signal-weight logic keeps working.
 """
 
 import json
@@ -13,6 +25,11 @@ from bot.config import SUPABASE_URL, SUPABASE_API_KEY, PORTFOLIO
 log = logging.getLogger(__name__)
 
 DEFAULT_WEIGHTS = {"rsi": 0.2, "macd": 0.2, "bollinger": 0.2, "volume": 0.2, "ma_cross": 0.2}
+
+# v2: $10K paper-trading capital. Single source of truth for portfolio math
+# in this module. Other modules (strategy.py) have their own constant; both
+# must agree.
+STARTING_CAPITAL_AUD = 10000.0
 
 
 class SupabaseLogger:
@@ -251,6 +268,9 @@ class SupabaseLogger:
             self._post("signal_weights", data)
 
     # ── Approved plan ─────────────────────────────────────────────────────────
+    # The approved_plan table still exists for v1 nightly-plan storage. It is
+    # NOT used for flags any more. Kept here so save_approved_plan / get_approved_plan
+    # callers (if any remain) keep working.
 
     def save_approved_plan(self, plan: dict):
         """Save tonight's approved plan so intraday loop can reference it."""
@@ -289,30 +309,35 @@ class SupabaseLogger:
                 "total_pnl": total_pnl,
             })
 
+    # ── Flags (bot_flags table) ───────────────────────────────────────────────
+    # v2.2 fix: was previously stored as JSON keys inside approved_plan.plan
+    # (`_flag_<key>`). Now lives in a dedicated key/value table that both the
+    # dashboard and the safety/circuit-breaker code can read directly.
+
     def get_flag(self, key: str) -> str:
-        """Get a persistent flag — survives redeploys."""
-        rows = self._get("approved_plan", {"order": "updated_at.desc", "limit": "1"})
+        """Read a flag value from bot_flags. Returns "" if missing/error."""
+        rows = self._get("bot_flags", {"key": f"eq.{key}", "limit": "1"})
         if rows:
-            try:
-                plan = json.loads(rows[0].get("plan", "{}"))
-                return plan.get(f"_flag_{key}", "")
-            except Exception:
-                return ""
+            v = rows[0].get("value")
+            return "" if v is None else str(v)
         return ""
 
-    def set_flag(self, key: str, value: str):
-        """Set a persistent flag — survives redeploys."""
-        rows = self._get("approved_plan")
-        try:
-            plan = json.loads(rows[0].get("plan", "{}")) if rows else {}
-        except Exception:
-            plan = {}
-        plan[f"_flag_{key}"] = value
-        data = {"plan": json.dumps(plan), "updated_at": datetime.utcnow().isoformat()}
-        if rows:
-            self._patch("approved_plan", data, "id", str(rows[0]["id"]))
-        else:
-            self._post("approved_plan", data)
+    def set_flag(self, key: str, value: str) -> bool:
+        """
+        Write a flag to bot_flags. Upsert: update if key exists, insert if not.
+        Returns True on success. All values stored as text — callers that need
+        numbers must cast on read.
+        """
+        str_value = "" if value is None else str(value)
+        now_iso   = datetime.utcnow().isoformat()
+        existing  = self._get("bot_flags", {"key": f"eq.{key}", "limit": "1"})
+        if existing:
+            return self._patch("bot_flags",
+                               {"value": str_value, "updated_at": now_iso},
+                               "key", key)
+        result = self._post("bot_flags",
+                            {"key": key, "value": str_value, "updated_at": now_iso})
+        return result is not None
 
     def get_portfolio_value(self) -> dict:
         """
@@ -320,9 +345,9 @@ class SupabaseLogger:
         Falls back to snapshots only if positions table is unreadable.
 
         Returns total_aud (current), day_pnl (vs yesterday's snapshot if we
-        have one, else zero), total_pnl (vs $5000 starting capital).
+        have one, else zero), total_pnl (vs $10K starting capital).
         """
-        STARTING = 5000.0
+        STARTING = STARTING_CAPITAL_AUD
         try:
             positions = self._get("positions", {"status": "eq.open"}) or []
         except Exception:
