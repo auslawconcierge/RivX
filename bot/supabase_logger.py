@@ -1,4 +1,4 @@
-# RIVX_VERSION: v2.2-supabase-logger-fixed-2026-04-26
+# RIVX_VERSION: v2.3-supabase-logger-2026-04-26
 """
 RivX supabase_logger.py
 Stores all bot state between loop iterations.
@@ -293,21 +293,18 @@ class SupabaseLogger:
     # ── Snapshots & portfolio value ───────────────────────────────────────────
 
     def save_snapshot(self, total_aud: float, day_pnl: float, total_pnl: float):
-        today = date.today().isoformat()
-        existing = self._get("snapshots", {"date": f"eq.{today}"})
-        if existing:
-            self._patch("snapshots", {
-                "total_aud": total_aud,
-                "day_pnl":   day_pnl,
-                "total_pnl": total_pnl,
-            }, "date", today)
-        else:
-            self._post("snapshots", {
-                "date":      today,
-                "total_aud": total_aud,
-                "day_pnl":   day_pnl,
-                "total_pnl": total_pnl,
-            })
+        """
+        v2.3: Write a new row every call for time-series charting.
+        The dashboard chart reads `created_at` to plot the line.
+        Old behavior was upsert-by-date which only kept one row per day.
+        """
+        self._post("snapshots", {
+            "date":       date.today().isoformat(),
+            "total_aud":  round(float(total_aud), 2),
+            "day_pnl":    round(float(day_pnl), 2),
+            "total_pnl":  round(float(total_pnl), 2),
+            "created_at": datetime.utcnow().isoformat(),
+        })
 
     # ── Flags (bot_flags table) ───────────────────────────────────────────────
     # v2.2 fix: was previously stored as JSON keys inside approved_plan.plan
