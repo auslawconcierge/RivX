@@ -1,4 +1,4 @@
-# RIVX_VERSION: v2.3-qa-handler-2026-04-26
+# RIVX_VERSION: v2.3.1-snapshot-fix-2026-04-26
 """
 RivX bot.py — main loop orchestrator (v2 strategy).
 
@@ -214,77 +214,87 @@ def run_snapshot(db: SupabaseLogger, alpaca: AlpacaTrader):
     """
     Every 5 min: pull live prices, update each position's current_price + pnl_pct,
     write a snapshot row. Also updates the portfolio peak for drawdown tracking.
+
+    v2.3 fix: previously bailed out early when there were 0 positions, which
+    meant the chart never had any data points while in cash. Now always writes
+    a snapshot — even an all-cash one — so the chart shows a continuous line.
     """
     try:
-        positions = db.get_positions()
-        if not positions:
-            return
+        positions = db.get_positions() or {}
 
-        # Crypto: use prices.py validated quotes
-        crypto_syms = [s for s, p in positions.items()
-                       if (p.get("market") or "").lower() != "alpaca"]
-        for sym in crypto_syms:
-            quote = prices.get_crypto_price(sym)
-            if not quote:
-                log.warning(f"snapshot: no price for {sym}, skipping")
-                continue
-            # We mark-to-market even when not validated — for held positions
-            # we want current value; we just don't TRADE on unvalidated prices
-            mark_aud = quote.aud if quote.aud > 0 else (quote.usd * quote.fx_rate)
-            if mark_aud <= 0:
-                continue
-            try:
-                pos = positions.get(sym, {})
-                entry = float(pos.get("entry_price") or 0)
-                if entry <= 0:
-                    # Backfill missing entry from current spot (only acceptable
-                    # if validated, otherwise don't touch)
-                    if quote.validated and quote.cs_aud > 0:
-                        db.update_position_from_alpaca(
-                            symbol=sym, current_price=quote.cs_aud,
-                            qty=pos.get("qty"), pnl_pct=0.0,
-                        )
-                        # Also write entry_price = current
-                        db._patch("positions",
-                                  {"entry_price": quote.cs_aud},
-                                  "symbol", sym)
-                        log.info(f"snapshot: backfilled {sym} entry to ${quote.cs_aud:.4f}")
+        # Only do the crypto/stock price-update work if we actually hold
+        # things. The snapshot write below runs regardless.
+        if positions:
+            # Crypto: use prices.py validated quotes
+            crypto_syms = [s for s, p in positions.items()
+                           if (p.get("market") or "").lower() != "alpaca"]
+            for sym in crypto_syms:
+                quote = prices.get_crypto_price(sym)
+                if not quote:
+                    log.warning(f"snapshot: no price for {sym}, skipping")
                     continue
-                pnl_pct = (mark_aud - entry) / entry
-                db.update_position_pnl_direct(symbol=sym, pnl_pct=pnl_pct)
-            except Exception as e:
-                log.warning(f"snapshot crypto {sym}: {e}")
+                # We mark-to-market even when not validated — for held positions
+                # we want current value; we just don't TRADE on unvalidated prices
+                mark_aud = quote.aud if quote.aud > 0 else (quote.usd * quote.fx_rate)
+                if mark_aud <= 0:
+                    continue
+                try:
+                    pos = positions.get(sym, {})
+                    entry = float(pos.get("entry_price") or 0)
+                    if entry <= 0:
+                        # Backfill missing entry from current spot (only acceptable
+                        # if validated, otherwise don't touch)
+                        if quote.validated and quote.cs_aud > 0:
+                            db.update_position_from_alpaca(
+                                symbol=sym, current_price=quote.cs_aud,
+                                qty=pos.get("qty"), pnl_pct=0.0,
+                            )
+                            # Also write entry_price = current
+                            db._patch("positions",
+                                      {"entry_price": quote.cs_aud},
+                                      "symbol", sym)
+                            log.info(f"snapshot: backfilled {sym} entry to ${quote.cs_aud:.4f}")
+                        continue
+                    pnl_pct = (mark_aud - entry) / entry
+                    db.update_position_pnl_direct(symbol=sym, pnl_pct=pnl_pct)
+                except Exception as e:
+                    log.warning(f"snapshot crypto {sym}: {e}")
 
-        # Stocks: pull live from Alpaca's positions endpoint
-        stock_syms = [s for s, p in positions.items()
-                      if (p.get("market") or "").lower() == "alpaca"]
-        if stock_syms and alpaca:
-            try:
-                _sync_alpaca_stocks(db, alpaca, stock_syms)
-            except Exception as e:
-                log.warning(f"snapshot alpaca sync: {e}")
+            # Stocks: pull live from Alpaca's positions endpoint
+            stock_syms = [s for s, p in positions.items()
+                          if (p.get("market") or "").lower() == "alpaca"]
+            if stock_syms and alpaca:
+                try:
+                    _sync_alpaca_stocks(db, alpaca, stock_syms)
+                except Exception as e:
+                    log.warning(f"snapshot alpaca sync: {e}")
 
-        # Compute portfolio value + update drawdown peak
-        portfolio = db.get_portfolio_value()
+        # Compute portfolio value + update drawdown peak.
+        # Always runs — even with 0 positions, returns total = cash = $10K.
+        portfolio = db.get_portfolio_value() or {}
         total = float(portfolio.get("total_aud", strategy.STARTING_CAPITAL_AUD))
         peak = float(db.get_flag("portfolio_peak") or strategy.STARTING_CAPITAL_AUD)
         new_peak = safety.update_peak(total, peak)
         if new_peak > peak:
             db.set_flag("portfolio_peak", str(new_peak))
 
-        # Write daily snapshot row (cheap; Supabase handles upsert via date PK)
+        # Write the time-series snapshot row.
+        # Bumped to log.warning so write failures are VISIBLE in Render logs
+        # (was log.debug, which got filtered out).
         try:
             db.save_snapshot(
                 total_aud=total,
                 day_pnl=portfolio.get("day_pnl", 0),
                 total_pnl=portfolio.get("total_pnl", 0),
             )
+            log.info(f"snapshot saved: total=${total:.2f}, "
+                     f"{len(positions)} positions, peak=${peak:.2f}")
         except Exception as e:
-            log.debug(f"snapshot save: {e}")
+            log.warning(f"snapshot save FAILED: {e}")
 
     except Exception as e:
         log.error(f"run_snapshot crashed: {e}")
-        log.debug(traceback.format_exc())
+        log.error(traceback.format_exc())
 
 
 def _sync_alpaca_stocks(db, alpaca, symbols):
