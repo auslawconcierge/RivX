@@ -1,470 +1,226 @@
+# RIVX_VERSION: v2.1-render-fixed-2026-04-26
 """
-Tests for bot/strategy.py — the trading rules.
+RivX safety.py — circuit breakers and bot-level safeguards.
 
-Critical behaviours these tests pin down:
-  1. Don't buy already-pumped coins (yesterday's biggest mistake)
-  2. Don't sell on sideways action (no 4hr time-exit anymore)
-  3. Use wider stops than yesterday (-8% / -10% not -2.5%)
-  4. Respect ops floor (don't deploy below $500 cash)
-  5. Slot accounting matches the agreed split ($4K/$2K/$3.5K, 5/4/3 slots)
+This module is the bot's emergency-stop system. It runs alongside the
+trading logic but its only job is to halt the bot when something looks
+wrong, before more damage happens.
+
+Yesterday's lesson: an autonomous bot that can't stop itself will dig
+holes faster than a human can patch them. The fixes we kept making
+("don't sell on time-exit when entry is 0", "validate prices before
+buy") were patches. This module is structural.
+
+Five guards:
+
+  1. Drawdown circuit breaker
+     If portfolio drops X% from its all-time peak, halt all new buys.
+     Default: 5%. Existing positions can still be sold (stops still work).
+
+  2. Single-trade max-loss guard
+     If a sell would realize > X% loss, halt and require human review.
+     Default: 15%. Catches "ARB at -99% from bad data" scenarios.
+
+  3. Daily trade cap
+     Maximum N buys per UTC day. Stops a runaway bot from blowing
+     the budget on a bad day. Default: 6 (covers $4 momentum + $2 swing
+     daily volume estimates).
+
+  4. Consecutive losses circuit breaker
+     If the last N closed trades were all losses, halt. The strategy
+     might be wrong for current market conditions. Default: 4.
+
+  5. Heartbeat / watchdog
+     Bot writes timestamp every loop. External monitor (or the bot
+     itself on next start) detects gaps and alerts. Doesn't prevent
+     bugs but makes silent crashes visible.
+
+Each guard returns a SafetyVerdict. The trading code's contract:
+before any buy, call check_can_buy(). Before any sell, call
+check_can_sell(). If verdict.allowed=False, refuse and log the reason.
+
+State persistence: drawdown peak and consecutive losses survive bot
+restarts via Supabase flags (passed in as a callback). Daily counts
+reset at UTC midnight.
 """
 
-import sys
-import unittest
+import time
+import logging
+from dataclasses import dataclass
+from datetime import datetime, timezone, timedelta
+from typing import Optional, Callable
 
-sys.path.insert(0, '/home/claude/build')
-import strategy
-from strategy import Bucket
-
-
-# ─── Allocation invariants ─────────────────────────────────────────────────
-
-class TestAllocation(unittest.TestCase):
-    """The numbers we agreed on must match the constants."""
-
-    def test_total_budget_is_10k_minus_floor(self):
-        deployable = (strategy.SWING_CRYPTO_BUDGET
-                      + strategy.MOMENTUM_CRYPTO_BUDGET
-                      + strategy.SWING_STOCKS_BUDGET)
-        self.assertEqual(deployable, 9_500.0)
-        self.assertEqual(strategy.OPS_FLOOR_AUD, 500.0)
-        self.assertEqual(strategy.STARTING_CAPITAL_AUD, 10_000.0)
-
-    def test_slot_counts(self):
-        self.assertEqual(strategy.SWING_CRYPTO_SLOTS, 5)
-        self.assertEqual(strategy.MOMENTUM_CRYPTO_SLOTS, 4)
-        self.assertEqual(strategy.SWING_STOCKS_SLOTS, 3)
-
-    def test_position_sizes(self):
-        self.assertEqual(strategy.SWING_CRYPTO_SIZE, 800.0)
-        self.assertEqual(strategy.MOMENTUM_CRYPTO_SIZE, 500.0)
-        self.assertAlmostEqual(strategy.SWING_STOCKS_SIZE, 1166.67, places=1)
-
-    def test_position_size_lookup(self):
-        self.assertEqual(strategy.position_size_for(Bucket.SWING_CRYPTO), 800.0)
-        self.assertEqual(strategy.position_size_for(Bucket.MOMENTUM_CRYPTO), 500.0)
-        self.assertAlmostEqual(strategy.position_size_for(Bucket.SWING_STOCK), 1166.67, places=1)
-        self.assertEqual(strategy.position_size_for("nonsense"), 0.0)
-
-    def test_slots_available(self):
-        self.assertEqual(strategy.slots_available(Bucket.SWING_CRYPTO, 0), 5)
-        self.assertEqual(strategy.slots_available(Bucket.SWING_CRYPTO, 3), 2)
-        self.assertEqual(strategy.slots_available(Bucket.SWING_CRYPTO, 5), 0)
-        self.assertEqual(strategy.slots_available(Bucket.SWING_CRYPTO, 7), 0)  # negative clamped
+log = logging.getLogger(__name__)
 
 
-# ─── Swing crypto entry rules ──────────────────────────────────────────────
+# ── Tunable thresholds (overridable via env or config) ────────────────────
 
-class TestSwingCryptoEntry(unittest.TestCase):
+DRAWDOWN_HALT_PCT       = 0.05   # 5% from peak halts new buys
+DRAWDOWN_RESUME_PCT     = 0.03   # must recover to within 3% of peak to resume
+SINGLE_LOSS_HALT_PCT    = 0.15   # >15% loss on a single sell halts bot
+DAILY_BUY_CAP           = 6      # max buys per UTC day
+CONSECUTIVE_LOSS_HALT   = 4      # 4 losing closes in a row halts bot
+HEARTBEAT_STALE_MINUTES = 10     # if heartbeat older than this, alert
 
-    def test_quality_pullback_in_uptrend_qualifies(self):
-        ok, reason = strategy.qualifies_swing_crypto(
-            market_cap_rank=10,
-            pullback_from_7d_high_pct=-0.08,
-            above_50d_ma=True,
+
+@dataclass
+class SafetyVerdict:
+    """Returned by every check_* function."""
+    allowed: bool
+    reason: str          # human-readable explanation, even when allowed
+    halt_kind: str = ""  # "" if allowed, else "drawdown" / "max_loss" / "daily_cap" / "consec_loss" / "manual"
+
+
+# ── 1. Drawdown circuit breaker ───────────────────────────────────────────
+
+def check_drawdown(
+    current_total_aud: float,
+    peak_total_aud: float,
+) -> SafetyVerdict:
+    """
+    If portfolio is down >= DRAWDOWN_HALT_PCT from its peak, halt new buys.
+
+    Existing positions still get managed (stops/targets fire), so the bot
+    can still exit losers — it just can't open new positions while
+    underwater. Resume happens when drawdown recovers to <= DRAWDOWN_RESUME_PCT.
+    """
+    if peak_total_aud <= 0:
+        return SafetyVerdict(True, "no peak recorded yet")
+    drop = (peak_total_aud - current_total_aud) / peak_total_aud
+    if drop >= DRAWDOWN_HALT_PCT:
+        return SafetyVerdict(
+            allowed=False,
+            reason=f"drawdown {drop*100:.1f}% from peak ${peak_total_aud:.0f} "
+                   f"exceeds {DRAWDOWN_HALT_PCT*100:.0f}% halt threshold",
+            halt_kind="drawdown",
         )
-        self.assertTrue(ok, reason)
-        self.assertIn("top-10", reason)
+    return SafetyVerdict(True, f"drawdown {drop*100:.1f}% within tolerance")
 
-    def test_already_pumped_does_not_qualify(self):
-        """The yesterday-mistake test: don't buy something only -2% off its high."""
-        ok, reason = strategy.qualifies_swing_crypto(
-            market_cap_rank=10,
-            pullback_from_7d_high_pct=-0.02,
-            above_50d_ma=True,
+
+def update_peak(current_total_aud: float, peak_total_aud: float) -> float:
+    """Returns new peak (max of current vs stored)."""
+    return max(current_total_aud, peak_total_aud)
+
+
+# ── 2. Single-trade max-loss guard ────────────────────────────────────────
+
+def check_sell_loss(
+    entry_aud: float,
+    exit_aud: float,
+    symbol: str,
+) -> SafetyVerdict:
+    """
+    Refuses a sell that would record a realized loss greater than
+    SINGLE_LOSS_HALT_PCT. Catches the ARB-style scenario where bad data
+    creates a phantom -99% that auto-stops.
+    """
+    if entry_aud <= 0:
+        return SafetyVerdict(
+            allowed=False,
+            reason=f"{symbol}: entry_price is 0 — sell blocked, data issue",
+            halt_kind="max_loss",
         )
-        self.assertFalse(ok)
-        self.assertIn("only", reason)
-
-    def test_at_high_does_not_qualify(self):
-        ok, reason = strategy.qualifies_swing_crypto(
-            market_cap_rank=10,
-            pullback_from_7d_high_pct=0.0,
-            above_50d_ma=True,
+    loss_pct = (entry_aud - exit_aud) / entry_aud
+    if loss_pct >= SINGLE_LOSS_HALT_PCT:
+        return SafetyVerdict(
+            allowed=False,
+            reason=f"{symbol}: sell would realize {loss_pct*100:.1f}% loss "
+                   f"(entry ${entry_aud:.4f} → exit ${exit_aud:.4f}). "
+                   f"Threshold {SINGLE_LOSS_HALT_PCT*100:.0f}%. Halt for review.",
+            halt_kind="max_loss",
         )
-        self.assertFalse(ok)
+    return SafetyVerdict(True, f"{symbol}: loss {loss_pct*100:.2f}% within tolerance")
 
-    def test_too_deep_pullback_rejected(self):
-        """20% off recent high = possible breakdown, not a pullback."""
-        ok, reason = strategy.qualifies_swing_crypto(
-            market_cap_rank=10,
-            pullback_from_7d_high_pct=-0.20,
-            above_50d_ma=True,
+
+# ── 3. Daily trade cap ────────────────────────────────────────────────────
+
+def check_daily_cap(buys_today: int) -> SafetyVerdict:
+    """Hard cap on buys per UTC day. Prevents runaway-bot scenarios."""
+    if buys_today >= DAILY_BUY_CAP:
+        return SafetyVerdict(
+            allowed=False,
+            reason=f"daily buy cap reached ({buys_today}/{DAILY_BUY_CAP}). "
+                   f"Resets at UTC midnight.",
+            halt_kind="daily_cap",
         )
-        self.assertFalse(ok)
-        self.assertIn("too deep", reason)
+    return SafetyVerdict(True, f"buys today {buys_today}/{DAILY_BUY_CAP}")
 
-    def test_below_50d_ma_rejected(self):
-        """Right pullback size, but uptrend is broken — skip."""
-        ok, reason = strategy.qualifies_swing_crypto(
-            market_cap_rank=10,
-            pullback_from_7d_high_pct=-0.08,
-            above_50d_ma=False,
+
+# ── 4. Consecutive losses circuit breaker ─────────────────────────────────
+
+def check_consecutive_losses(consecutive_losses: int) -> SafetyVerdict:
+    """If the last N closed trades were ALL losses, halt the strategy."""
+    if consecutive_losses >= CONSECUTIVE_LOSS_HALT:
+        return SafetyVerdict(
+            allowed=False,
+            reason=f"{consecutive_losses} consecutive losses — strategy halt. "
+                   f"Review before resuming.",
+            halt_kind="consec_loss",
         )
-        self.assertFalse(ok)
-        self.assertIn("uptrend", reason)
-
-    def test_micro_cap_rejected(self):
-        """No $50M shitcoins in swing bucket — that's momentum's job."""
-        ok, reason = strategy.qualifies_swing_crypto(
-            market_cap_rank=150,
-            pullback_from_7d_high_pct=-0.08,
-            above_50d_ma=True,
-        )
-        self.assertFalse(ok)
-
-    def test_unknown_rank_rejected(self):
-        ok, _ = strategy.qualifies_swing_crypto(
-            market_cap_rank=None,
-            pullback_from_7d_high_pct=-0.08,
-            above_50d_ma=True,
-        )
-        self.assertFalse(ok)
-
-    def test_boundary_5pct_pullback_rejected(self):
-        """Exactly -5% is borderline — we want a real pullback, so reject."""
-        ok, _ = strategy.qualifies_swing_crypto(
-            market_cap_rank=10,
-            pullback_from_7d_high_pct=-0.05,
-            above_50d_ma=True,
-        )
-        self.assertFalse(ok)
-
-    def test_boundary_15pct_pullback_qualifies(self):
-        """At -15% we're still in the window."""
-        ok, _ = strategy.qualifies_swing_crypto(
-            market_cap_rank=10,
-            pullback_from_7d_high_pct=-0.15,
-            above_50d_ma=True,
-        )
-        self.assertTrue(ok)
-
-
-# ─── Momentum crypto entry rules ───────────────────────────────────────────
-
-class TestMomentumCryptoEntry(unittest.TestCase):
-
-    def test_breakout_with_volume_qualifies(self):
-        ok, reason = strategy.qualifies_momentum_crypto(
-            market_cap_rank=80,
-            broke_7d_high_today=True,
-            volume_vs_7d_avg_ratio=2.5,
-        )
-        self.assertTrue(ok, reason)
-
-    def test_no_breakout_rejected(self):
-        """Already up 15% but no NEW breakout — that's chasing, skip."""
-        ok, _ = strategy.qualifies_momentum_crypto(
-            market_cap_rank=80,
-            broke_7d_high_today=False,
-            volume_vs_7d_avg_ratio=3.0,
-        )
-        self.assertFalse(ok)
-
-    def test_low_volume_breakout_rejected(self):
-        """Breakout on low volume = not real interest, skip."""
-        ok, _ = strategy.qualifies_momentum_crypto(
-            market_cap_rank=80,
-            broke_7d_high_today=True,
-            volume_vs_7d_avg_ratio=1.2,
-        )
-        self.assertFalse(ok)
-
-    def test_top_30_rejected(self):
-        """BTC breakout doesn't go in momentum bucket — that's swing."""
-        ok, reason = strategy.qualifies_momentum_crypto(
-            market_cap_rank=5,
-            broke_7d_high_today=True,
-            volume_vs_7d_avg_ratio=3.0,
-        )
-        self.assertFalse(ok)
-        self.assertIn("too big", reason)
-
-    def test_obscure_rejected(self):
-        """Rank 500 = barely traded, too risky."""
-        ok, reason = strategy.qualifies_momentum_crypto(
-            market_cap_rank=500,
-            broke_7d_high_today=True,
-            volume_vs_7d_avg_ratio=3.0,
-        )
-        self.assertFalse(ok)
-        self.assertIn("obscure", reason)
-
-
-# ─── Stock entry rules ─────────────────────────────────────────────────────
-
-class TestSwingStockEntry(unittest.TestCase):
-
-    def test_quality_pullback_qualifies(self):
-        ok, _ = strategy.qualifies_swing_stock(
-            is_quality=True,
-            pullback_from_7d_high_pct=-0.05,
-            above_50d_ma=True,
-        )
-        self.assertTrue(ok)
-
-    def test_non_quality_rejected(self):
-        ok, _ = strategy.qualifies_swing_stock(
-            is_quality=False,
-            pullback_from_7d_high_pct=-0.05,
-            above_50d_ma=True,
-        )
-        self.assertFalse(ok)
-
-    def test_shallow_pullback_rejected(self):
-        """Stocks have tighter window — only -1% off high doesn't count."""
-        ok, _ = strategy.qualifies_swing_stock(
-            is_quality=True,
-            pullback_from_7d_high_pct=-0.01,
-            above_50d_ma=True,
-        )
-        self.assertFalse(ok)
-
-
-# ─── Ops floor / cash management ──────────────────────────────────────────
-
-class TestOpsFloor(unittest.TestCase):
-
-    def test_buy_within_floor_allowed(self):
-        ok, _ = strategy.buy_respects_ops_floor(
-            current_cash_aud=2000,
-            intended_buy_aud=800,
-        )
-        self.assertTrue(ok)
-
-    def test_buy_at_floor_allowed(self):
-        """$1300 cash, buy $800 = $500 left = exactly the floor."""
-        ok, reason = strategy.buy_respects_ops_floor(
-            current_cash_aud=1300,
-            intended_buy_aud=800,
-        )
-        self.assertTrue(ok, reason)
-
-    def test_buy_below_floor_rejected(self):
-        """$1000 cash, buy $800 = $200 left, below the $500 floor."""
-        ok, reason = strategy.buy_respects_ops_floor(
-            current_cash_aud=1000,
-            intended_buy_aud=800,
-        )
-        self.assertFalse(ok)
-        self.assertIn("below ops floor", reason)
-
-    def test_overdraft_rejected(self):
-        """Trying to buy more than we have."""
-        ok, _ = strategy.buy_respects_ops_floor(
-            current_cash_aud=400,
-            intended_buy_aud=800,
-        )
-        self.assertFalse(ok)
-
-
-# ─── Swing crypto exit rules ──────────────────────────────────────────────
-
-class TestSwingCryptoExit(unittest.TestCase):
-
-    def test_at_break_even_holds(self):
-        d = strategy.decide_exit_swing_crypto(
-            pnl_pct=0.001, peak_pnl_pct=0.001, age_days=1.0,
-        )
-        self.assertFalse(d.should_exit)
-
-    def test_sideways_for_4hr_NOT_exited(self):
-        """The yesterday-bug test. Sideways must hold, no time-exit."""
-        d = strategy.decide_exit_swing_crypto(
-            pnl_pct=0.0, peak_pnl_pct=0.0, age_days=0.17,  # 4 hours
-        )
-        self.assertFalse(d.should_exit, "4hr time-exit must be removed")
-
-    def test_sideways_for_5_days_still_holds(self):
-        """No movement for 5 days is fine — review at 30."""
-        d = strategy.decide_exit_swing_crypto(
-            pnl_pct=0.005, peak_pnl_pct=0.01, age_days=5.0,
-        )
-        self.assertFalse(d.should_exit)
-
-    def test_minor_loss_holds(self):
-        """-3% is normal noise, not a stop."""
-        d = strategy.decide_exit_swing_crypto(
-            pnl_pct=-0.03, peak_pnl_pct=0.01, age_days=1.0,
-        )
-        self.assertFalse(d.should_exit)
-
-    def test_stop_at_minus_8_exits(self):
-        d = strategy.decide_exit_swing_crypto(
-            pnl_pct=-0.08, peak_pnl_pct=0.0, age_days=1.0,
-        )
-        self.assertTrue(d.should_exit)
-        self.assertEqual(d.fraction, 1.0)
-        self.assertIn("stop loss", d.reason)
-
-    def test_stop_at_minus_10_exits(self):
-        d = strategy.decide_exit_swing_crypto(
-            pnl_pct=-0.10, peak_pnl_pct=0.0, age_days=1.0,
-        )
-        self.assertTrue(d.should_exit)
-
-    def test_at_target_no_trailing_yet(self):
-        """Just hit +15%, the trailing stop arms but doesn't fire."""
-        d = strategy.decide_exit_swing_crypto(
-            pnl_pct=0.15, peak_pnl_pct=0.15, age_days=3.0,
-        )
-        self.assertFalse(d.should_exit)
-        self.assertEqual(d.new_peak_pnl_pct, 0.15)
-
-    def test_trailing_stop_fires_after_giveback(self):
-        """Peaked at +20%, now at +14% — gave back 6% from peak (>5% trail)."""
-        d = strategy.decide_exit_swing_crypto(
-            pnl_pct=0.14, peak_pnl_pct=0.20, age_days=5.0,
-        )
-        self.assertTrue(d.should_exit)
-        self.assertIn("trailing", d.reason)
-
-    def test_trailing_stop_does_not_fire_for_small_giveback(self):
-        """Peaked at +20%, now at +18% — only 2% giveback, hold."""
-        d = strategy.decide_exit_swing_crypto(
-            pnl_pct=0.18, peak_pnl_pct=0.20, age_days=5.0,
-        )
-        self.assertFalse(d.should_exit)
-
-    def test_trailing_stop_not_armed_below_target(self):
-        """Peak +10% (under +15% trigger). Drop to +4% should NOT fire trailing."""
-        d = strategy.decide_exit_swing_crypto(
-            pnl_pct=0.04, peak_pnl_pct=0.10, age_days=2.0,
-        )
-        self.assertFalse(d.should_exit)
-
-    def test_30_day_review_exits(self):
-        d = strategy.decide_exit_swing_crypto(
-            pnl_pct=0.05, peak_pnl_pct=0.10, age_days=31.0,
-        )
-        self.assertTrue(d.should_exit)
-        self.assertIn("review", d.reason)
-
-    def test_29_days_still_holds(self):
-        d = strategy.decide_exit_swing_crypto(
-            pnl_pct=0.05, peak_pnl_pct=0.10, age_days=29.0,
-        )
-        self.assertFalse(d.should_exit)
-
-    def test_peak_updated_when_pnl_higher(self):
-        """If pnl_pct exceeds stored peak, new peak is pnl."""
-        d = strategy.decide_exit_swing_crypto(
-            pnl_pct=0.08, peak_pnl_pct=0.05, age_days=1.0,
-        )
-        self.assertEqual(d.new_peak_pnl_pct, 0.08)
-
-
-# ─── Momentum exit rules ──────────────────────────────────────────────────
-
-class TestMomentumExit(unittest.TestCase):
-
-    def test_holds_at_zero(self):
-        d = strategy.decide_exit_momentum(pnl_pct=0.0, age_days=1.0)
-        self.assertFalse(d.should_exit)
-
-    def test_stop_at_minus_10(self):
-        d = strategy.decide_exit_momentum(pnl_pct=-0.10, age_days=1.0)
-        self.assertTrue(d.should_exit)
-        self.assertIn("stop", d.reason)
-
-    def test_minus_8_holds(self):
-        """-8% is closer to stop than swing's -8%, but momentum gives more room."""
-        d = strategy.decide_exit_momentum(pnl_pct=-0.08, age_days=1.0)
-        self.assertFalse(d.should_exit)
-
-    def test_target_at_plus_30(self):
-        d = strategy.decide_exit_momentum(pnl_pct=0.30, age_days=2.0)
-        self.assertTrue(d.should_exit)
-        self.assertIn("target", d.reason)
-
-    def test_just_under_target_holds(self):
-        d = strategy.decide_exit_momentum(pnl_pct=0.25, age_days=2.0)
-        self.assertFalse(d.should_exit)
-
-    def test_7_day_window_expires(self):
-        d = strategy.decide_exit_momentum(pnl_pct=0.05, age_days=7.0)
-        self.assertTrue(d.should_exit)
-        self.assertIn("7-day", d.reason)
-
-    def test_6_day_holds(self):
-        d = strategy.decide_exit_momentum(pnl_pct=0.05, age_days=6.0)
-        self.assertFalse(d.should_exit)
-
-
-# ─── Stock exit rules ─────────────────────────────────────────────────────
-
-class TestStockExit(unittest.TestCase):
-
-    def test_stop_at_minus_5(self):
-        d = strategy.decide_exit_swing_stock(
-            pnl_pct=-0.05, peak_pnl_pct=0.0, age_days=1.0,
-        )
-        self.assertTrue(d.should_exit)
-
-    def test_minus_3_holds(self):
-        """Stocks: tighter than crypto. -3% is fine."""
-        d = strategy.decide_exit_swing_stock(
-            pnl_pct=-0.03, peak_pnl_pct=0.0, age_days=1.0,
-        )
-        self.assertFalse(d.should_exit)
-
-    def test_trailing_at_plus_12(self):
-        """Stocks trail tighter — armed at +12%, give back 4%."""
-        # Peaked +15%, now +10% = 5% giveback (>4%)
-        d = strategy.decide_exit_swing_stock(
-            pnl_pct=0.10, peak_pnl_pct=0.15, age_days=5.0,
-        )
-        self.assertTrue(d.should_exit)
-
-
-# ─── Pre-scoring ──────────────────────────────────────────────────────────
-
-class TestPrescore(unittest.TestCase):
-    """Deterministic ranking — used to send top-N to Claude."""
-
-    def test_swing_crypto_zero_when_below_ma(self):
-        s = strategy.prescore_swing_crypto(
-            market_cap_rank=1, pullback_pct=-0.08, above_50d_ma=False,
-        )
-        self.assertEqual(s, 0.0)
-
-    def test_swing_crypto_top5_in_sweet_spot(self):
-        """BTC-tier coin in the perfect pullback window: max score."""
-        s = strategy.prescore_swing_crypto(
-            market_cap_rank=1, pullback_pct=-0.08, above_50d_ma=True,
-        )
-        self.assertEqual(s, 4.0)  # 2.0 (top5) + 2.0 (sweet spot)
-
-    def test_swing_crypto_top_5_beats_top_30(self):
-        a = strategy.prescore_swing_crypto(
-            market_cap_rank=2, pullback_pct=-0.08, above_50d_ma=True,
-        )
-        b = strategy.prescore_swing_crypto(
-            market_cap_rank=25, pullback_pct=-0.08, above_50d_ma=True,
-        )
-        self.assertGreater(a, b)
-
-    def test_momentum_zero_without_breakout(self):
-        s = strategy.prescore_momentum_crypto(
-            market_cap_rank=80, broke_7d_high_today=False, volume_ratio=3.0,
-        )
-        self.assertEqual(s, 0.0)
-
-    def test_momentum_strong_breakout(self):
-        s = strategy.prescore_momentum_crypto(
-            market_cap_rank=50, broke_7d_high_today=True, volume_ratio=4.5,
-        )
-        # 1 (base) + 2 (4x+ vol) + 1.5 (mid-cap sweet spot)
-        self.assertEqual(s, 4.5)
-
-    def test_swing_stock_zero_when_below_ma(self):
-        s = strategy.prescore_swing_stock(pullback_pct=-0.05, above_50d_ma=False)
-        self.assertEqual(s, 0.0)
-
-    def test_swing_stock_perfect_pullback(self):
-        s = strategy.prescore_swing_stock(pullback_pct=-0.05, above_50d_ma=True)
-        self.assertEqual(s, 3.0)  # 1 (quality base) + 2 (sweet spot)
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    return SafetyVerdict(True, f"consecutive losses {consecutive_losses}/{CONSECUTIVE_LOSS_HALT}")
+
+
+def update_consecutive_losses(prior_count: int, last_trade_was_loss: bool) -> int:
+    """If loss → increment. If win → reset to 0."""
+    return prior_count + 1 if last_trade_was_loss else 0
+
+
+# ── 5. Heartbeat / watchdog ───────────────────────────────────────────────
+
+def now_utc_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def is_heartbeat_stale(last_heartbeat_iso: str) -> tuple[bool, int]:
+    """Returns (is_stale, minutes_since)."""
+    if not last_heartbeat_iso:
+        return False, 0
+    try:
+        last = datetime.fromisoformat(last_heartbeat_iso.replace("Z", "+00:00"))
+        delta_min = int((datetime.now(timezone.utc) - last).total_seconds() / 60)
+        return delta_min >= HEARTBEAT_STALE_MINUTES, delta_min
+    except Exception as e:
+        log.warning(f"Bad heartbeat format: {last_heartbeat_iso}: {e}")
+        return False, 0
+
+
+# ── Composite checks called from trading code ─────────────────────────────
+
+def check_can_buy(
+    *,
+    current_total_aud: float,
+    peak_total_aud: float,
+    buys_today: int,
+    consecutive_losses: int,
+    manual_kill: bool = False,
+) -> SafetyVerdict:
+    """Called BEFORE every buy. Combines all relevant guards."""
+    if manual_kill:
+        return SafetyVerdict(False, "kill switch ON (Telegram /pause or dashboard toggle)", "manual")
+
+    v = check_drawdown(current_total_aud, peak_total_aud)
+    if not v.allowed:
+        return v
+
+    v = check_consecutive_losses(consecutive_losses)
+    if not v.allowed:
+        return v
+
+    v = check_daily_cap(buys_today)
+    if not v.allowed:
+        return v
+
+    return SafetyVerdict(True, "all buy guards pass")
+
+
+def check_can_sell(
+    *,
+    symbol: str,
+    entry_aud: float,
+    exit_aud: float,
+    is_forced: bool = False,
+) -> SafetyVerdict:
+    """Called BEFORE every sell. is_forced=True bypasses max-loss check."""
+    if is_forced:
+        return SafetyVerdict(True, f"{symbol}: forced sell (human override)")
+    return check_sell_loss(entry_aud, exit_aud, symbol)
