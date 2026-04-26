@@ -1,569 +1,459 @@
 """
-RivX scanner.py — find candidates that match the strategy's entry rules.
+RivX strategy.py — the trading rules.
 
-The scanner's only job is to produce a list of (symbol, bucket, signal_data)
-candidates. It does NOT decide what to buy — that's the brain's job, with
-Claude in the loop. The scanner's contract:
+This module owns "what we buy and when," "what we sell and why," and "how
+much money goes where." It produces decisions, but it does NOT execute
+them. Execution is in bot.py. Data fetching is in prices.py and scanner.py.
+This file is pure logic — easy to test, easy to change.
 
-    candidates = scan_crypto()
-    # → list of dicts:
-    #   {"symbol":"BTC", "bucket":"swing_crypto",
-    #    "signal":{"rank":1, "pullback_pct":-0.07, "above_50d_ma":True},
-    #    "reasoning":"top-1 cap, -7.0% pullback, above 50d MA"}
+Yesterday's lessons baked into these rules:
 
-Data sources, with explicit roles:
+  - DON'T buy things that have already pumped 15%+ in 24h. That's chasing
+    the top of a move. Yesterday's scoring rewarded that. We've inverted it.
 
-  Binance public API (data-api.binance.vision and api.binance.com mirrors)
-    → 24h tickers (every USDT pair, with volume + change)
-    → klines (OHLC bars for technicals: 7d high, 50d MA, volume avg)
-    → primary because: free, no auth, sub-100ms response, never been down
+  - DON'T auto-sell after 4 hours of "no movement." Sideways is normal.
+    Most of the time, most assets are sideways. Selling on sideways
+    guarantees turnover for no edge.
 
-  CoinSpot pubapi
-    → universe filter: we only consider coins CoinSpot lists
-    → we don't trust their PRICE here (that's prices.py's job), just their
-      "do you offer this coin?" signal
+  - DO use wider stops. -2.5% gets stopped out by normal noise. Real
+    swing trades need -8% room. Real momentum trades need -10%.
 
-  CoinPaprika
-    → market cap rank (Binance doesn't expose this cleanly)
-    → cached aggressively because it changes slowly
+  - DO favor inaction. If nothing is a clean setup, buy nothing.
+    Cash is a position. Empty slots are fine.
 
-Yesterday's bugs we're explicitly NOT repeating:
-  - We never read CoinSpot prices in this module — only their listing. Prices
-    flow through prices.py with cross-validation.
-  - We don't fall back to "use whatever data we got, even if obviously wrong".
-    Each step has clear failure handling. If we can't get fresh data, we
-    return an empty list, not stale junk.
-  - All scoring lives in strategy.py's qualifies_* functions. This file
-    just gathers raw signals; it doesn't decide.
+────────────────────────────────────────────────────────────────────────────
+Capital allocation ($10,000 total)
+────────────────────────────────────────────────────────────────────────────
+
+  Swing crypto    $4,000   up to 5 positions   $800 each      patient pile
+  Momentum crypto $2,000   up to 4 positions   $500 each      aggressive pile
+  Swing stocks    $3,500   up to 3 positions   ~$1,170 each   FX-cost aware
+  Ops floor          $500   not deployed                       fees + FX buffer
+
+  Bot CAN deploy up to $9,500 if good setups exist. Doesn't HAVE to.
+
+────────────────────────────────────────────────────────────────────────────
+Entry rules
+────────────────────────────────────────────────────────────────────────────
+
+  SWING CRYPTO — buying quality on pullbacks
+    - Top 30 by market cap (filter out micro-cap garbage)
+    - Currently DOWN 5-15% from 7-day high (the pullback)
+    - But still above 50-day moving average (the uptrend is intact)
+    - Decision once daily at 8 AM AEST
+
+  MOMENTUM CRYPTO — catching the start of moves
+    - Outside top 30 (mid/small cap, more upside potential)
+    - Just broke above 7-day high TODAY (not "already up 15%, late")
+    - Volume in last 24h > 2x its 7-day average (real interest, not noise)
+    - Decision twice daily, 8 AM and 4 PM AEST
+
+  SWING STOCKS — buying quality on pullbacks (US equities)
+    - From staples list (NVDA, AAPL, MSFT, etc.) or top Alpaca screener
+    - Down 3-8% from 7-day high
+    - Above 50-day MA
+    - Decision once daily at 8 AM AEST during market hours window
+
+────────────────────────────────────────────────────────────────────────────
+Exit rules
+────────────────────────────────────────────────────────────────────────────
+
+  SWING (crypto + stocks)
+    Stop: -8% from entry (crypto), -5% from entry (stocks)
+    Target: +15% takes HALF, trailing stop on the rest (5% trail)
+    Time: review at 30 days, no auto-exit
+
+  MOMENTUM
+    Stop: -10% from entry
+    Target: +30% (no take-half — let it run or stop out)
+    Time: max 7 days, then exit if not at target
+
+  Removed entirely: 4-hour "no movement" rule. Sideways is fine.
+
+────────────────────────────────────────────────────────────────────────────
 """
 
-import os
-import time
-import json
-import logging
-import requests
-import statistics
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Optional
 
-import strategy
 
-log = logging.getLogger(__name__)
+# ── Allocation constants ──────────────────────────────────────────────────
 
+STARTING_CAPITAL_AUD = 10_000.0
+OPS_FLOOR_AUD        = 500.0   # always-cash buffer for fees, FX
 
-# ── Sources ───────────────────────────────────────────────────────────────
+SWING_CRYPTO_BUDGET    = 4_000.0
+SWING_CRYPTO_SLOTS     = 5
+SWING_CRYPTO_SIZE      = SWING_CRYPTO_BUDGET / SWING_CRYPTO_SLOTS  # $800
 
-BINANCE_HOSTS = [
-    "https://api.binance.com",
-    "https://api1.binance.com",
-    "https://api2.binance.com",
-    "https://api3.binance.com",
-    "https://data-api.binance.vision",
-]
-COINSPOT_HOSTS = [
-    "https://www.coinspot.com.au/pubapi/v2/latest",
-    "https://www.coinspot.com.au/pubapi/latest",
-]
-COINPAPRIKA_TICKERS = "https://api.coinpaprika.com/v1/tickers"
+MOMENTUM_CRYPTO_BUDGET = 2_000.0
+MOMENTUM_CRYPTO_SLOTS  = 4
+MOMENTUM_CRYPTO_SIZE   = MOMENTUM_CRYPTO_BUDGET / MOMENTUM_CRYPTO_SLOTS  # $500
+
+SWING_STOCKS_BUDGET    = 3_500.0
+SWING_STOCKS_SLOTS     = 3
+SWING_STOCKS_SIZE      = SWING_STOCKS_BUDGET / SWING_STOCKS_SLOTS  # ~$1,167
 
 
-# ── Cache (mirrors prices.py for consistency) ────────────────────────────
+# ── Exit rules ────────────────────────────────────────────────────────────
 
-CACHE_DIR = Path(os.environ.get("RIVX_CACHE_DIR", "/tmp/rivx_cache"))
-try:
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-except Exception:
-    CACHE_DIR = Path("/tmp")
+# Crypto swing
+SWING_CRYPTO_STOP_PCT       = -0.08    # -8%
+SWING_CRYPTO_TARGET_PCT     = 0.15     # +15%
+SWING_CRYPTO_TRAIL_TRIGGER  = 0.15     # arm trailing at +15%
+SWING_CRYPTO_TRAIL_GIVEBACK = 0.05     # exit if 5% below trailing peak
+SWING_CRYPTO_REVIEW_DAYS    = 30
 
+# Crypto momentum
+MOMENTUM_STOP_PCT     = -0.10    # -10%
+MOMENTUM_TARGET_PCT   = 0.30     # +30% (no half-out — runs or stops)
+MOMENTUM_MAX_DAYS     = 7
 
-def _cache_get(key: str, max_age: int):
-    p = CACHE_DIR / f"{key}.json"
-    if not p.exists():
-        return None
-    if time.time() - p.stat().st_mtime > max_age:
-        return None
-    try:
-        return json.loads(p.read_text())
-    except Exception:
-        return None
-
-
-def _cache_set(key: str, data) -> None:
-    try:
-        (CACHE_DIR / f"{key}.json").write_text(json.dumps(data))
-    except Exception as e:
-        log.debug(f"cache write {key}: {e}")
+# Stocks (lower volatility, tighter rules)
+SWING_STOCKS_STOP_PCT       = -0.05
+SWING_STOCKS_TARGET_PCT     = 0.12
+SWING_STOCKS_TRAIL_TRIGGER  = 0.12
+SWING_STOCKS_TRAIL_GIVEBACK = 0.04
+SWING_STOCKS_REVIEW_DAYS    = 30
 
 
-# ── Stock universe (for stock scanner) ───────────────────────────────────
+# ── Bucket enum ───────────────────────────────────────────────────────────
 
-STOCK_QUALITY_LIST = [
-    # Mega-cap tech
-    "NVDA", "AAPL", "MSFT", "META", "GOOGL", "AMZN",
-    # Semi
-    "AMD", "AVGO", "TSM",
-    # Other quality
-    "TSLA", "NFLX", "ADBE", "CRM",
-    # ETFs (very-defensive baseline)
-    "SPY", "QQQ", "IWM",
-]
+class Bucket:
+    SWING_CRYPTO    = "swing_crypto"
+    MOMENTUM_CRYPTO = "momentum_crypto"
+    SWING_STOCK     = "swing_stock"
 
 
-# ── Binance: 24h tickers ──────────────────────────────────────────────────
+# ── Entry decision ────────────────────────────────────────────────────────
 
-def _binance_24h_all() -> list:
+@dataclass
+class EntrySignal:
+    """One candidate that passes the entry filter for a bucket."""
+    symbol: str
+    bucket: str
+    size_aud: float
+    reason: str        # short, human-readable: why this one
+
+
+def qualifies_swing_crypto(
+    *,
+    market_cap_rank: int,                # 1 = biggest. None if unknown
+    pullback_from_7d_high_pct: float,   # negative number, e.g. -0.08 = 8% off the high
+    above_50d_ma: bool,
+) -> tuple[bool, str]:
     """
-    Returns list of 24h tickers for all USDT pairs.
-    Each entry: {symbol, lastPrice, priceChangePercent, volume, quoteVolume}
-    Cached 5 min — 24h stats change slowly.
+    Returns (qualifies, reason).
+    Quality + pullback + uptrend intact.
     """
-    cached = _cache_get("binance_24h", 300)
-    if cached:
-        return cached
+    if market_cap_rank is None or market_cap_rank > 30:
+        return False, f"rank {market_cap_rank} outside top 30"
 
-    for host in BINANCE_HOSTS:
-        try:
-            r = requests.get(f"{host}/api/v3/ticker/24hr", timeout=8)
-            if r.status_code != 200:
-                continue
-            data = r.json()
-            if not isinstance(data, list):
-                continue
-            usdt_only = [t for t in data
-                         if isinstance(t, dict) and t.get("symbol", "").endswith("USDT")]
-            if len(usdt_only) > 50:
-                _cache_set("binance_24h", usdt_only)
-                return usdt_only
-        except Exception as e:
-            log.debug(f"binance 24h via {host}: {e}")
+    # Pullback should be 5-15% off recent high (not too shallow, not crashing)
+    if pullback_from_7d_high_pct >= -0.05:
+        return False, f"only {pullback_from_7d_high_pct*100:.1f}% off 7d high (need -5% to -15%)"
+    if pullback_from_7d_high_pct < -0.15:
+        return False, f"{pullback_from_7d_high_pct*100:.1f}% off 7d high (too deep, possible breakdown)"
 
-    log.warning("Binance 24h: all hosts failed")
-    return []
+    if not above_50d_ma:
+        return False, "below 50-day MA — uptrend not intact"
+
+    return True, (
+        f"top-{market_cap_rank} cap, "
+        f"{pullback_from_7d_high_pct*100:.1f}% pullback in uptrend"
+    )
 
 
-# ── Binance: klines (OHLC bars) ─────────────────────────────────────────
-
-def _binance_klines(symbol: str, interval: str, limit: int) -> list:
+def qualifies_momentum_crypto(
+    *,
+    market_cap_rank: int,
+    broke_7d_high_today: bool,            # True if today's high > prior 7d high
+    volume_vs_7d_avg_ratio: float,       # 2.5 = 2.5x average volume
+) -> tuple[bool, str]:
     """
-    Returns list of [openTime, open, high, low, close, volume, ...] arrays.
-    No cache — bars are tactical and inputs to fresh decisions.
+    Catching the START of a breakout, not the middle.
+    Outside top 30 (more upside), broke a recent high TODAY, on real volume.
     """
-    pair = f"{symbol.upper()}USDT"
-    for host in BINANCE_HOSTS:
-        try:
-            r = requests.get(
-                f"{host}/api/v3/klines",
-                params={"symbol": pair, "interval": interval, "limit": limit},
-                timeout=8,
-            )
-            if r.status_code == 400:
-                # Symbol not on Binance
-                return []
-            if r.status_code != 200:
-                continue
-            data = r.json()
-            if isinstance(data, list):
-                return data
-        except Exception as e:
-            log.debug(f"klines {pair} via {host}: {e}")
+    if market_cap_rank is None:
+        return False, "no rank"
+    if market_cap_rank <= 30:
+        return False, f"rank {market_cap_rank} too big for momentum bucket"
+    if market_cap_rank > 200:
+        return False, f"rank {market_cap_rank} too obscure"
 
-    return []
+    if not broke_7d_high_today:
+        return False, "no 7d-high breakout today"
+
+    if volume_vs_7d_avg_ratio < 2.0:
+        return False, f"volume only {volume_vs_7d_avg_ratio:.1f}x average (need ≥2x)"
+
+    return True, (
+        f"rank {market_cap_rank} broke 7d high today on "
+        f"{volume_vs_7d_avg_ratio:.1f}x volume"
+    )
 
 
-# ── CoinSpot: tradeable universe (listings only, not prices) ─────────────
+def qualifies_swing_stock(
+    *,
+    is_quality: bool,                     # in staples list, or passes quality filter
+    pullback_from_7d_high_pct: float,
+    above_50d_ma: bool,
+) -> tuple[bool, str]:
+    """Same as swing crypto but with stock-appropriate thresholds."""
+    if not is_quality:
+        return False, "not in quality list"
 
-def _coinspot_listings() -> set:
-    """
-    Returns set of symbols CoinSpot offers. We only care that a symbol
-    is listed — prices.py handles whether the price is valid.
-    Cached 30 min — listings change rarely.
-    """
-    cached = _cache_get("coinspot_listings", 1800)
-    if cached:
-        return set(cached)
+    if pullback_from_7d_high_pct >= -0.03:
+        return False, f"only {pullback_from_7d_high_pct*100:.1f}% off 7d high (need -3% to -8%)"
+    if pullback_from_7d_high_pct < -0.08:
+        return False, f"{pullback_from_7d_high_pct*100:.1f}% off 7d high (too deep)"
 
-    for url in COINSPOT_HOSTS:
-        try:
-            r = requests.get(url, timeout=8)
-            if r.status_code != 200:
-                continue
-            data = r.json()
-            prices_obj = data.get("prices") or data
-            if not isinstance(prices_obj, dict):
-                continue
-            symbols = {s.upper() for s in prices_obj.keys()}
-            if len(symbols) > 20:
-                _cache_set("coinspot_listings", sorted(symbols))
-                return symbols
-        except Exception as e:
-            log.debug(f"coinspot listings via {url}: {e}")
+    if not above_50d_ma:
+        return False, "below 50-day MA"
 
-    # Stale fallback up to 24h
-    stale = _cache_get("coinspot_listings", 86400)
-    if stale:
-        log.warning("CoinSpot listings: live unavailable, using stale cache")
-        return set(stale)
+    return True, f"quality stock, {pullback_from_7d_high_pct*100:.1f}% pullback in uptrend"
 
-    # Hard fallback (paranoid baseline so scanner works even with full outage)
-    log.warning("CoinSpot listings: all sources failed, using hardcoded fallback")
+
+# ── Slot accounting ───────────────────────────────────────────────────────
+
+def slots_available(bucket: str, current_positions_in_bucket: int) -> int:
+    """How many more positions can this bucket hold?"""
+    cap = {
+        Bucket.SWING_CRYPTO:    SWING_CRYPTO_SLOTS,
+        Bucket.MOMENTUM_CRYPTO: MOMENTUM_CRYPTO_SLOTS,
+        Bucket.SWING_STOCK:     SWING_STOCKS_SLOTS,
+    }.get(bucket, 0)
+    return max(0, cap - current_positions_in_bucket)
+
+
+def position_size_for(bucket: str) -> float:
+    """How much AUD goes into one position of this bucket type?"""
     return {
-        "BTC","ETH","SOL","XRP","ADA","DOGE","AVAX","LINK","LTC","BCH","DOT",
-        "UNI","AAVE","MATIC","ATOM","ALGO","NEAR","SAND","MANA","CRV","SHIB",
-        "PEPE","FET","TAO","TRX","TON","APT","SUI","SEI","TIA","INJ","ICP",
-        "ARB","OP","HBAR","FIL","VET","STX","IMX","RUNE","JUP","WLD",
-    }
+        Bucket.SWING_CRYPTO:    SWING_CRYPTO_SIZE,
+        Bucket.MOMENTUM_CRYPTO: MOMENTUM_CRYPTO_SIZE,
+        Bucket.SWING_STOCK:     SWING_STOCKS_SIZE,
+    }.get(bucket, 0.0)
 
 
-# ── CoinPaprika: market cap ranks ───────────────────────────────────────
+# ── Pre-score (deterministic ranking, used to cap candidates) ─────────────
+# This is the score used to pick the top N candidates to send to Claude.
+# It's NOT the qualification gate — qualifies_* already did that. This just
+# orders the ones that already qualified, so we send the strongest first.
 
-def _market_cap_ranks() -> dict:
+def prescore_swing_crypto(*, market_cap_rank: int, pullback_pct: float,
+                          above_50d_ma: bool) -> float:
     """
-    Returns {symbol: rank} for top 500 coins. Rank 1 = largest market cap.
-    Cached 1 hour — ranks shuffle slowly, no need for fresh-fresh.
+    Higher = better setup. Used to pick top 8 of N qualified candidates.
+
+    Reward:
+      - higher market cap (lower rank number) = quality preference
+      - pullback in the sweet spot (-7% to -10%) = better reward/risk
+      - above 50d MA confirmed = uptrend
     """
-    cached = _cache_get("paprika_ranks", 3600)
-    if cached:
-        return cached
-
-    try:
-        r = requests.get(COINPAPRIKA_TICKERS, params={"limit": 500}, timeout=12)
-        if r.status_code == 200:
-            rows = r.json() or []
-            ranks = {}
-            for row in rows:
-                sym = (row.get("symbol") or "").upper()
-                rank = row.get("rank") or 0
-                if sym and rank > 0:
-                    ranks[sym] = int(rank)
-            if len(ranks) > 50:
-                _cache_set("paprika_ranks", ranks)
-                return ranks
-    except Exception as e:
-        log.warning(f"CoinPaprika ranks fetch: {e}")
-
-    # Stale up to 24h
-    stale = _cache_get("paprika_ranks", 86400)
-    if stale:
-        log.warning("CoinPaprika ranks: live unavailable, using stale cache")
-        return stale
-
-    return {}
+    if not above_50d_ma:
+        return 0.0
+    score = 0.0
+    # Rank: top 5 = 2.0, top 10 = 1.5, top 30 = 1.0, else 0
+    if market_cap_rank <= 5:    score += 2.0
+    elif market_cap_rank <= 10: score += 1.5
+    elif market_cap_rank <= 30: score += 1.0
+    # Pullback sweet spot: -8 to -10%
+    abs_pull = abs(pullback_pct)
+    if 0.07 <= abs_pull <= 0.10:    score += 2.0
+    elif 0.05 <= abs_pull <= 0.13:  score += 1.0
+    return score
 
 
-# ── Signal computation from klines ─────────────────────────────────────
-
-def _compute_rsi(closes: list, period: int = 14) -> float:
-    """Standard 14-period RSI on a list of closes. Returns 50 if insufficient data."""
-    if len(closes) < period + 1:
-        return 50.0
-    gains, losses = [], []
-    for i in range(1, len(closes)):
-        change = closes[i] - closes[i-1]
-        gains.append(max(0, change))
-        losses.append(max(0, -change))
-    # Use last `period` values
-    avg_gain = sum(gains[-period:]) / period
-    avg_loss = sum(losses[-period:]) / period
-    if avg_loss == 0:
-        return 100.0
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
-
-
-def _is_falling_knife(closes: list, volumes: list) -> bool:
+def prescore_momentum_crypto(*, market_cap_rank: int, broke_7d_high_today: bool,
+                             volume_ratio: float) -> float:
     """
-    Heuristic for "don't catch this":
-      - RSI < 30 AND last close lower than previous = oversold and still dropping
-      - 3 consecutive red days on rising volume = capitulation underway
-    Either signal = skip.
+    Reward fresh breakouts on big volume in the right cap range.
     """
-    if len(closes) < 4 or len(volumes) < 4:
-        return False
-
-    # Test 1: oversold and still falling
-    rsi = _compute_rsi(closes)
-    if rsi < 30 and closes[-1] < closes[-2]:
-        return True
-
-    # Test 2: three consecutive red days with rising volume
-    last4 = closes[-4:]
-    last4_vol = volumes[-4:]
-    three_red = (last4[1] < last4[0]) and (last4[2] < last4[1]) and (last4[3] < last4[2])
-    rising_vol = (last4_vol[1] > last4_vol[0]) and (last4_vol[2] > last4_vol[1]) and (last4_vol[3] > last4_vol[2])
-    if three_red and rising_vol:
-        return True
-
-    return False
+    if not broke_7d_high_today:
+        return 0.0
+    score = 1.0  # base for any breakout
+    # Bigger volume = stronger conviction
+    if volume_ratio >= 4.0:    score += 2.0
+    elif volume_ratio >= 3.0:  score += 1.5
+    elif volume_ratio >= 2.0:  score += 1.0
+    # Mid-cap sweet spot (rank 30-100): biggest upside-with-floor
+    if 30 < market_cap_rank <= 80:    score += 1.5
+    elif 80 < market_cap_rank <= 150: score += 1.0
+    return score
 
 
-def _is_volatility_spike(klines_daily: list, multiplier: float = 3.0) -> bool:
+def prescore_swing_stock(*, pullback_pct: float, above_50d_ma: bool) -> float:
+    """Same shape as crypto, tighter window."""
+    if not above_50d_ma:
+        return 0.0
+    score = 1.0  # quality stock list = base
+    abs_pull = abs(pullback_pct)
+    if 0.04 <= abs_pull <= 0.06:    score += 2.0
+    elif 0.03 <= abs_pull <= 0.08:  score += 1.0
+    return score
+
+
+def cash_remaining_after_buy(
+    *,
+    current_cash_aud: float,
+    intended_buy_aud: float,
+) -> float:
+    """How much cash would be left after this buy?"""
+    return current_cash_aud - intended_buy_aud
+
+
+def buy_respects_ops_floor(
+    *,
+    current_cash_aud: float,
+    intended_buy_aud: float,
+) -> tuple[bool, str]:
     """
-    True if today's range (high - low) is more than `multiplier` × the 14-day
-    average true range. Indicates news-driven chaos; trade after it settles.
+    Don't deploy below the ops floor. The floor exists for fees + FX,
+    not strategic dry powder.
     """
-    if not klines_daily or len(klines_daily) < 15:
-        return False
-    try:
-        highs = [float(k[2]) for k in klines_daily]
-        lows = [float(k[3]) for k in klines_daily]
-        closes = [float(k[4]) for k in klines_daily]
-        # Compute true range for each day: max(H-L, |H-prev_close|, |L-prev_close|)
-        trs = []
-        for i in range(1, len(klines_daily)):
-            tr = max(
-                highs[i] - lows[i],
-                abs(highs[i] - closes[i-1]),
-                abs(lows[i] - closes[i-1]),
+    after = cash_remaining_after_buy(
+        current_cash_aud=current_cash_aud,
+        intended_buy_aud=intended_buy_aud,
+    )
+    if after < OPS_FLOOR_AUD:
+        return False, (
+            f"would leave ${after:.0f} cash, below ops floor ${OPS_FLOOR_AUD:.0f}"
+        )
+    return True, f"${after:.0f} cash remains, floor ${OPS_FLOOR_AUD:.0f} respected"
+
+
+# ── Exit decision ────────────────────────────────────────────────────────
+
+@dataclass
+class ExitDecision:
+    """Result of applying exit rules to one open position."""
+    should_exit: bool
+    fraction: float       # 1.0 = full exit, 0.5 = take half, 0.0 = keep
+    reason: str
+    new_peak_pnl_pct: float = 0.0   # what to update the trailing-stop watermark to
+
+
+def decide_exit_swing_crypto(
+    *,
+    pnl_pct: float,                  # current unrealized P&L as fraction (0.05 = +5%)
+    peak_pnl_pct: float,             # highest pnl_pct seen so far for trailing
+    age_days: float,
+) -> ExitDecision:
+    """
+    Stop: -8%. Target: +15% takes half, then trail with 5% give-back.
+    No 4hr time-exit — review at 30 days only.
+    """
+    new_peak = max(peak_pnl_pct, pnl_pct)
+
+    # Stop loss
+    if pnl_pct <= SWING_CRYPTO_STOP_PCT:
+        return ExitDecision(
+            should_exit=True,
+            fraction=1.0,
+            reason=f"stop loss hit ({pnl_pct*100:.2f}% ≤ {SWING_CRYPTO_STOP_PCT*100:.0f}%)",
+            new_peak_pnl_pct=new_peak,
+        )
+
+    # Trailing stop (only armed once we hit +15%)
+    if peak_pnl_pct >= SWING_CRYPTO_TRAIL_TRIGGER:
+        if pnl_pct <= peak_pnl_pct - SWING_CRYPTO_TRAIL_GIVEBACK:
+            return ExitDecision(
+                should_exit=True,
+                fraction=1.0,
+                reason=f"trailing stop ({pnl_pct*100:.2f}% gave back "
+                       f"{(peak_pnl_pct - pnl_pct)*100:.2f}% from peak {peak_pnl_pct*100:.2f}%)",
+                new_peak_pnl_pct=new_peak,
             )
-            trs.append(tr)
-        if len(trs) < 14:
-            return False
-        atr14 = sum(trs[-15:-1]) / 14   # average of prior 14 days
-        today_tr = trs[-1]
-        return atr14 > 0 and today_tr > atr14 * multiplier
-    except (ValueError, IndexError):
-        return False
 
-
-def _compute_pullback_signal(klines_daily: list) -> Optional[dict]:
-    """
-    Given daily klines, compute:
-      - close_price (latest close)
-      - pullback_pct: (close - 7d_high) / 7d_high  (negative if below high)
-      - above_50d_ma: bool
-      - broke_7d_high_today: bool (today's HIGH > prior 7-day high)
-      - volume_ratio: today's vol / 7d avg vol
-      - rsi (14-period)
-      - falling_knife (bool, true if oversold + still dropping or 3-red-on-rising-vol)
-
-    Returns None if klines insufficient.
-    """
-    if not klines_daily or len(klines_daily) < 50:
-        return None
-
-    try:
-        closes = [float(k[4]) for k in klines_daily]
-        highs = [float(k[2]) for k in klines_daily]
-        volumes = [float(k[5]) for k in klines_daily]
-
-        latest_close = closes[-1]
-        latest_high = highs[-1]
-        latest_volume = volumes[-1]
-
-        # 7-day high using prior 7 days (not including today, for "broke today")
-        prior_7d_highs = highs[-8:-1]
-        prior_7d_high = max(prior_7d_highs) if prior_7d_highs else 0.0
-
-        # Pullback computed against last 7 days INCLUDING today's high
-        recent_7d_highs = highs[-7:]
-        recent_7d_high = max(recent_7d_highs) if recent_7d_highs else 0.0
-
-        pullback_pct = (
-            (latest_close - recent_7d_high) / recent_7d_high
-            if recent_7d_high > 0 else 0.0
+    # Time review at 30 days
+    if age_days >= SWING_CRYPTO_REVIEW_DAYS:
+        return ExitDecision(
+            should_exit=True,
+            fraction=1.0,
+            reason=f"30-day review reached (age {age_days:.1f}d, pnl {pnl_pct*100:.2f}%)",
+            new_peak_pnl_pct=new_peak,
         )
 
-        # 50d MA using last 50 closes
-        ma50 = statistics.mean(closes[-50:]) if len(closes) >= 50 else None
-        above_50d_ma = (ma50 is not None) and (latest_close > ma50)
+    # Hold
+    return ExitDecision(
+        should_exit=False,
+        fraction=0.0,
+        reason=f"holding ({pnl_pct*100:+.2f}%, peak {new_peak*100:+.2f}%, age {age_days:.1f}d)",
+        new_peak_pnl_pct=new_peak,
+    )
 
-        broke_7d_high_today = (
-            prior_7d_high > 0 and latest_high > prior_7d_high
+
+def decide_exit_momentum(
+    *,
+    pnl_pct: float,
+    age_days: float,
+) -> ExitDecision:
+    """
+    Stop: -10%. Target: +30% (no half-out, runs or stops).
+    Hard time-exit at 7 days — momentum thesis is dead by then.
+    """
+    if pnl_pct <= MOMENTUM_STOP_PCT:
+        return ExitDecision(
+            should_exit=True,
+            fraction=1.0,
+            reason=f"stop loss ({pnl_pct*100:.2f}% ≤ {MOMENTUM_STOP_PCT*100:.0f}%)",
         )
 
-        avg_volume_7d = statistics.mean(volumes[-8:-1]) if len(volumes) >= 8 else 0.0
-        volume_ratio = (
-            latest_volume / avg_volume_7d if avg_volume_7d > 0 else 0.0
+    if pnl_pct >= MOMENTUM_TARGET_PCT:
+        return ExitDecision(
+            should_exit=True,
+            fraction=1.0,
+            reason=f"target reached ({pnl_pct*100:.2f}% ≥ {MOMENTUM_TARGET_PCT*100:.0f}%)",
         )
 
-        rsi = _compute_rsi(closes)
-        falling_knife = _is_falling_knife(closes, volumes)
-        vol_spike = _is_volatility_spike(klines_daily)
-
-        return {
-            "close": latest_close,
-            "pullback_pct": pullback_pct,
-            "above_50d_ma": above_50d_ma,
-            "broke_7d_high_today": broke_7d_high_today,
-            "volume_ratio": round(volume_ratio, 2),
-            "ma50": ma50,
-            "rsi": round(rsi, 1),
-            "falling_knife": falling_knife,
-            "volatility_spike": vol_spike,
-        }
-    except (ValueError, IndexError, statistics.StatisticsError) as e:
-        log.debug(f"pullback signal: {e}")
-        return None
-
-
-# ── Public: crypto candidate scan ────────────────────────────────────────
-
-def scan_crypto() -> list:
-    """
-    Returns list of candidates that pass entry filters for SOME bucket.
-    Each candidate is:
-      {
-        "symbol": "BTC",
-        "bucket": "swing_crypto" | "momentum_crypto",
-        "signal": {...raw computed signals...},
-        "reasoning": "human-readable why this qualified"
-      }
-
-    The brain decides which candidates to actually buy. We just produce the
-    well-formed shortlist.
-    """
-    cs_listings = _coinspot_listings()
-    if not cs_listings:
-        log.error("scan_crypto: no CoinSpot listings, cannot proceed")
-        return []
-
-    ranks = _market_cap_ranks()
-    if not ranks:
-        log.warning("scan_crypto: no rank data — cannot determine bucket eligibility, skipping")
-        return []
-
-    tickers_24h = _binance_24h_all()
-    if not tickers_24h:
-        log.error("scan_crypto: Binance 24h tickers unavailable")
-        return []
-
-    # Build a focused candidate pool: symbols that are both on CoinSpot AND
-    # ranked by Paprika AND have a Binance USDT pair. That intersection is
-    # what we can actually trade with good data.
-    binance_symbols = set()
-    for t in tickers_24h:
-        s = t.get("symbol", "")
-        if s.endswith("USDT"):
-            binance_symbols.add(s[:-4])  # strip USDT suffix
-
-    universe = cs_listings & binance_symbols & set(ranks.keys())
-    log.info(f"scan_crypto: universe {len(universe)} symbols "
-             f"(CS:{len(cs_listings)} ∩ Binance:{len(binance_symbols)} ∩ ranked:{len(ranks)})")
-
-    candidates = []
-    # Sort by rank — process large-caps first so they show up at the top
-    sorted_universe = sorted(universe, key=lambda s: ranks.get(s, 9999))
-
-    # Limit to top 100 to keep API budget reasonable. 100 klines calls is well
-    # within Binance's 6000 weight/min budget.
-    for symbol in sorted_universe[:100]:
-        rank = ranks.get(symbol, 9999)
-
-        # Fetch daily bars: need 60 days for 50-day MA + 7-day pullback window.
-        klines = _binance_klines(symbol, interval="1d", limit=60)
-        signal = _compute_pullback_signal(klines)
-        if not signal:
-            continue
-
-        # Mechanical falling-knife exclusion. Cheaper than asking Claude.
-        if signal.get("falling_knife"):
-            log.debug(f"scan_crypto: skipping {symbol} (falling knife: RSI {signal.get('rsi')})")
-            continue
-
-        # Volatility spike: today's range > 3x 14d ATR. News-driven chaos —
-        # let it settle before we trade. False signals look the same as real
-        # ones in this regime.
-        if signal.get("volatility_spike"):
-            log.debug(f"scan_crypto: skipping {symbol} (volatility spike)")
-            continue
-
-        # Try swing_crypto qualification first
-        ok, reason = strategy.qualifies_swing_crypto(
-            market_cap_rank=rank,
-            pullback_from_7d_high_pct=signal["pullback_pct"],
-            above_50d_ma=signal["above_50d_ma"],
+    if age_days >= MOMENTUM_MAX_DAYS:
+        return ExitDecision(
+            should_exit=True,
+            fraction=1.0,
+            reason=f"7-day momentum window expired (age {age_days:.1f}d, pnl {pnl_pct*100:+.2f}%)",
         )
-        if ok:
-            candidates.append({
-                "symbol": symbol,
-                "bucket": strategy.Bucket.SWING_CRYPTO,
-                "signal": {**signal, "rank": rank},
-                "reasoning": reason,
-            })
-            continue
 
-        # Try momentum
-        ok_m, reason_m = strategy.qualifies_momentum_crypto(
-            market_cap_rank=rank,
-            broke_7d_high_today=signal["broke_7d_high_today"],
-            volume_vs_7d_avg_ratio=signal["volume_ratio"],
+    return ExitDecision(
+        should_exit=False,
+        fraction=0.0,
+        reason=f"holding ({pnl_pct*100:+.2f}%, age {age_days:.1f}d)",
+    )
+
+
+def decide_exit_swing_stock(
+    *,
+    pnl_pct: float,
+    peak_pnl_pct: float,
+    age_days: float,
+) -> ExitDecision:
+    """Same shape as swing crypto with stock-tuned thresholds."""
+    new_peak = max(peak_pnl_pct, pnl_pct)
+
+    if pnl_pct <= SWING_STOCKS_STOP_PCT:
+        return ExitDecision(
+            should_exit=True, fraction=1.0,
+            reason=f"stop loss ({pnl_pct*100:.2f}% ≤ {SWING_STOCKS_STOP_PCT*100:.0f}%)",
+            new_peak_pnl_pct=new_peak,
         )
-        if ok_m:
-            candidates.append({
-                "symbol": symbol,
-                "bucket": strategy.Bucket.MOMENTUM_CRYPTO,
-                "signal": {**signal, "rank": rank},
-                "reasoning": reason_m,
-            })
 
-    log.info(f"scan_crypto: {len(candidates)} candidates pass entry rules")
-    return candidates
-
-
-# ── Stocks (uses Alpaca via brain.get_market_data, lazy-imported) ────────
-
-def scan_stocks() -> list:
-    """
-    Returns swing_stock candidates from the quality list.
-    Stocks are USD; conversion to AUD happens at trade time, not here.
-    """
-    try:
-        # Lazy import so this module doesn't fail without bot/ context
-        from brain import _fetch_bars
-    except ImportError:
-        try:
-            from bot.brain import _fetch_bars  # production path
-        except ImportError:
-            log.error("scan_stocks: cannot import _fetch_bars")
-            return []
-
-    candidates = []
-    for symbol in STOCK_QUALITY_LIST:
-        try:
-            df = _fetch_bars(symbol, days=60)
-            if df is None or df.empty or len(df) < 50:
-                continue
-            closes = df["close"].astype(float).tolist()
-            highs = df["high"].astype(float).tolist()
-
-            recent_high = max(highs[-7:])
-            latest_close = closes[-1]
-            pullback = (latest_close - recent_high) / recent_high if recent_high > 0 else 0.0
-            ma50 = statistics.mean(closes[-50:])
-            above_ma50 = latest_close > ma50
-
-            ok, reason = strategy.qualifies_swing_stock(
-                is_quality=True,
-                pullback_from_7d_high_pct=pullback,
-                above_50d_ma=above_ma50,
+    if peak_pnl_pct >= SWING_STOCKS_TRAIL_TRIGGER:
+        if pnl_pct <= peak_pnl_pct - SWING_STOCKS_TRAIL_GIVEBACK:
+            return ExitDecision(
+                should_exit=True, fraction=1.0,
+                reason=f"trailing stop ({pnl_pct*100:.2f}% gave back "
+                       f"{(peak_pnl_pct - pnl_pct)*100:.2f}% from peak {peak_pnl_pct*100:.2f}%)",
+                new_peak_pnl_pct=new_peak,
             )
-            if ok:
-                candidates.append({
-                    "symbol": symbol,
-                    "bucket": strategy.Bucket.SWING_STOCK,
-                    "signal": {
-                        "close": latest_close,
-                        "pullback_pct": pullback,
-                        "above_50d_ma": above_ma50,
-                        "ma50": ma50,
-                    },
-                    "reasoning": reason,
-                })
-        except Exception as e:
-            log.debug(f"scan_stocks {symbol}: {e}")
-            continue
 
-    log.info(f"scan_stocks: {len(candidates)} candidates")
-    return candidates
+    if age_days >= SWING_STOCKS_REVIEW_DAYS:
+        return ExitDecision(
+            should_exit=True, fraction=1.0,
+            reason=f"30-day review (age {age_days:.1f}d, pnl {pnl_pct*100:.2f}%)",
+            new_peak_pnl_pct=new_peak,
+        )
 
-
-def scan_all() -> dict:
-    """One-shot scan returning grouped candidates."""
-    crypto = scan_crypto()
-    stocks = scan_stocks()
-    return {
-        "swing_crypto":    [c for c in crypto if c["bucket"] == strategy.Bucket.SWING_CRYPTO],
-        "momentum_crypto": [c for c in crypto if c["bucket"] == strategy.Bucket.MOMENTUM_CRYPTO],
-        "swing_stock":     stocks,
-        "scanned_at":      time.time(),
-    }
+    return ExitDecision(
+        should_exit=False, fraction=0.0,
+        reason=f"holding ({pnl_pct*100:+.2f}%, peak {new_peak*100:+.2f}%, age {age_days:.1f}d)",
+        new_peak_pnl_pct=new_peak,
+    )
