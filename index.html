@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+<!-- RIVX_VERSION: v2.2-dashboard-2026-04-26 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -38,7 +39,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .topbar-btn-kill.kill-active{background:#7f1d1d;border-color:#dc2626;color:#fef2f2;}
 .topbar-btn-kill:not(.kill-active){background:rgba(26,115,64,0.15);border-color:#1a7340;color:#86efac;}
 
-/* Force sell button on holding detail */
 .force-sell-btn{font-size:11px;padding:6px 12px;border:1px solid #fecaca;border-radius:6px;background:#fef2f2;color:#c0392b;cursor:pointer;font-weight:600;letter-spacing:0.02em;}
 .force-sell-btn:hover{background:#fee2e2;border-color:#fca5a5;}
 
@@ -58,6 +58,33 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .stat-value{font-size:22px;font-weight:600;color:#1a1a2e;letter-spacing:-0.5px;}
 .stat-value.up{color:#1a7340;} .stat-value.down{color:#c0392b;}
 .stat-sub{font-size:11px;color:#9aa0a6;margin-top:2px;}
+
+/* Strategy summary panel */
+.strat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;}
+.strat-card{background:#fafbfc;border:1px solid #e8eaed;border-radius:8px;padding:14px;}
+.strat-card.swing-crypto{border-left:4px solid #f59e0b;}
+.strat-card.momentum-crypto{border-left:4px solid #ef4444;}
+.strat-card.swing-stock{border-left:4px solid #0d1f38;}
+.strat-name{font-size:13px;font-weight:700;color:#1a1a2e;margin-bottom:2px;}
+.strat-budget{font-size:18px;font-weight:600;color:#0d1f38;letter-spacing:-0.5px;}
+.strat-deployed{font-size:11px;color:#9aa0a6;margin-bottom:10px;}
+.strat-progress{height:5px;background:#eef0f2;border-radius:3px;overflow:hidden;margin-bottom:10px;}
+.strat-progress-fill{height:100%;background:#0d1f38;transition:width 0.3s;}
+.strat-progress-fill.swing-crypto{background:#f59e0b;}
+.strat-progress-fill.momentum-crypto{background:#ef4444;}
+.strat-progress-fill.swing-stock{background:#0d1f38;}
+.strat-rules{display:grid;grid-template-columns:auto auto;gap:4px 10px;font-size:11px;line-height:1.4;}
+.strat-k{color:#9aa0a6;}
+.strat-v{color:#1a1a2e;font-variant-numeric:tabular-nums;}
+.strat-divider{margin:8px 0;height:1px;background:#eef0f2;}
+.strat-section-label{font-size:9px;font-weight:600;color:#9aa0a6;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:4px;}
+.strat-slots{display:flex;gap:4px;margin-top:8px;}
+.strat-slot{flex:1;height:6px;background:#eef0f2;border-radius:2px;}
+.strat-slot.filled{background:#0d1f38;}
+.strat-slot.filled.swing-crypto{background:#f59e0b;}
+.strat-slot.filled.momentum-crypto{background:#ef4444;}
+.strat-slot.filled.swing-stock{background:#0d1f38;}
+.strat-meta{font-size:10px;color:#9aa0a6;margin-top:6px;}
 
 /* Allocation */
 .alloc{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px;}
@@ -87,6 +114,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .pos-card.active{border-color:#0d1f38;box-shadow:0 0 0 1px #0d1f38;}
 .pos-card-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
 .pos-sym{font-size:14px;font-weight:700;color:#1a1a2e;letter-spacing:0.02em;}
+.pos-bucket-tag{font-size:9px;font-weight:600;padding:2px 6px;border-radius:3px;background:#f5f6f8;color:#6b7280;letter-spacing:0.05em;text-transform:uppercase;margin-left:6px;}
+.pos-bucket-tag.swing-crypto{background:#fef3c7;color:#92400e;}
+.pos-bucket-tag.momentum-crypto{background:#fee2e2;color:#991b1b;}
+.pos-bucket-tag.swing-stock{background:#dbeafe;color:#1e3a8a;}
 .pos-pct-badge{font-size:11px;font-weight:600;padding:2px 9px;border-radius:10px;}
 .pos-pct-badge.up{background:#e8f5e9;color:#1a7340;}
 .pos-pct-badge.down{background:#fdecea;color:#c0392b;}
@@ -113,7 +144,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .hd-stat-sub{font-size:10px;color:#9aa0a6;margin-top:1px;}
 .hd-reasoning{background:#f5f6f8;border-left:3px solid #0d1f38;padding:10px 12px;border-radius:6px;margin-top:10px;font-size:12px;color:#555;line-height:1.6;}
 .hd-reasoning-label{font-size:9px;color:#9aa0a6;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:4px;}
-@media(max-width:720px){.hd-grid{grid-template-columns:1fr 1fr;}}
+@media(max-width:720px){.hd-grid{grid-template-columns:1fr 1fr;}.strat-grid{grid-template-columns:1fr;}}
 
 /* Chart */
 .chart-wrap{position:relative;height:220px;}
@@ -195,7 +226,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .fail-reason{color:#9aa0a6;flex:1;}
 .fail-time{color:#c4c7cc;font-size:11px;flex-shrink:0;}
 
-/* Detail panel — richer sections */
+/* Detail panel sections */
 .dp-section{background:#fafbfc;border:1px solid #e8eaed;border-radius:8px;padding:12px 14px;margin-top:12px;}
 .dp-section-title{font-size:10px;color:#9aa0a6;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:10px;font-weight:600;}
 .dp-pnl-row{display:grid;grid-template-columns:1fr auto;gap:6px 14px;font-size:12px;align-items:baseline;}
@@ -261,7 +292,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   .closed-flow{grid-template-columns:1fr;}
   .closed-arrow{transform:rotate(90deg);}
 }
-
 @media(max-width:720px){
   .stats,.alloc{grid-template-columns:1fr 1fr;}
   .main{padding:12px;}
@@ -274,7 +304,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   <div class="login-wrap">
     <div class="login-header">
       <div class="login-logo">RivX</div>
-      <div class="login-sub">Autonomous Trading</div>
+      <div class="login-sub">Autonomous Trading · v2</div>
     </div>
     <div class="login-box">
       <input type="password" id="pw" placeholder="Passphrase" onkeydown="if(event.key==='Enter')login()"/>
@@ -288,11 +318,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   <div class="topbar">
     <div class="topbar-left">
       <span class="topbar-logo">RivX</span>
-      <span class="topbar-badge">PAPER</span>
+      <span class="topbar-badge">PAPER · v2</span>
       <span class="topbar-live"><span class="dot"></span>LIVE</span>
     </div>
     <div class="nav">
       <button class="nav-btn active" onclick="showPage('overview',this)">Overview</button>
+      <button class="nav-btn" onclick="showPage('strategy',this)">Strategy</button>
       <button class="nav-btn" onclick="showPage('positions',this)">Positions</button>
       <button class="nav-btn" onclick="showPage('intelligence',this)">Intelligence</button>
       <button class="nav-btn" onclick="showPage('cost',this)">Cost</button>
@@ -329,10 +360,21 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       </div>
 
       <div class="stats">
-        <div class="stat"><div class="stat-label">Portfolio</div><div class="stat-value" id="s-port">$5,000.00</div><div class="stat-sub" id="s-port-sub">AUD total</div></div>
+        <div class="stat"><div class="stat-label">Portfolio</div><div class="stat-value" id="s-port">$10,000.00</div><div class="stat-sub" id="s-port-sub">AUD total</div></div>
         <div class="stat"><div class="stat-label">P&L</div><div class="stat-value" id="s-pnl">+$0.00</div><div class="stat-sub" id="s-pnl-sub">since start</div></div>
         <div class="stat"><div class="stat-label">Realised P&L</div><div class="stat-value" id="s-realised">$0.00</div><div class="stat-sub" id="s-realised-sub">no closed positions</div></div>
         <div class="stat"><div class="stat-label">Today's cost</div><div class="stat-value" id="s-cost">$0.00</div><div class="stat-sub">Claude API</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-row" style="margin-bottom:14px;">
+          <div>
+            <div class="card-title" style="margin-bottom:2px;">Strategy buckets</div>
+            <div style="font-size:11px;color:#9aa0a6;">$10K total · $9.5K deployable · $500 ops floor</div>
+          </div>
+          <button class="topbar-btn" style="border-color:#e8eaed;color:#0d1f38;" onclick="showPage('strategy',document.querySelectorAll('.nav-btn')[1])">View rules</button>
+        </div>
+        <div class="strat-grid" id="bucket-strip"></div>
       </div>
 
       <div class="card">
@@ -341,23 +383,23 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
           <div style="font-size:10px;color:#c4c7cc;" id="alloc-sub">live prices</div>
         </div>
         <div class="alloc">
-          <div class="alloc-item"><div class="alloc-label">Cash</div><div class="alloc-val" id="a-cash">$5,000</div><div class="alloc-pct" id="a-cash-pct">100%</div></div>
-          <div class="alloc-item"><div class="alloc-label">Crypto</div><div class="alloc-val" id="a-crypto">$0</div><div class="alloc-pct" id="a-crypto-pct">0%</div></div>
-          <div class="alloc-item"><div class="alloc-label">US Stocks</div><div class="alloc-val" id="a-stocks">$0</div><div class="alloc-pct" id="a-stocks-pct">0%</div></div>
-          <div class="alloc-item"><div class="alloc-label">Derivatives</div><div class="alloc-val" id="a-derivs">$0</div><div class="alloc-pct" id="a-derivs-pct">0%</div></div>
+          <div class="alloc-item"><div class="alloc-label">Cash</div><div class="alloc-val" id="a-cash">$10,000</div><div class="alloc-pct" id="a-cash-pct">100%</div></div>
+          <div class="alloc-item"><div class="alloc-label">Swing crypto</div><div class="alloc-val" id="a-sw">$0</div><div class="alloc-pct" id="a-sw-pct">0%</div></div>
+          <div class="alloc-item"><div class="alloc-label">Momentum crypto</div><div class="alloc-val" id="a-mo">$0</div><div class="alloc-pct" id="a-mo-pct">0%</div></div>
+          <div class="alloc-item"><div class="alloc-label">US Stocks</div><div class="alloc-val" id="a-st">$0</div><div class="alloc-pct" id="a-st-pct">0%</div></div>
         </div>
         <div class="alloc-bar">
           <div class="alloc-bar-fill" id="bar-cash" style="background:#9aa0a6;"></div>
-          <div class="alloc-bar-fill" id="bar-crypto" style="background:#f59e0b;"></div>
-          <div class="alloc-bar-fill" id="bar-stocks" style="background:#0d1f38;"></div>
-          <div class="alloc-bar-fill" id="bar-derivs" style="background:#8b5cf6;"></div>
+          <div class="alloc-bar-fill" id="bar-sw" style="background:#f59e0b;"></div>
+          <div class="alloc-bar-fill" id="bar-mo" style="background:#ef4444;"></div>
+          <div class="alloc-bar-fill" id="bar-st" style="background:#0d1f38;"></div>
         </div>
       </div>
 
       <div class="card">
         <div class="card-row" style="margin-bottom:14px;">
           <div>
-            <div class="card-title" style="margin-bottom:4px;" id="chart-title">Portfolio value — today</div>
+            <div class="card-title" style="margin-bottom:4px;" id="chart-title">Portfolio value — last 24 hours</div>
             <div style="font-size:11px;color:#9aa0a6;" id="chart-sub">Updated every 5 min</div>
           </div>
           <div class="timeframes">
@@ -382,17 +424,99 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
           <div style="font-size:10px;color:#c4c7cc;">why net ≠ gross</div>
         </div>
         <div style="font-size:12px;color:#555;line-height:1.7;">
-          All values shown in AUD. Stocks priced in USD by Alpaca and converted at the live AUD/USD rate (sourced from the European Central Bank via Frankfurter); the entry price stored uses the FX rate at the moment of purchase, so AUD P&amp;L includes any FX movement.
+          All values shown in AUD. Stocks priced in USD by Alpaca, converted at the live AUD/USD rate from the European Central Bank via Frankfurter.
           <br><br>
-          <strong>Gross P&amp;L</strong> is the market move only — current value minus capital deployed, before any transaction costs.
-          <br>
-          <strong>Net P&amp;L</strong> subtracts an estimated round-trip fee for closing the position right now.
+          <strong>Gross P&amp;L</strong> = market move only, before transaction costs.
+          <strong>Net P&amp;L</strong> = gross minus estimated round-trip fees.
           <br><br>
-          <strong>CoinSpot (crypto)</strong>: The bot uses Instant Buy/Sell, which is 1% per side = 2% round-trip. There is also a 1–2% bid/ask spread baked into the quote — not separately shown. Market orders would be 0.1% per side, but the bot does not use those.
-          <br>
-          <strong>Alpaca (US stocks)</strong>: $0 commission on buys; ~0.05% SEC/TAF on sells. The real cost for an Aussie is the AUD↔USD conversion to fund/withdraw — about 0.5% per direction via Wise, so ~1% round-trip. This is paid outside Alpaca but is included in the net figure.
+          <strong>CoinSpot (crypto)</strong>: 1% per side via Instant Buy/Sell = 2% round-trip. Plus 1–2% spread baked into quotes.
+          <strong>Alpaca (US stocks)</strong>: $0 commission on buys, ~0.05% SEC/TAF on sells. AUD↔USD conversion via Wise ≈ 0.5% per direction.
           <br><br>
-          <strong>Paper mode</strong> charges no actual fees. The numbers above show what real fees <em>would</em> be in live mode, so the net P&amp;L is a realistic forecast of what you'd pocket on close.
+          <strong>Paper mode</strong>: no actual fees charged. Net figure is a forecast of real-money outcome.
+        </div>
+      </div>
+    </div>
+
+    <!-- STRATEGY -->
+    <div id="page-strategy" class="page">
+      <div class="card">
+        <div class="card-title">Capital structure</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-bottom:14px;">
+          <div class="alloc-item">
+            <div class="alloc-label">Total capital</div>
+            <div class="alloc-val">$10,000</div>
+            <div class="alloc-pct">paper AUD</div>
+          </div>
+          <div class="alloc-item">
+            <div class="alloc-label">Deployable</div>
+            <div class="alloc-val">$9,500</div>
+            <div class="alloc-pct">across 3 buckets</div>
+          </div>
+          <div class="alloc-item">
+            <div class="alloc-label">Ops floor</div>
+            <div class="alloc-val">$500</div>
+            <div class="alloc-pct">always cash</div>
+          </div>
+          <div class="alloc-item">
+            <div class="alloc-label">Daily buy cap</div>
+            <div class="alloc-val">6</div>
+            <div class="alloc-pct">UTC day reset</div>
+          </div>
+        </div>
+        <div style="font-size:12px;color:#555;line-height:1.7;">
+          Paper trading. Three buckets, each with its own entry rules, exit rules, and slot count. Claude is consulted at scan time but is never the trading authority — if Claude fails, no trade. Strict separation: scanner finds candidates, strategy defines rules, brain (Claude) filters, safety enforces, executor places trades.
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Bucket rules</div>
+        <div class="strat-grid" id="strategy-grid"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Safety circuit breakers</div>
+        <div class="risk-row"><span class="risk-icon">📉</span>
+          <div class="risk-text"><div class="risk-text-label">Drawdown halt</div>
+            <div class="risk-text-detail">Halts new buys if portfolio drops 5% from peak. Existing positions still managed.</div></div>
+          <span class="risk-status ok" id="risk-drawdown">monitoring</span>
+        </div>
+        <div class="risk-row"><span class="risk-icon">🛑</span>
+          <div class="risk-text"><div class="risk-text-label">Single-trade max-loss</div>
+            <div class="risk-text-detail">Blocks any sell that would realise &gt;15% loss without explicit override.</div></div>
+          <span class="risk-status ok">15% threshold</span>
+        </div>
+        <div class="risk-row"><span class="risk-icon">⏱</span>
+          <div class="risk-text"><div class="risk-text-label">Daily buy cap</div>
+            <div class="risk-text-detail">Maximum 6 buys per UTC day. Resets at UTC midnight.</div></div>
+          <span class="risk-status ok" id="risk-buys-today">0 / 6 today</span>
+        </div>
+        <div class="risk-row"><span class="risk-icon">📊</span>
+          <div class="risk-text"><div class="risk-text-label">Consecutive losses</div>
+            <div class="risk-text-detail">4 losing closes in a row halts the strategy for review.</div></div>
+          <span class="risk-status ok" id="risk-consec">0 streak</span>
+        </div>
+        <div class="risk-row"><span class="risk-icon">💗</span>
+          <div class="risk-text"><div class="risk-text-label">Heartbeat watchdog</div>
+            <div class="risk-text-detail">Bot writes timestamp every loop. Detects silent crashes.</div></div>
+          <span class="risk-status ok" id="risk-heartbeat">alive</span>
+        </div>
+        <div class="risk-row"><span class="risk-icon">⚖</span>
+          <div class="risk-text"><div class="risk-text-label">Price validation</div>
+            <div class="risk-text-detail">Crypto prices cross-checked between Binance and CoinSpot. &gt;5% disagreement blocks the trade.</div></div>
+          <span class="risk-status ok">5% tolerance</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Schedule (AEST)</div>
+        <div style="font-size:13px;color:#555;line-height:2;">
+          <strong>Every 30 sec</strong> — heartbeat, kill switch, manual orders<br>
+          <strong>Every 5 min</strong> — mark-to-market, exit-rule check<br>
+          <strong>8:00 AM</strong> — daily summary + swing crypto scan + momentum crypto scan<br>
+          <strong>4:00 PM</strong> — momentum crypto scan<br>
+          <strong>8:00 PM</strong> — daily summary<br>
+          <strong>11:00 PM (weekdays)</strong> — stock scan, 30 min before NYSE open<br>
+          <strong>3:00 AM (weekdays)</strong> — stock scan, mid-session
         </div>
       </div>
     </div>
@@ -400,7 +524,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     <!-- POSITIONS -->
     <div id="page-positions" class="page">
       <div class="card">
-        <div class="card-title">My holdings</div>
+        <div class="card-title">My holdings — grouped by bucket</div>
         <div class="pos-grid" id="positions-grid"><div class="empty" style="grid-column:1/-1;">No open positions</div></div>
       </div>
 
@@ -416,9 +540,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
           </div>
         </div>
         <div id="holding-metrics"></div>
-        <div id="holding-chart-wrap" style="display:none;">
-          <div class="chart-wrap" style="height:200px;"><canvas id="holdingChart"></canvas></div>
-        </div>
       </div>
 
       <div class="card" id="closed-positions-card" style="display:none;">
@@ -455,7 +576,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       </div>
 
       <div class="card">
-        <div class="card-title">Decisions — last 10</div>
+        <div class="card-title">Claude decisions — last 20</div>
+        <div style="font-size:11px;color:#9aa0a6;margin-bottom:10px;">From the v2 attribution log. Every decision Claude makes is recorded with confidence + outcome (when closed).</div>
         <div id="decisions"><div class="empty">Loading...</div></div>
       </div>
     </div>
@@ -479,49 +601,131 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       </div>
 
       <div class="card">
-        <div class="card-title">How it works</div>
+        <div class="card-title">How Claude is used</div>
         <div style="font-size:12px;color:#555;line-height:1.7;">
-          <strong>Evening briefing</strong> — 8pm daily. Uses Claude Sonnet 4.5. Costs about 5 cents per run.<br>
-          <strong>Crypto check</strong> — every 15 min, 24/7. Uses Claude Haiku (cheaper). Often skipped entirely when there's nothing to decide.<br>
-          <strong>Intraday check</strong> — every 5 min during US market hours. Uses Haiku. Mechanical stops fire without calling Claude at all.<br>
-          <strong>Q&A</strong> — your dashboard questions. Uses Sonnet. About 1.2 cents per question.<br><br>
-          Hard cap: $2 USD per day. If the bot hits that, it stops calling Claude for the rest of the day (positions still get managed mechanically). Typical month: $15-30 USD.
+          <strong>Buy decisions</strong> — at every scheduled scan (8 AM, 4 PM, 11 PM, 3 AM), Claude reviews up to 8 mechanically-qualified candidates and decides which to buy. Uses Claude Opus 4.7. Costs ~5-15 cents per scan.<br>
+          <strong>Q&A</strong> — your dashboard questions. About 1.2 cents per question.<br>
+          <strong>What Claude does NOT do</strong>: place stops, manage exits, or override safety. Those run mechanically without calling the API.<br><br>
+          <strong>Hard cap</strong>: $2 USD per day. If hit, the bot stops calling Claude for the rest of the day. Positions still get managed mechanically. Typical month: $20-40 USD.
         </div>
       </div>
     </div>
 
   </div>
-  <div class="footer">NYSE · NASDAQ · CRYPTO · AUD · BRISBANE</div>
+  <div class="footer">NYSE · NASDAQ · CRYPTO · AUD · BRISBANE · v2.2</div>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <script>
+// ─── Config ────────────────────────────────────────────────────────────────
 const SUPABASE_URL = 'https://fsbnhrfipzmulbypheyl.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_k12zd-TEPlpGJDC5DkxsUA_w8-fN3p5';
 const PASSWORD = 'RivX@Boat2026!';
 const FX_URL = 'https://api.frankfurter.app/latest?from=USD&to=AUD';
 const PAPRIKA_URL = 'https://api.coinpaprika.com/v1/tickers?limit=300';
 const DAILY_BUDGET_USD = 2.00;
-const STARTING_AUD = 5000;
-// USD→AUD rate for displaying Alpaca (USD-priced) stocks in AUD. Refreshed
-// each load from the Frankfurter API (ECB rates, no auth, no rate limit).
+
+// ─── v2 Strategy constants — must match bot/strategy.py ────────────────────
+const STARTING_AUD = 10000;
+const OPS_FLOOR    = 500;
+
+const BUCKETS = {
+  swing_crypto: {
+    key: 'swing_crypto',
+    label: 'Swing crypto',
+    short: 'Swing',
+    color: '#f59e0b',
+    cssKey: 'swing-crypto',
+    budget: 4000,
+    slots: 5,
+    perBuy: 800,
+    universe: 'Top 30 by market cap',
+    entry: {
+      'Pullback from 7d high': '5–15%',
+      'Trend filter': 'Above 50d MA',
+      'Falling-knife guard': 'RSI > 30 OR not still dropping',
+      'Volatility guard': 'Daily range &lt; 3× ATR',
+    },
+    exit: {
+      'Stop loss': '−8%',
+      'Target': '+15% (take half)',
+      'Trailing stop': '5% giveback after target',
+      'Review': '30 days',
+    },
+    cadence: 'Once daily, 8:00 AM AEST',
+  },
+  momentum_crypto: {
+    key: 'momentum_crypto',
+    label: 'Momentum crypto',
+    short: 'Momentum',
+    color: '#ef4444',
+    cssKey: 'momentum-crypto',
+    budget: 2000,
+    slots: 4,
+    perBuy: 500,
+    universe: 'Rank 30–200 (mid-caps)',
+    entry: {
+      'Breakout': 'Broke 7d high TODAY',
+      'Volume confirmation': '≥ 2× 7d average',
+      'Falling-knife guard': 'RSI > 30 OR not still dropping',
+      'Volatility guard': 'Daily range &lt; 3× ATR',
+    },
+    exit: {
+      'Stop loss': '−10%',
+      'Target': '+30% (full exit)',
+      'Trailing stop': 'none',
+      'Hard exit': '7 days',
+    },
+    cadence: 'Twice daily, 8:00 AM + 4:00 PM AEST',
+  },
+  swing_stock: {
+    key: 'swing_stock',
+    label: 'Swing stocks',
+    short: 'Stocks',
+    color: '#0d1f38',
+    cssKey: 'swing-stock',
+    budget: 3500,
+    slots: 3,
+    perBuy: 1167,
+    universe: 'Quality list: NVDA, AAPL, MSFT, META, GOOGL, AMZN, AMD, AVGO, TSM, TSLA, NFLX, ADBE, CRM, SPY, QQQ, IWM',
+    entry: {
+      'Pullback from 7d high': '3–8%',
+      'Trend filter': 'Above 50d MA',
+      'Universe': 'From quality list only',
+    },
+    exit: {
+      'Stop loss': '−5%',
+      'Target': '+12% (take half)',
+      'Trailing stop': '4% giveback after target',
+      'Review': '30 days',
+    },
+    cadence: '11:00 PM + 3:00 AM AEST (weekdays)',
+  },
+};
+const BUCKET_ORDER = ['swing_crypto', 'momentum_crypto', 'swing_stock'];
+
 let USD_TO_AUD = 1.57;
 
-const SYM_TO_CG = {
-  BTC:'bitcoin', ETH:'ethereum', SOL:'solana', XRP:'ripple', ADA:'cardano',
-  DOGE:'dogecoin', AVAX:'avalanche-2', LINK:'chainlink', LTC:'litecoin',
-  BCH:'bitcoin-cash', DOT:'polkadot', UNI:'uniswap', AAVE:'aave',
-  MATIC:'matic-network', ATOM:'cosmos', ALGO:'algorand', NEAR:'near',
-  FTM:'fantom', SAND:'the-sandbox', MANA:'decentraland',
-  PEPE:'pepe', SHIB:'shiba-inu', FLOKI:'floki', WIF:'dogwifcoin', BONK:'bonk',
-  FET:'fetch-ai', TAO:'bittensor', ARB:'arbitrum', OP:'optimism', SUI:'sui',
-  APT:'aptos', SEI:'sei-network', TIA:'celestia', INJ:'injective-protocol',
+// CoinPaprika returns symbols with ID; this maps our held symbols.
+const SYM_TO_PAPRIKA = {
+  BTC:'btc-bitcoin', ETH:'eth-ethereum', SOL:'sol-solana', XRP:'xrp-xrp',
+  ADA:'ada-cardano', DOGE:'doge-dogecoin', AVAX:'avax-avalanche',
+  LINK:'link-chainlink', LTC:'ltc-litecoin', BCH:'bch-bitcoin-cash',
+  DOT:'dot-polkadot', UNI:'uni-uniswap', AAVE:'aave-new', MATIC:'matic-polygon',
+  ATOM:'atom-cosmos', ALGO:'algo-algorand', NEAR:'near-near-protocol',
+  FTM:'ftm-fantom', SAND:'sand-the-sandbox', MANA:'mana-decentraland',
+  PEPE:'pepe-pepe', SHIB:'shib-shiba-inu', FLOKI:'floki-floki-inu',
+  WIF:'wif-dogwifhat', BONK:'bonk-bonk', FET:'fet-fetchai',
+  TAO:'tao-bittensor', ARB:'arb-arbitrum', OP:'op-optimism',
+  SUI:'sui-sui', APT:'apt-aptos', SEI:'sei-sei', TIA:'tia-celestia',
+  INJ:'inj-injective-protocol',
 };
 
-let perfChart=null, holdingChart=null, costChart=null;
+let perfChart=null, costChart=null;
 let currentTf='24H', selectedHolding=null;
-let allSnapshots=[], allIntraday=[], allTrades=[], allPositions=[], allClosed=[], allChecks=[], allQuestions=[], tokenUsage=[], holdingCache={};
-let livePrices={};
+let allSnapshots=[], allTrades=[], allPositions=[], allClosed=[],
+    allChecks=[], allDecisions=[], allQuestions=[], tokenUsage=[],
+    botFlags={}, livePrices={};
 
 function login(){
   if(document.getElementById('pw').value===PASSWORD){
@@ -529,27 +733,9 @@ function login(){
     showDash();
   } else document.getElementById('login-error').style.display='block';
 }
-function logout(){
-  sessionStorage.removeItem('rivx_auth');
-  location.reload();
-}
+function logout(){ sessionStorage.removeItem('rivx_auth'); location.reload(); }
 
-// ── Kill switch ─────────────────────────────────────────────────────────
-// Toggles the `kill_switch` flag in approved_plan. When "on", the bot pauses
-// all trading loops but keeps snapshots and the manual-orders processor
-// running so you can still force-sell things from the dashboard.
 let killSwitchState = 'off';
-
-async function loadKillSwitchState(){
-  try {
-    const rows = await sb('approved_plan?order=updated_at.desc&limit=1');
-    if(rows && rows.length){
-      const plan = JSON.parse(rows[0].plan || '{}');
-      killSwitchState = plan._flag_kill_switch || 'off';
-    }
-  } catch(e){}
-  updateKillSwitchButton();
-}
 
 function updateKillSwitchButton(){
   const btn = document.getElementById('kill-switch-btn');
@@ -568,53 +754,39 @@ async function toggleKillSwitch(){
   const verb = newState === 'on' ? 'PAUSE all automated trading' : 'RESUME automated trading';
   if(!confirm(`${verb}?\n\n` +
               (newState === 'on'
-                ? 'The bot will stop opening new positions and stop running auto-exits. ' +
-                  'Snapshots and force-sell from the dashboard still work.'
-                : 'The bot will resume normal trading on the next cycle.'))){
+                ? 'Bot stops opening positions and stops auto-exits. Snapshots and force-sell still work.'
+                : 'Bot resumes normal trading on next cycle.'))){
     return;
   }
-
+  // v2: write to bot_flags table directly (key = 'kill_switch')
   try {
-    // Read current plan
-    const rows = await sb('approved_plan?order=updated_at.desc&limit=1');
-    let plan = {};
-    let id = null;
-    if(rows && rows.length){
-      try { plan = JSON.parse(rows[0].plan || '{}'); } catch(e){}
-      id = rows[0].id;
-    }
-    plan._flag_kill_switch = newState;
-    const body = {plan: JSON.stringify(plan), updated_at: new Date().toISOString()};
-
+    const existing = await sb('bot_flags', {key:'eq.kill_switch'});
     let ok;
-    if(id){
-      ok = await sb(`approved_plan?id=eq.${id}`, {}, 'PATCH', body);
+    if(existing && existing.length){
+      ok = await sb('bot_flags', {key:'eq.kill_switch'}, 'PATCH',
+                    {value: newState, updated_at: new Date().toISOString()});
     } else {
-      ok = await sb('approved_plan', {}, 'POST', body);
+      ok = await sb('bot_flags', {}, 'POST',
+                    {key: 'kill_switch', value: newState, updated_at: new Date().toISOString()});
     }
     if(ok){
       killSwitchState = newState;
       updateKillSwitchButton();
     } else {
-      alert('Could not update kill switch — check Supabase permissions');
+      alert('Could not update kill switch — check Supabase permissions on bot_flags');
     }
   } catch(e){
     alert('Kill switch toggle failed: ' + e.message);
   }
 }
 
-// ── Manual force-sell ───────────────────────────────────────────────────
-// Inserts a row into `manual_orders` which the bot polls every 30s and
-// executes via execute_action. Status is patched back so dashboard shows
-// success/failure.
 async function forceSell(symbol, market){
-  if(!confirm(`Force-sell ${symbol}?\n\nThis bypasses the bot's auto-exit logic and ` +
-              `closes the position on the next cycle (~30 sec).`)){
+  if(!confirm(`Force-sell ${symbol}?\n\nBypasses auto-exit logic and closes the position on next cycle (~30 sec).`)){
     return;
   }
   const body = {
     symbol: symbol,
-    action: 'SELL',
+    action: 'sell',
     market: market || null,
     requested_at: new Date().toISOString(),
     status: 'pending',
@@ -624,7 +796,7 @@ async function forceSell(symbol, market){
     alert(`Force-sell queued for ${symbol}. Check Telegram or refresh in ~30 seconds.`);
     setTimeout(loadAll, 5000);
   } else {
-    alert(`Could not queue sell for ${symbol}. Did you create the manual_orders table?`);
+    alert(`Could not queue sell for ${symbol}. Did the migration run?`);
   }
 }
 
@@ -634,6 +806,7 @@ function forceSellSelected(){
   if(!pos) return;
   forceSell(pos.symbol, pos.market);
 }
+
 function showDash(){
   document.getElementById('login-screen').style.display='none';
   document.getElementById('dashboard').style.display='block';
@@ -646,15 +819,21 @@ function showPage(name, btn){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
   document.getElementById('page-'+name).classList.add('active');
-  btn.classList.add('active');
+  if(btn) btn.classList.add('active');
   if(name==='cost') renderCostChart();
+  if(name==='strategy') renderStrategyPage();
 }
 
 async function sb(table, params, method='GET', body=null){
   try {
     const url = new URL(SUPABASE_URL + '/rest/v1/' + table);
     Object.entries(params||{}).forEach(([k,v])=>url.searchParams.set(k,v));
-    const opts = {method, headers:{apikey:SUPABASE_KEY, Authorization:'Bearer '+SUPABASE_KEY, 'Content-Type':'application/json', Prefer:'return=representation'}};
+    const opts = {method, headers:{
+      apikey:SUPABASE_KEY,
+      Authorization:'Bearer '+SUPABASE_KEY,
+      'Content-Type':'application/json',
+      Prefer:'return=representation'
+    }};
     if(body) opts.body = JSON.stringify(body);
     const r = await fetch(url, opts);
     if(!r.ok) return null;
@@ -663,53 +842,39 @@ async function sb(table, params, method='GET', body=null){
 }
 
 async function loadFxRate(){
-  // Frankfurter — ECB-backed daily rates, no auth, no rate limit.
-  // Replaces CoinGecko which was throttling us hard.
   try {
     const r = await fetch(FX_URL);
     if(!r.ok) return;
     const data = await r.json();
     const rate = data && data.rates && data.rates.AUD;
-    if(rate && rate > 0.5 && rate < 3){  // sanity-bound to reject bad data
-      USD_TO_AUD = rate;
-    }
+    if(rate && rate > 0.5 && rate < 3) USD_TO_AUD = rate;
   } catch(e) {}
 }
 
 async function loadLivePrices(symbols){
-  // CoinPaprika — free tier 25k calls/month, no auth. Returns top 300 coins
-  // with USD price + 24h change in one call. We convert USD→AUD client-side.
   if(!symbols.length) return {};
   try {
     const r = await fetch(PAPRIKA_URL);
     if(!r.ok) return {};
     const rows = await r.json();
     if(!Array.isArray(rows)) return {};
-
-    // Build a quick {SYMBOL: tickerRow} index
     const bySym = {};
     for(const row of rows){
       const s = (row.symbol || '').toUpperCase();
       if(s && !bySym[s]) bySym[s] = row;
     }
-
-    // Keyed by CoinGecko ID to match existing consumers' SYM_TO_CG[sym] lookup.
-    // Each entry: {aud, usd, aud_24h_change} — same shape as before, just
-    // sourced from CoinPaprika + Frankfurter instead of CoinGecko.
     const out = {};
     for(const sym of symbols){
-      const cgId = SYM_TO_CG[sym];
-      if(!cgId) continue;
       const row = bySym[sym.toUpperCase()];
       if(!row) continue;
       const q = (row.quotes && row.quotes.USD) || {};
       const usd = parseFloat(q.price || 0);
       const chg = parseFloat(q.percent_change_24h || 0);
       if(usd <= 0) continue;
-      out[cgId] = {
+      out[sym.toUpperCase()] = {
         usd: usd,
         aud: usd * USD_TO_AUD,
-        aud_24h_change: chg,  // 24h change in % — same units the old code used
+        aud_24h_change: chg,
       };
     }
     return out;
@@ -718,87 +883,92 @@ async function loadLivePrices(symbols){
 
 async function loadAll(){
   document.getElementById('last-updated').textContent = 'Loading...';
-  const [snaps, intraday, positions, closed, trades, checks, questions, usage] = await Promise.all([
-    sb('snapshots', {order:'date.desc', limit:'400'}),
-    sb('intraday_snapshots', {order:'recorded_at.desc', limit:'500'}),
+  const [snaps, positions, closed, trades, decisions, checks, questions, usage, flags] = await Promise.all([
+    sb('snapshots', {order:'created_at.desc', limit:'500'}),
     sb('positions', {status:'eq.open'}),
     sb('positions', {status:'eq.closed', order:'closed_at.desc', limit:'100'}),
     sb('trades', {order:'created_at.desc', limit:'100'}),
-    sb('crypto_checks', {order:'checked_at.desc', limit:'50'}),
+    sb('claude_decisions', {order:'decided_at.desc', limit:'50'}),
+    sb('crypto_checks', {order:'checked_at.desc', limit:'30'}),
     sb('user_questions', {order:'asked_at.desc', limit:'30'}),
     sb('token_usage', {order:'date.desc', limit:'30'}),
+    sb('bot_flags', {limit:'50'}),
   ]);
   allSnapshots = snaps || [];
-  allIntraday = intraday || [];
   allPositions = positions || [];
   allClosed = closed || [];
   allTrades = trades || [];
+  allDecisions = decisions || [];
   allChecks = checks || [];
   allQuestions = questions || [];
   tokenUsage = usage || [];
+  botFlags = {};
+  for(const f of (flags || [])){
+    if(f && f.key) botFlags[f.key] = f.value;
+  }
 
-  const syms = allPositions.map(p=>p.symbol).filter(s=>SYM_TO_CG[s]);
+  killSwitchState = (botFlags.kill_switch === 'on') ? 'on' : 'off';
+
+  const syms = allPositions.map(p=>p.symbol);
   await loadFxRate();
   livePrices = await loadLivePrices(syms);
 
   renderAll();
-  loadKillSwitchState();
-  document.getElementById('last-updated').textContent = 'Updated ' + new Date().toLocaleTimeString('en-AU', {hour:'2-digit', minute:'2-digit'});
+  document.getElementById('last-updated').textContent =
+    'Updated ' + new Date().toLocaleTimeString('en-AU', {hour:'2-digit', minute:'2-digit'});
 }
 
 function renderAll(){
-  renderStats(); renderAllocation(); renderPositions();
+  renderStats();
+  renderBucketStrip();
+  renderAllocation();
+  renderPositions();
   renderClosedPositions();
-  renderTrades(); renderChart(currentTf);
-  renderIntelligence(); renderQA();
+  renderTrades();
+  renderChart(currentTf);
+  renderIntelligence();
+  renderQA();
   renderCostWidget();
-  renderStory(); renderLiveStatus(); renderFailures();
+  renderStory();
+  renderLiveStatus();
+  renderFailures();
+  updateKillSwitchButton();
+  renderRiskStatus();
 }
 
 // ─── Position math helpers ─────────────────────────────────────────────────
-// All display values are AUD. Stocks are priced internally in USD by Alpaca,
-// so we convert via USD_TO_AUD (live ECB rate from Frankfurter) for display.
-// Crypto is already AUD-native.
-//
-// Fee model (estimates; paper mode charges nothing — these show what live mode would cost):
-//
-// CoinSpot (Instant Buy / Sell — what the bot uses):
-//   1% fee on each side = 2% round-trip
-//   (Plus 1-2% spread baked into the quote — not separately modelled)
-//
-// Alpaca (US stocks, paper mode):
-//   $0 commissions on buys
-//   ~0.05% regulatory fees (SEC + TAF) on sells only
-//   For an Aussie funder: ~0.5% AUD↔USD spread one-way via Wise/bank, so
-//   ~1% round-trip FX cost. This is shown but is paid OUTSIDE Alpaca, not by it.
-
 const FEES = {
   alpaca: {
     label: 'Alpaca (US stocks)',
     buyPct: 0,
-    sellPct: 0.0005,        // ~0.05% SEC/TAF on sells
-    fxOneWayPct: 0.005,     // ~0.5% AUD→USD via Wise (one-way)
-    notes: 'Alpaca charges no commission on US stocks. Sell-side US regulatory fees are tiny (~0.05%). The real cost for an Aussie is the AUD↔USD conversion to fund the account — about 0.5% per direction via Wise, so ~1% round-trip. Paper mode = $0 actual cost.',
+    sellPct: 0.0005,
+    fxOneWayPct: 0.005,
+    notes: 'Alpaca: $0 commission on buys, ~0.05% SEC/TAF on sells. AUD↔USD via Wise ~0.5% per direction. Paper mode = $0 actual cost.',
   },
   coinspot: {
     label: 'CoinSpot (crypto)',
-    buyPct: 0.01,           // 1% Instant Buy
-    sellPct: 0.01,          // 1% Instant Sell
-    fxOneWayPct: 0,         // already AUD
-    notes: 'CoinSpot Instant Buy/Sell (what the bot uses) is 1% per side = 2% round-trip. There is also a 1-2% bid/ask spread baked into the quoted price that is not separately shown. Market orders would be 0.1% per side, but the bot does not use those. Paper mode = $0 actual cost.',
+    buyPct: 0.01,
+    sellPct: 0.01,
+    fxOneWayPct: 0,
+    notes: 'CoinSpot Instant Buy/Sell is 1% per side = 2% round-trip. Plus 1-2% spread baked into quotes. Paper mode = $0 actual cost.',
   },
 };
 
-function isStock(pos){ return (pos.market || '').toLowerCase() === 'alpaca'; }
+function bucketOf(pos){
+  const b = (pos.bucket || '').trim();
+  if(BUCKETS[b]) return b;
+  // Legacy positions: infer from market
+  if((pos.market || '').toLowerCase() === 'alpaca') return 'swing_stock';
+  return 'swing_crypto';
+}
 
-// Returns 'open' | 'premarket' | 'afterhours' | 'closed' for US equity markets.
-// Naive but correct for labelling: NYSE 9:30am-4pm ET regular, 4am pre, 4-8pm after.
-// We approximate ET as UTC-4 (DST half the year) which is fine for a state label.
+function isStock(pos){ return (pos.market || '').toLowerCase() === 'alpaca'; }
+function feeProfile(pos){ return isStock(pos) ? FEES.alpaca : FEES.coinspot; }
+
 function usMarketState(){
   const now = new Date();
-  // Convert to ET — use Intl to be DST-correct
   const et = new Date(now.toLocaleString('en-US', {timeZone: 'America/New_York'}));
-  const day = et.getDay(); // 0=Sun, 6=Sat
+  const day = et.getDay();
   if(day === 0 || day === 6) return 'closed';
   const mins = et.getHours() * 60 + et.getMinutes();
   if(mins >= 4*60 && mins < 9*60+30) return 'premarket';
@@ -806,29 +976,20 @@ function usMarketState(){
   if(mins >= 16*60 && mins < 20*60) return 'afterhours';
   return 'closed';
 }
-function feeProfile(pos){ return isStock(pos) ? FEES.alpaca : FEES.coinspot; }
 
-// Entry price per unit, in AUD. For stocks we use aud_amount/qty (locks in
-// the FX rate at entry); for crypto entry_price is already AUD.
 function entryPriceAud(pos){
-  if(!isStock(pos)){
-    return Number(pos.entry_price) || 0;
-  }
+  if(!isStock(pos)) return Number(pos.entry_price) || 0;
   const qty = Number(pos.qty) || 0;
   const amt = Number(pos.aud_amount) || 0;
   if(qty > 0 && amt > 0) return amt / qty;
-  // Fallback: convert stored USD entry at current FX (less accurate)
   const usd = Number(pos.entry_price) || 0;
   return usd > 0 ? usd * USD_TO_AUD : 0;
 }
 
-// Current price per unit, in AUD.
 function currentPriceAud(pos){
   if(!isStock(pos)){
-    const cg = SYM_TO_CG[pos.symbol];
-    const lp = cg && livePrices[cg] ? Number(livePrices[cg].aud) : 0;
-    if(lp > 0) return lp;
-    // Fallback to entry × (1+pnl)
+    const lp = livePrices[pos.symbol.toUpperCase()];
+    if(lp && lp.aud > 0) return Number(lp.aud);
     return entryPriceAud(pos) * (1 + (Number(pos.pnl_pct) || 0));
   }
   const usdPrice = Number(pos.current_price) || 0;
@@ -836,8 +997,6 @@ function currentPriceAud(pos){
   return entryPriceAud(pos) * (1 + (Number(pos.pnl_pct) || 0));
 }
 
-// Market value in AUD. Prefer qty × current_price_aud (truthful AUD inc. FX move);
-// fall back to aud_amount × (1 + pnl_pct) when qty is missing.
 function marketValueAud(pos){
   const qty = Number(pos.qty) || 0;
   const cur = currentPriceAud(pos);
@@ -847,35 +1006,22 @@ function marketValueAud(pos){
 }
 
 function entryCostAud(pos){ return Number(pos.aud_amount) || 0; }
-
-// Gross P&L in AUD = market move only, before any transaction costs.
 function grossPnlAud(pos){ return marketValueAud(pos) - entryCostAud(pos); }
 function grossPnlPct(pos){
   const e = entryCostAud(pos);
   return e > 0 ? grossPnlAud(pos) / e : 0;
 }
 
-// Estimated round-trip fees in AUD if you closed this position right now.
-// Returns {total, breakdown:[{label, aud}]} so the detail view can itemise.
 function estimatedFeesAud(pos){
   const f = feeProfile(pos);
   const entry = entryCostAud(pos);
   const value = marketValueAud(pos);
   const breakdown = [];
-
-  if(f.buyPct > 0){
-    const v = entry * f.buyPct;
-    breakdown.push({label: `Buy fee (${(f.buyPct*100).toFixed(2)}%)`, aud: v, when: 'paid at entry'});
-  }
-  if(f.sellPct > 0){
-    const v = value * f.sellPct;
-    breakdown.push({label: `Sell fee (${(f.sellPct*100).toFixed(2)}%)`, aud: v, when: 'on close'});
-  }
+  if(f.buyPct > 0) breakdown.push({label:`Buy fee (${(f.buyPct*100).toFixed(2)}%)`, aud: entry*f.buyPct, when:'paid at entry'});
+  if(f.sellPct > 0) breakdown.push({label:`Sell fee (${(f.sellPct*100).toFixed(2)}%)`, aud: value*f.sellPct, when:'on close'});
   if(f.fxOneWayPct > 0){
-    const inAud = entry * f.fxOneWayPct;
-    const outAud = value * f.fxOneWayPct;
-    breakdown.push({label: `FX in (${(f.fxOneWayPct*100).toFixed(2)}%)`, aud: inAud, when: 'paid at entry'});
-    breakdown.push({label: `FX out (${(f.fxOneWayPct*100).toFixed(2)}%)`, aud: outAud, when: 'on close'});
+    breakdown.push({label:`FX in (${(f.fxOneWayPct*100).toFixed(2)}%)`, aud: entry*f.fxOneWayPct, when:'paid at entry'});
+    breakdown.push({label:`FX out (${(f.fxOneWayPct*100).toFixed(2)}%)`, aud: value*f.fxOneWayPct, when:'on close'});
   }
   const total = breakdown.reduce((s,b) => s + b.aud, 0);
   return {total, breakdown};
@@ -886,13 +1032,6 @@ function netPnlPct(pos){
   const e = entryCostAud(pos);
   return e > 0 ? netPnlAud(pos) / e : 0;
 }
-
-// ─── Cumulative closed-position math ──────────────────────────────────────
-// In paper mode, closed positions don't actually deduct fees — the cash that
-// returns from a paper sale is the gross amount. So "realised paper P&L" is
-// just sum(aud_amount × pnl_pct) — already absorbed into the running cash.
-// "Realised LIVE-equivalent P&L" subtracts the round-trip fees that would
-// have been charged in real life.
 
 function closedGrossPaperAud(){
   return allClosed.reduce((s,p) =>
@@ -910,10 +1049,6 @@ function closedFeesEstAud(){
 }
 function closedNetLiveAud(){ return closedGrossPaperAud() - closedFeesEstAud(); }
 
-// Backwards-compat: some older code referenced these names.
-function livePnlFor(pos){ return grossPnlPct(pos); }
-function liveValueAud(pos){ return marketValueAud(pos); }
-
 function fmtPrice(v){
   if(!v || !isFinite(v)) return '—';
   if(v >= 1000) return '$' + v.toLocaleString('en-AU', {maximumFractionDigits:0});
@@ -922,226 +1057,13 @@ function fmtPrice(v){
   if(v >= 0.01) return '$' + v.toFixed(4);
   return '$' + v.toFixed(6);
 }
-
 function fmtAud(v){ return '$' + (v||0).toLocaleString('en-AU', {minimumFractionDigits:2, maximumFractionDigits:2}); }
 function fmtSignedAud(v){ return (v>=0?'+':'-') + '$' + Math.abs(v||0).toFixed(2); }
 function fmtSignedPct(v){ return (v>=0?'+':'') + (v*100).toFixed(2) + '%'; }
 
-function renderStats(){
-  let cryptoVal = 0, stocksVal = 0, derivsVal = 0, entryCost = 0;
-  let grossPnl = 0, openEstFees = 0, todayPnlAud = 0;
-
-  allPositions.forEach(p=>{
-    const val = marketValueAud(p);
-    entryCost += entryCostAud(p);
-    grossPnl += grossPnlAud(p);
-    openEstFees += estimatedFeesAud(p).total;
-
-    const mkt = (p.market||'').toLowerCase();
-    if(mkt === 'alpaca') stocksVal += val;
-    else if(mkt === 'derivatives') derivsVal += val;
-    else cryptoVal += val;
-
-    const amt = entryCostAud(p);
-    if(isStock(p)){
-      const ch = Number(p.change_today) || 0;
-      todayPnlAud += amt * ch;
-    } else {
-      const cg = SYM_TO_CG[p.symbol];
-      const ch24 = cg && livePrices[cg] && livePrices[cg].aud_24h_change != null ? Number(livePrices[cg].aud_24h_change)/100 : 0;
-      todayPnlAud += amt * ch24;
-    }
-  });
-
-  // Paper portfolio: actual paper-money balance. In paper mode, closed-position
-  // cash returns at gross (no fees deducted), so this = STARTING_AUD + sum of all
-  // gross P&L (open unrealised + closed realised which is now in cash).
-  const cash = Math.max(0, STARTING_AUD - entryCost + closedGrossPaperAud());
-  const paperTotal = cash + cryptoVal + stocksVal + derivsVal;
-
-  // Live equivalent: what your portfolio WOULD be if every trade had used real
-  // money. Subtract estimated fees on open positions (if closed now) AND the
-  // estimated fees that would have been charged on already-closed positions.
-  const closedFees = closedFeesEstAud();
-  const liveEquivTotal = paperTotal - openEstFees - closedFees;
-
-  // Portfolio tile — show live-equivalent (after-fees) as the headline number,
-  // since the user wants the realistic, after-everything figure as primary.
-  document.getElementById('s-port').textContent = fmtAud(liveEquivTotal);
-  document.getElementById('s-port-sub').textContent =
-    `${allPositions.length} open · after est. fees · paper ${fmtAud(paperTotal)}`;
-
-  // P&L tile — show NET (after-fees) as the headline.
-  const netOpen = grossPnl - openEstFees;
-  const pnlEl = document.getElementById('s-pnl');
-  pnlEl.textContent = fmtSignedAud(netOpen);
-  pnlEl.className = 'stat-value ' + (netOpen>0?'up':netOpen<0?'down':'');
-  const todayStr = Math.abs(todayPnlAud) > 0.005 ? `${fmtSignedAud(todayPnlAud)} today · ` : '';
-  document.getElementById('s-pnl-sub').textContent = `${todayStr}open · net · gross ${fmtSignedAud(grossPnl)}`;
-
-  // Realised P&L tile — show LIVE equivalent as the headline (the truthful
-  // answer to "what did closed positions actually make/lose me"), with the
-  // paper figure in the subtitle.
-  const realisedEl = document.getElementById('s-realised');
-  const realisedSub = document.getElementById('s-realised-sub');
-  if(allClosed.length === 0){
-    realisedEl.textContent = '$0.00';
-    realisedEl.className = 'stat-value';
-    realisedSub.textContent = 'no closed positions';
-  } else {
-    const paperRealised = closedGrossPaperAud();
-    const liveRealised = closedNetLiveAud();
-    realisedEl.textContent = fmtSignedAud(liveRealised);
-    realisedEl.className = 'stat-value ' + (liveRealised>0.01?'up':liveRealised<-0.01?'down':'');
-    realisedSub.textContent = `${allClosed.length} closed · after est. fees · paper ${fmtSignedAud(paperRealised)}`;
-  }
-
-  const today = new Date().toISOString().slice(0,10);
-  const todayCost = (tokenUsage.find(u=>u.date===today) || {}).cost_usd || 0;
-  document.getElementById('s-cost').textContent = '$' + Number(todayCost).toFixed(2);
-}
-
-function renderAllocation(){
-  let cryptoVal = 0, stocksVal = 0, derivsVal = 0, entryCost = 0;
-  allPositions.forEach(p=>{
-    const val = marketValueAud(p);
-    entryCost += entryCostAud(p);
-    const mkt = (p.market||'').toLowerCase();
-    if(mkt === 'alpaca') stocksVal += val;
-    else if(mkt === 'derivatives') derivsVal += val;
-    else cryptoVal += val;
-  });
-  // Cash = starting capital minus what's still deployed plus paper proceeds from closed positions
-  const cash = Math.max(0, STARTING_AUD - entryCost + closedGrossPaperAud());
-  const total = cash + cryptoVal + stocksVal + derivsVal || STARTING_AUD;
-  const fmt = v => '$' + v.toLocaleString('en-AU', {minimumFractionDigits:0, maximumFractionDigits:0});
-  const pct = v => total>0 ? Math.round(v/total*100)+'%' : '0%';
-
-  document.getElementById('a-cash').textContent = fmt(cash);
-  document.getElementById('a-cash-pct').textContent = pct(cash);
-  document.getElementById('a-crypto').textContent = fmt(cryptoVal);
-  document.getElementById('a-crypto-pct').textContent = pct(cryptoVal);
-  document.getElementById('a-stocks').textContent = fmt(stocksVal);
-  document.getElementById('a-stocks-pct').textContent = pct(stocksVal);
-  document.getElementById('a-derivs').textContent = fmt(derivsVal);
-  document.getElementById('a-derivs-pct').textContent = pct(derivsVal);
-
-  document.getElementById('bar-cash').style.width = (cash/total*100)+'%';
-  document.getElementById('bar-crypto').style.width = (cryptoVal/total*100)+'%';
-  document.getElementById('bar-stocks').style.width = (stocksVal/total*100)+'%';
-  document.getElementById('bar-derivs').style.width = (derivsVal/total*100)+'%';
-}
-
-function renderPositions(){
-  const el = document.getElementById('positions-grid');
-  if(!allPositions.length){
-    el.innerHTML = '<div class="empty" style="grid-column:1/-1;">No open positions</div>';
-    document.getElementById('holding-detail-card').style.display = 'none';
-    return;
-  }
-
-  // ── Group by category so the user can see what's what ─────────────────
-  // Tickers alone (APLD, TAO, NOW…) don't say "stock vs crypto" — group
-  // them under labelled sections with per-group totals.
-  const usState = usMarketState();
-  const usStateLabel = ({
-    open:       '· market open',
-    premarket:  '· pre-market',
-    afterhours: '· after-hours',
-    closed:     '· market closed',
-  })[usState] || '';
-  const groups = [
-    { key: 'alpaca',   label: 'US stocks',  subtitle: `Alpaca · USD-priced, AUD displayed ${usStateLabel}` },
-    { key: 'coinspot', label: 'Crypto',     subtitle: 'CoinSpot · 24/7 trading' },
-    { key: 'other',    label: 'Other',      subtitle: '' },
-  ];
-  const positionsByGroup = { alpaca: [], coinspot: [], other: [] };
-  allPositions.forEach(p => {
-    const m = (p.market || '').toLowerCase();
-    if(m === 'alpaca') positionsByGroup.alpaca.push(p);
-    else if(m === 'coinspot') positionsByGroup.coinspot.push(p);
-    else positionsByGroup.other.push(p);
-  });
-
-  const renderCard = p => {
-    const grossAud  = grossPnlAud(p);
-    const fees      = estimatedFeesAud(p);
-    const netAud    = grossAud - fees.total;
-    const netPctVal = netPnlPct(p);
-    const grossPct  = grossPnlPct(p);
-
-    const cur       = currentPriceAud(p);
-    const entry     = entryPriceAud(p);
-    const valAud    = marketValueAud(p);
-    const entryCost = entryCostAud(p);
-    const qty       = Number(p.qty) || 0;
-
-    const cls = (valAud - entryCost) > 0.01 ? 'up' : (valAud - entryCost) < -0.01 ? 'down' : 'flat';
-    const valueDelta = valAud - entryCost;
-    const active = selectedHolding === p.symbol ? 'active' : '';
-    const grossSign = grossAud >= 0 ? '+' : '−';
-    const feeSign = fees.total > 0.005 ? '−' : '';
-    const netSign = netAud >= 0 ? '+' : '−';
-
-    const sharesLine = qty > 0
-      ? `${qty.toFixed(qty<1?6:(qty<100?4:2))} ${isStock(p)?'shares':'units'} @ ${fmtPrice(cur)} AUD`
-      : '';
-    const entryLine = entry > 0
-      ? `entry ${fmtPrice(entry)} AUD/${isStock(p)?'sh':'unit'}`
-      : 'entry syncing';
-
-    return `<div class="pos-card ${active}" onclick="selectHolding('${p.symbol}')">
-      <div class="pos-card-top">
-        <span class="pos-sym">${p.symbol}</span>
-        <span class="pos-pct-badge ${cls}">${fmtSignedPct(netPctVal)} net</span>
-      </div>
-      <div class="pos-headline ${cls}">${fmtAud(valAud)}</div>
-      <div class="pos-headline-sub">worth now · ${valueDelta>=0?'+':'−'}${fmtAud(Math.abs(valueDelta))} from $${entryCost.toFixed(0)} deployed</div>
-      <div class="pos-divider"></div>
-      <div class="pos-row"><span class="pos-row-k">Gross P&L</span><span class="pos-row-v ${grossAud>0.01?'up':grossAud<-0.01?'down':''}">${grossSign}${fmtAud(Math.abs(grossAud))} (${fmtSignedPct(grossPct)})</span></div>
-      <div class="pos-row"><span class="pos-row-k">Est. round-trip fees</span><span class="pos-row-v">${feeSign}${fmtAud(fees.total)}</span></div>
-      <div class="pos-row"><span class="pos-row-k">Net P&L if sold now</span><span class="pos-row-v ${netAud>0.01?'up':netAud<-0.01?'down':''}">${netSign}${fmtAud(Math.abs(netAud))} (${fmtSignedPct(netPctVal)})</span></div>
-      <div class="pos-foot">${sharesLine}${sharesLine?' · ':''}${entryLine} · ${p.market||'—'} · ${fmtRelativeFromIso(p.created_at)}</div>
-    </div>`;
-  };
-
-  // Build grouped HTML — each group gets a header strip with totals, then a card grid
-  const html = groups.filter(g => positionsByGroup[g.key].length > 0).map(g => {
-    const items = positionsByGroup[g.key];
-    const groupValue    = items.reduce((s, p) => s + marketValueAud(p), 0);
-    const groupCapital  = items.reduce((s, p) => s + entryCostAud(p), 0);
-    const groupGross    = items.reduce((s, p) => s + grossPnlAud(p), 0);
-    const groupFees     = items.reduce((s, p) => s + estimatedFeesAud(p).total, 0);
-    const groupNet      = groupGross - groupFees;
-    const groupNetPct   = groupCapital > 0 ? groupNet / groupCapital : 0;
-    const cls = groupNet > 0.01 ? 'up' : groupNet < -0.01 ? 'down' : 'flat';
-
-    return `
-      <div class="pos-group-header">
-        <div class="pos-group-titlebar">
-          <div>
-            <div class="pos-group-label">${g.label} <span class="pos-group-count">(${items.length})</span></div>
-            ${g.subtitle ? `<div class="pos-group-sub">${g.subtitle}</div>` : ''}
-          </div>
-          <div class="pos-group-totals">
-            <div class="pos-group-val">${fmtAud(groupValue)}</div>
-            <div class="pos-group-pnl ${cls}">${fmtSignedAud(groupNet)} net (${fmtSignedPct(groupNetPct)})</div>
-          </div>
-        </div>
-      </div>
-      <div class="pos-group-grid">
-        ${items.map(renderCard).join('')}
-      </div>`;
-  }).join('');
-
-  el.innerHTML = html;
-
-  // Auto-select first holding if none selected (or selected one closed)
-  if(!selectedHolding || !allPositions.find(p=>p.symbol===selectedHolding)){
-    selectHolding(allPositions[0].symbol);
-  } else {
-    selectHolding(selectedHolding);
-  }
+function escapeHtml(s){
+  if(!s) return '';
+  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
 function fmtRelativeFromIso(iso){
@@ -1175,6 +1097,330 @@ function fmtHoldDuration(fromIso, toIso){
   return remHours > 0 ? `${days}d ${remHours}h` : `${days}d`;
 }
 
+// ─── Bucket aggregation ────────────────────────────────────────────────────
+function bucketAggregates(){
+  const agg = {};
+  for(const k of BUCKET_ORDER){
+    agg[k] = {count:0, deployed:0, value:0, gross:0, fees:0, positions:[]};
+  }
+  for(const p of allPositions){
+    const b = bucketOf(p);
+    if(!agg[b]) agg[b] = {count:0, deployed:0, value:0, gross:0, fees:0, positions:[]};
+    agg[b].count += 1;
+    agg[b].deployed += entryCostAud(p);
+    agg[b].value += marketValueAud(p);
+    agg[b].gross += grossPnlAud(p);
+    agg[b].fees += estimatedFeesAud(p).total;
+    agg[b].positions.push(p);
+  }
+  return agg;
+}
+
+function totalDeployed(){
+  return allPositions.reduce((s,p) => s + entryCostAud(p), 0);
+}
+
+function cashAud(){
+  // Paper-mode cash balance: starting capital minus what's still deployed
+  // plus any realised proceeds from closed positions.
+  return Math.max(0, STARTING_AUD - totalDeployed() + closedGrossPaperAud());
+}
+
+// ─── Bucket strip on Overview ──────────────────────────────────────────────
+function renderBucketStrip(){
+  const el = document.getElementById('bucket-strip');
+  const agg = bucketAggregates();
+  el.innerHTML = BUCKET_ORDER.map(k => {
+    const b = BUCKETS[k];
+    const a = agg[k];
+    const deployedPct = b.budget > 0 ? Math.min(100, (a.deployed / b.budget) * 100) : 0;
+    const slotsHtml = Array.from({length: b.slots}, (_, i) =>
+      `<div class="strat-slot ${i < a.count ? 'filled '+b.cssKey : ''}"></div>`).join('');
+    return `<div class="strat-card ${b.cssKey}">
+      <div class="strat-name">${b.label}</div>
+      <div class="strat-budget">$${a.deployed.toFixed(0)} / $${b.budget}</div>
+      <div class="strat-deployed">${a.count}/${b.slots} slots · $${b.perBuy}/buy</div>
+      <div class="strat-progress"><div class="strat-progress-fill ${b.cssKey}" style="width:${deployedPct}%"></div></div>
+      <div class="strat-slots">${slotsHtml}</div>
+      <div class="strat-meta">${b.cadence}</div>
+    </div>`;
+  }).join('');
+}
+
+// ─── Strategy page (full rules) ────────────────────────────────────────────
+function renderStrategyPage(){
+  const el = document.getElementById('strategy-grid');
+  if(!el) return;
+  const agg = bucketAggregates();
+  el.innerHTML = BUCKET_ORDER.map(k => {
+    const b = BUCKETS[k];
+    const a = agg[k];
+    const entryRows = Object.entries(b.entry).map(([k,v]) =>
+      `<div class="strat-k">${k}</div><div class="strat-v">${v}</div>`).join('');
+    const exitRows = Object.entries(b.exit).map(([k,v]) =>
+      `<div class="strat-k">${k}</div><div class="strat-v">${v}</div>`).join('');
+    return `<div class="strat-card ${b.cssKey}">
+      <div class="strat-name">${b.label}</div>
+      <div class="strat-budget">$${b.budget}</div>
+      <div class="strat-deployed">${b.slots} slots × $${b.perBuy}/buy · ${a.count} held</div>
+      <div class="strat-section-label">Universe</div>
+      <div style="font-size:11px;color:#555;line-height:1.4;margin-bottom:10px;">${b.universe}</div>
+      <div class="strat-section-label">Entry rules</div>
+      <div class="strat-rules">${entryRows}</div>
+      <div class="strat-divider"></div>
+      <div class="strat-section-label">Exit rules</div>
+      <div class="strat-rules">${exitRows}</div>
+      <div class="strat-divider"></div>
+      <div class="strat-section-label">Cadence</div>
+      <div style="font-size:11px;color:#555;">${b.cadence}</div>
+    </div>`;
+  }).join('');
+}
+
+function renderRiskStatus(){
+  // Drawdown: check current portfolio vs portfolio_peak
+  const peak = Number(botFlags.portfolio_peak) || STARTING_AUD;
+  const total = computePortfolioTotal();
+  const drop = peak > 0 ? (peak - total) / peak : 0;
+  const ddEl = document.getElementById('risk-drawdown');
+  if(ddEl){
+    if(drop >= 0.05){
+      ddEl.className = 'risk-status danger';
+      ddEl.textContent = `${(drop*100).toFixed(1)}% — HALTED`;
+    } else if(drop >= 0.03){
+      ddEl.className = 'risk-status warn';
+      ddEl.textContent = `${(drop*100).toFixed(1)}% from peak`;
+    } else {
+      ddEl.className = 'risk-status ok';
+      ddEl.textContent = drop > 0 ? `${(drop*100).toFixed(1)}% from peak` : 'at peak';
+    }
+  }
+
+  // Buys today
+  const today = new Date().toISOString().slice(0,10).replace(/-/g,'');
+  const buysToday = Number(botFlags['buys_today_'+today]) || 0;
+  const buysEl = document.getElementById('risk-buys-today');
+  if(buysEl){
+    buysEl.textContent = `${buysToday} / 6 today`;
+    buysEl.className = 'risk-status ' + (buysToday >= 6 ? 'danger' : buysToday >= 4 ? 'warn' : 'ok');
+  }
+
+  // Consec losses
+  const consec = Number(botFlags.consec_losses) || 0;
+  const cEl = document.getElementById('risk-consec');
+  if(cEl){
+    cEl.textContent = `${consec} streak`;
+    cEl.className = 'risk-status ' + (consec >= 4 ? 'danger' : consec >= 3 ? 'warn' : 'ok');
+  }
+
+  // Heartbeat
+  const hb = botFlags.last_heartbeat;
+  const hbEl = document.getElementById('risk-heartbeat');
+  if(hbEl){
+    if(hb){
+      const ago = Math.round((Date.now() - new Date(hb).getTime()) / 60000);
+      if(ago > 10){ hbEl.className = 'risk-status danger'; hbEl.textContent = `${ago}m stale`; }
+      else { hbEl.className = 'risk-status ok'; hbEl.textContent = `${ago}m ago`; }
+    } else {
+      hbEl.className = 'risk-status warn';
+      hbEl.textContent = 'no signal';
+    }
+  }
+}
+
+function computePortfolioTotal(){
+  let valSum = 0;
+  allPositions.forEach(p => valSum += marketValueAud(p));
+  return cashAud() + valSum;
+}
+
+// ─── Stats ─────────────────────────────────────────────────────────────────
+function renderStats(){
+  const agg = bucketAggregates();
+  let entryCost = 0, grossPnl = 0, openEstFees = 0, todayPnlAud = 0;
+  let valSum = 0;
+
+  allPositions.forEach(p=>{
+    valSum += marketValueAud(p);
+    entryCost += entryCostAud(p);
+    grossPnl += grossPnlAud(p);
+    openEstFees += estimatedFeesAud(p).total;
+
+    const amt = entryCostAud(p);
+    if(isStock(p)){
+      const ch = Number(p.change_today) || 0;
+      todayPnlAud += amt * ch;
+    } else {
+      const lp = livePrices[p.symbol.toUpperCase()];
+      const ch24 = lp && lp.aud_24h_change != null ? Number(lp.aud_24h_change)/100 : 0;
+      todayPnlAud += amt * ch24;
+    }
+  });
+
+  const cash = cashAud();
+  const paperTotal = cash + valSum;
+  const closedFees = closedFeesEstAud();
+  const liveEquivTotal = paperTotal - openEstFees - closedFees;
+
+  document.getElementById('s-port').textContent = fmtAud(liveEquivTotal);
+  document.getElementById('s-port-sub').textContent =
+    `${allPositions.length} open · after est. fees · paper ${fmtAud(paperTotal)}`;
+
+  const netOpen = grossPnl - openEstFees;
+  const pnlEl = document.getElementById('s-pnl');
+  pnlEl.textContent = fmtSignedAud(netOpen);
+  pnlEl.className = 'stat-value ' + (netOpen>0?'up':netOpen<0?'down':'');
+  const todayStr = Math.abs(todayPnlAud) > 0.005 ? `${fmtSignedAud(todayPnlAud)} today · ` : '';
+  document.getElementById('s-pnl-sub').textContent = `${todayStr}open · net · gross ${fmtSignedAud(grossPnl)}`;
+
+  const realisedEl = document.getElementById('s-realised');
+  const realisedSub = document.getElementById('s-realised-sub');
+  if(allClosed.length === 0){
+    realisedEl.textContent = '$0.00';
+    realisedEl.className = 'stat-value';
+    realisedSub.textContent = 'no closed positions';
+  } else {
+    const paperRealised = closedGrossPaperAud();
+    const liveRealised = closedNetLiveAud();
+    realisedEl.textContent = fmtSignedAud(liveRealised);
+    realisedEl.className = 'stat-value ' + (liveRealised>0.01?'up':liveRealised<-0.01?'down':'');
+    realisedSub.textContent = `${allClosed.length} closed · after est. fees · paper ${fmtSignedAud(paperRealised)}`;
+  }
+
+  const today = new Date().toISOString().slice(0,10);
+  const todayCost = (tokenUsage.find(u=>u.date===today) || {}).cost_usd || 0;
+  document.getElementById('s-cost').textContent = '$' + Number(todayCost).toFixed(2);
+}
+
+// ─── Allocation card ───────────────────────────────────────────────────────
+function renderAllocation(){
+  const agg = bucketAggregates();
+  const sw = agg.swing_crypto.value;
+  const mo = agg.momentum_crypto.value;
+  const st = agg.swing_stock.value;
+  const cash = cashAud();
+  const total = cash + sw + mo + st || STARTING_AUD;
+  const fmt = v => '$' + v.toLocaleString('en-AU', {minimumFractionDigits:0, maximumFractionDigits:0});
+  const pct = v => total>0 ? Math.round(v/total*100)+'%' : '0%';
+
+  document.getElementById('a-cash').textContent = fmt(cash);
+  document.getElementById('a-cash-pct').textContent = pct(cash);
+  document.getElementById('a-sw').textContent = fmt(sw);
+  document.getElementById('a-sw-pct').textContent = pct(sw);
+  document.getElementById('a-mo').textContent = fmt(mo);
+  document.getElementById('a-mo-pct').textContent = pct(mo);
+  document.getElementById('a-st').textContent = fmt(st);
+  document.getElementById('a-st-pct').textContent = pct(st);
+
+  document.getElementById('bar-cash').style.width = (cash/total*100)+'%';
+  document.getElementById('bar-sw').style.width   = (sw/total*100)+'%';
+  document.getElementById('bar-mo').style.width   = (mo/total*100)+'%';
+  document.getElementById('bar-st').style.width   = (st/total*100)+'%';
+}
+
+// ─── Positions ─────────────────────────────────────────────────────────────
+function renderPositions(){
+  const el = document.getElementById('positions-grid');
+  if(!allPositions.length){
+    el.innerHTML = '<div class="empty" style="grid-column:1/-1;">No open positions</div>';
+    document.getElementById('holding-detail-card').style.display = 'none';
+    return;
+  }
+
+  const agg = bucketAggregates();
+  const usState = usMarketState();
+  const usStateLabel = ({
+    open:       '· market open',
+    premarket:  '· pre-market',
+    afterhours: '· after-hours',
+    closed:     '· market closed',
+  })[usState] || '';
+
+  const renderCard = p => {
+    const grossAud  = grossPnlAud(p);
+    const fees      = estimatedFeesAud(p);
+    const netAud    = grossAud - fees.total;
+    const netPctVal = netPnlPct(p);
+    const grossPct  = grossPnlPct(p);
+    const cur       = currentPriceAud(p);
+    const entry     = entryPriceAud(p);
+    const valAud    = marketValueAud(p);
+    const entryCost = entryCostAud(p);
+    const qty       = Number(p.qty) || 0;
+    const bk        = bucketOf(p);
+    const bMeta     = BUCKETS[bk] || {label:'?', cssKey:'', short:'?'};
+
+    const cls = (valAud - entryCost) > 0.01 ? 'up' : (valAud - entryCost) < -0.01 ? 'down' : 'flat';
+    const valueDelta = valAud - entryCost;
+    const active = selectedHolding === p.symbol ? 'active' : '';
+
+    const sharesLine = qty > 0
+      ? `${qty.toFixed(qty<1?6:(qty<100?4:2))} ${isStock(p)?'shares':'units'} @ ${fmtPrice(cur)} AUD`
+      : '';
+    const entryLine = entry > 0
+      ? `entry ${fmtPrice(entry)} AUD/${isStock(p)?'sh':'unit'}`
+      : 'entry syncing';
+
+    return `<div class="pos-card ${active}" onclick="selectHolding('${p.symbol}')">
+      <div class="pos-card-top">
+        <span>
+          <span class="pos-sym">${p.symbol}</span>
+          <span class="pos-bucket-tag ${bMeta.cssKey}">${bMeta.short}</span>
+        </span>
+        <span class="pos-pct-badge ${cls}">${fmtSignedPct(netPctVal)} net</span>
+      </div>
+      <div class="pos-headline ${cls}">${fmtAud(valAud)}</div>
+      <div class="pos-headline-sub">worth now · ${valueDelta>=0?'+':'−'}${fmtAud(Math.abs(valueDelta))} from $${entryCost.toFixed(0)} deployed</div>
+      <div class="pos-divider"></div>
+      <div class="pos-row"><span class="pos-row-k">Gross P&L</span><span class="pos-row-v ${grossAud>0.01?'up':grossAud<-0.01?'down':''}">${grossAud>=0?'+':'−'}${fmtAud(Math.abs(grossAud))} (${fmtSignedPct(grossPct)})</span></div>
+      <div class="pos-row"><span class="pos-row-k">Est. round-trip fees</span><span class="pos-row-v">${fees.total>0.005?'−':''}${fmtAud(fees.total)}</span></div>
+      <div class="pos-row"><span class="pos-row-k">Net P&L if sold now</span><span class="pos-row-v ${netAud>0.01?'up':netAud<-0.01?'down':''}">${netAud>=0?'+':'−'}${fmtAud(Math.abs(netAud))} (${fmtSignedPct(netPctVal)})</span></div>
+      <div class="pos-foot">${sharesLine}${sharesLine?' · ':''}${entryLine} · ${p.market||'—'} · ${fmtRelativeFromIso(p.created_at)}</div>
+    </div>`;
+  };
+
+  // Group by bucket primarily
+  const html = BUCKET_ORDER.map(k => {
+    const items = agg[k].positions;
+    if(!items.length) return '';
+    const b = BUCKETS[k];
+    const groupValue   = items.reduce((s, p) => s + marketValueAud(p), 0);
+    const groupCapital = items.reduce((s, p) => s + entryCostAud(p), 0);
+    const groupGross   = items.reduce((s, p) => s + grossPnlAud(p), 0);
+    const groupFees    = items.reduce((s, p) => s + estimatedFeesAud(p).total, 0);
+    const groupNet     = groupGross - groupFees;
+    const groupNetPct  = groupCapital > 0 ? groupNet / groupCapital : 0;
+    const cls = groupNet > 0.01 ? 'up' : groupNet < -0.01 ? 'down' : 'flat';
+    const subtitle = `${k === 'swing_stock' ? 'Alpaca · USD-priced, AUD displayed' + usStateLabel : 'CoinSpot · 24/7 trading'}` +
+                     ` · $${b.budget.toFixed(0)} budget · ${b.slots} slots`;
+
+    return `
+      <div class="pos-group-header">
+        <div class="pos-group-titlebar">
+          <div>
+            <div class="pos-group-label">${b.label} <span class="pos-group-count">(${items.length}/${b.slots})</span></div>
+            <div class="pos-group-sub">${subtitle}</div>
+          </div>
+          <div class="pos-group-totals">
+            <div class="pos-group-val">${fmtAud(groupValue)}</div>
+            <div class="pos-group-pnl ${cls}">${fmtSignedAud(groupNet)} net (${fmtSignedPct(groupNetPct)})</div>
+          </div>
+        </div>
+      </div>
+      <div class="pos-group-grid">
+        ${items.map(renderCard).join('')}
+      </div>`;
+  }).join('');
+
+  el.innerHTML = html;
+
+  if(!selectedHolding || !allPositions.find(p=>p.symbol===selectedHolding)){
+    selectHolding(allPositions[0].symbol);
+  } else {
+    selectHolding(selectedHolding);
+  }
+}
+
 function renderClosedPositions(){
   const card = document.getElementById('closed-positions-card');
   const list = document.getElementById('closed-list');
@@ -1186,9 +1432,6 @@ function renderClosedPositions(){
   document.getElementById('closed-count').textContent =
     `${allClosed.length} closed · realised P&L tracked`;
 
-  // For closed positions, recompute everything in AUD terms.
-  // entry_price/exit_price are in stored units (USD for stocks, AUD for crypto).
-  // Most reliable AUD numbers come from aud_amount (entry cost) and pnl_pct (broker-reported return).
   list.innerHTML = allClosed.map(p => {
     const stock = (p.market || '').toLowerCase() === 'alpaca';
     const profile = stock ? FEES.alpaca : FEES.coinspot;
@@ -1197,12 +1440,9 @@ function renderClosedPositions(){
     const proceedsAud = entryAud * (1 + pnlPct);
     const grossAud = proceedsAud - entryAud;
 
-    // Per-unit AUD prices (best-effort)
     const qty = Number(p.qty) || 0;
     let entryPerUnitAud, exitPerUnitAud;
     if(stock){
-      // Stocks: entry AUD/share = aud_amount/qty (locks in entry FX)
-      // Exit AUD/share: derive from proceeds_aud/qty (locks in exit FX implicitly via pnl_pct)
       entryPerUnitAud = qty > 0 ? entryAud / qty : 0;
       exitPerUnitAud  = qty > 0 ? proceedsAud / qty : 0;
     } else {
@@ -1210,16 +1450,14 @@ function renderClosedPositions(){
       exitPerUnitAud  = Number(p.exit_price) || (entryPerUnitAud * (1 + pnlPct));
     }
 
-    // Fees breakdown — same model as open positions, but both sides are now realised
-    const buyFee = entryAud * profile.buyPct;
+    const buyFee  = entryAud * profile.buyPct;
     const sellFee = proceedsAud * profile.sellPct;
-    const fxIn  = entryAud * profile.fxOneWayPct;
-    const fxOut = proceedsAud * profile.fxOneWayPct;
+    const fxIn    = entryAud * profile.fxOneWayPct;
+    const fxOut   = proceedsAud * profile.fxOneWayPct;
     const totalFees = buyFee + sellFee + fxIn + fxOut;
 
     const netAud = grossAud - totalFees;
     const netPct = entryAud > 0 ? netAud / entryAud : 0;
-
     const grossCls = grossAud > 0.01 ? 'up' : grossAud < -0.01 ? 'down' : 'flat';
     const netCls   = netAud > 0.01 ? 'up' : netAud < -0.01 ? 'down' : 'flat';
 
@@ -1236,12 +1474,14 @@ function renderClosedPositions(){
     const hold = fmtHoldDuration(p.created_at, p.closed_at);
     const market = stock ? 'Alpaca · US stock' : 'CoinSpot · crypto';
     const entryPrice = entryPerUnitAud > 0 ? `@ ${fmtPrice(entryPerUnitAud)} AUD` : '';
-    const exitPrice  = exitPerUnitAud  > 0 ? `@ ${fmtPrice(exitPerUnitAud)}  AUD` : '';
+    const exitPrice  = exitPerUnitAud  > 0 ? `@ ${fmtPrice(exitPerUnitAud)} AUD` : '';
     const qtyLine    = qty > 0 ? ` · ${qty.toFixed(qty<1?6:(qty<100?4:2))} ${stock?'shares':'units'}` : '';
+    const bk = bucketOf(p);
+    const bMeta = BUCKETS[bk] || {label:'?'};
 
     return `<div class="closed-card">
       <div class="closed-header">
-        <span class="closed-sym">${p.symbol}</span>
+        <span class="closed-sym">${p.symbol} <span class="pos-bucket-tag ${bMeta.cssKey}" style="font-size:9px;">${bMeta.short || '?'}</span></span>
         <div style="text-align:right;">
           <div class="pos-headline ${netCls}" style="font-size:20px;">${netAud>=0?'+':'−'}$${Math.abs(netAud).toFixed(2)}</div>
           <div style="font-size:10px;color:#9aa0a6;">${fmtSignedPct(netPct)} after est. fees · paper ${fmtSignedAud(grossAud)}</div>
@@ -1266,7 +1506,7 @@ function renderClosedPositions(){
       </div>
 
       <div style="font-size:11px;color:#854d0e;background:#fffbeb;border:1px solid #fde68a;padding:7px 10px;border-radius:6px;margin-bottom:8px;line-height:1.5;">
-        Paper mode: ${fmtAud(proceedsAud)} returned to cash, no actual fees deducted. Numbers above and below show what would have happened with real money.
+        Paper mode: ${fmtAud(proceedsAud)} returned to cash, no actual fees deducted. Below shows what would have happened with real money.
       </div>
 
       <div class="closed-pnl-table">
@@ -1300,13 +1540,13 @@ async function selectHolding(sym){
   const netPct    = netPnlPct(pos);
   const qty       = Number(pos.qty) || 0;
   const profile   = feeProfile(pos);
-  const usdPnlPct = Number(pos.pnl_pct) || 0;
+  const bk        = bucketOf(pos);
+  const bMeta     = BUCKETS[bk] || {label:'?'};
 
   const marketLabel = stock ? 'US stock · Alpaca' : 'Crypto · CoinSpot';
   document.getElementById('holding-title').textContent = sym + ' detail';
   document.getElementById('holding-sub').textContent =
-    marketLabel + ' · bought ' + fmtRelativeFromIso(pos.created_at) +
-    ' · last priced ' + fmtRelativeFromIso(pos.last_priced_at || pos.created_at);
+    `${bMeta.label} · ${marketLabel} · bought ${fmtRelativeFromIso(pos.created_at)}`;
 
   const valueDelta = valAud - entryCost;
   const valueColor = valueDelta > 0.01 ? '#1a7340' : valueDelta < -0.01 ? '#c0392b' : '#1a1a2e';
@@ -1323,9 +1563,9 @@ async function selectHolding(sym){
   if(stock && pos.change_today != null){
     todayLine = `${fmtSignedPct(Number(pos.change_today))} today (USD)`;
   } else if(!stock){
-    const cg = SYM_TO_CG[pos.symbol];
-    if(cg && livePrices[cg] && livePrices[cg].aud_24h_change != null){
-      todayLine = `${fmtSignedPct(Number(livePrices[cg].aud_24h_change)/100)} 24h`;
+    const lp = livePrices[pos.symbol.toUpperCase()];
+    if(lp && lp.aud_24h_change != null){
+      todayLine = `${fmtSignedPct(Number(lp.aud_24h_change)/100)} 24h`;
     }
   }
 
@@ -1373,17 +1613,21 @@ async function selectHolding(sym){
       </div>
     </div>`;
 
-  const riskHtml = renderRiskLevels(pos, stock, usdPnlPct);
+  const riskHtml = renderRiskLevelsForBucket(pos, bk);
 
   const trades = allTrades.filter(t => t.symbol === sym).slice(0, 20);
   const closedForSym = allClosed.filter(p => p.symbol === sym);
   const tradeRows = renderSymbolTradeHistory(trades, closedForSym);
 
-  const buyTrade = trades.find(t => t.action==='BUY');
-  const reasoningHtml = buyTrade && buyTrade.details
+  // Find Claude decision rationale for this symbol
+  const decision = allDecisions.find(d => d.symbol === sym && d.action === 'buy');
+  const buyTrade = trades.find(t => t.action === 'BUY');
+  const reason = decision ? decision.reason : (buyTrade ? buyTrade.details : null);
+  const conf = decision ? decision.confidence : null;
+  const reasoningHtml = reason
     ? `<div class="dp-section">
-        <div class="dp-section-title">Why we bought</div>
-        <div style="font-size:13px;color:#1a1a2e;line-height:1.6;">${escapeHtml(buyTrade.details)}</div>
+        <div class="dp-section-title">Why we bought${conf!=null?` · Claude conf ${(conf*100).toFixed(0)}%`:''}</div>
+        <div style="font-size:13px;color:#1a1a2e;line-height:1.6;">${escapeHtml(reason)}</div>
       </div>`
     : '';
 
@@ -1394,86 +1638,87 @@ async function selectHolding(sym){
 
   document.getElementById('holding-metrics').innerHTML =
     statsHtml + pnlHtml + riskHtml + tradeRows + reasoningHtml + methodologyHtml;
-
-  const cg = SYM_TO_CG[sym];
-  const chartWrap = document.getElementById('holding-chart-wrap');
-  // 1-day price chart is temporarily disabled — relied on CoinGecko which
-  // throttled us to death. Will return when bot logs per-symbol price
-  // history to Supabase. For now: hide the chart slot, keep everything else.
-  chartWrap.style.display = 'none';
 }
 
-const RISK_THRESHOLDS = {
-  alpaca:   { stop: -0.015, take:  0.03 },
-  coinspot: { stop: -0.025, take:  0.05,
-              trail_trigger: 0.03, trail_floor: 0.015,
-              time_exit_hours: 4 },
-};
-
-function renderRiskLevels(pos, stock, usdPnlPct){
-  const t = stock ? RISK_THRESHOLDS.alpaca : RISK_THRESHOLDS.coinspot;
-  const ageHours = pos.created_at
-    ? (Date.now() - new Date(pos.created_at).getTime()) / 3600000
+// Bucket-specific risk levels matching strategy.py
+function renderRiskLevelsForBucket(pos, bucketKey){
+  const pnlPct = Number(pos.pnl_pct) || 0;
+  const peakPct = Number(pos.peak_pnl_pct) || pnlPct;
+  const ageDays = pos.created_at
+    ? (Date.now() - new Date(pos.created_at).getTime()) / 86400000
     : 0;
-  const peakPct = Number(pos.peak_pnl_pct) || usdPnlPct;
   const rows = [];
+  let stop, target, trailGiveback, reviewDays, hardExitDays;
 
-  const stopDist = usdPnlPct - t.stop;
+  if(bucketKey === 'swing_crypto'){
+    stop = -0.08; target = 0.15; trailGiveback = 0.05; reviewDays = 30;
+  } else if(bucketKey === 'momentum_crypto'){
+    stop = -0.10; target = 0.30; hardExitDays = 7;
+  } else { // swing_stock
+    stop = -0.05; target = 0.12; trailGiveback = 0.04; reviewDays = 30;
+  }
+
+  // Stop
+  const stopDist = pnlPct - stop;
   let stopStatus, stopText;
-  if(usdPnlPct <= t.stop){ stopStatus='danger'; stopText='WOULD TRIGGER'; }
-  else if(stopDist < 0.005){ stopStatus='warn'; stopText=`only ${(stopDist*100).toFixed(2)}% above`; }
+  if(pnlPct <= stop){ stopStatus='danger'; stopText='WOULD TRIGGER'; }
+  else if(stopDist < 0.01){ stopStatus='warn'; stopText=`only ${(stopDist*100).toFixed(2)}% above`; }
   else { stopStatus='ok'; stopText=`${(stopDist*100).toFixed(2)}% above`; }
   rows.push({
-    icon: '🛑',
-    label: 'Stop loss',
-    detail: `Trigger: P&L drops to ${(t.stop*100).toFixed(1)}% (current ${(usdPnlPct*100).toFixed(2)}%${stock?', USD':''})`,
+    icon: '🛑', label: 'Stop loss',
+    detail: `Trigger: P&L drops to ${(stop*100).toFixed(1)}% (current ${(pnlPct*100).toFixed(2)}%)`,
     status: stopText, statusCls: stopStatus,
   });
 
-  const takeDist = t.take - usdPnlPct;
+  // Target
+  const takeDist = target - pnlPct;
   let takeStatus, takeText;
-  if(usdPnlPct >= t.take){ takeStatus='ok'; takeText='WOULD TRIGGER'; }
-  else if(takeDist < 0.005){ takeStatus='warn'; takeText=`only ${(takeDist*100).toFixed(2)}% to go`; }
+  if(pnlPct >= target){ takeStatus='ok'; takeText='WOULD TRIGGER'; }
+  else if(takeDist < 0.01){ takeStatus='warn'; takeText=`${(takeDist*100).toFixed(2)}% to go`; }
   else { takeStatus='ok'; takeText=`${(takeDist*100).toFixed(2)}% to go`; }
   rows.push({
-    icon: '🎯',
-    label: 'Take profit',
-    detail: `Trigger: P&L hits +${(t.take*100).toFixed(1)}% (current ${(usdPnlPct*100).toFixed(2)}%${stock?', USD':''})`,
+    icon: '🎯', label: 'Target',
+    detail: `Trigger at +${(target*100).toFixed(1)}% (current ${(pnlPct*100).toFixed(2)}%)`,
     status: takeText, statusCls: takeStatus,
   });
 
-  if(!stock){
-    const trailArmed = peakPct >= t.trail_trigger;
+  // Trailing (if applicable)
+  if(trailGiveback != null){
+    const trailArmed = peakPct >= target;
+    const trailFloor = peakPct - trailGiveback;
     let trailStatus, trailText;
-    if(trailArmed && usdPnlPct < t.trail_floor){ trailStatus='danger'; trailText='WOULD TRIGGER'; }
-    else if(trailArmed){ trailStatus='warn'; trailText=`armed · floor +${(t.trail_floor*100).toFixed(1)}%`; }
-    else { trailStatus='ok'; trailText=`arms at +${(t.trail_trigger*100).toFixed(1)}%`; }
+    if(trailArmed && pnlPct < trailFloor){ trailStatus='danger'; trailText='WOULD TRIGGER'; }
+    else if(trailArmed){ trailStatus='warn'; trailText=`armed · floor ${(trailFloor*100).toFixed(1)}%`; }
+    else { trailStatus='ok'; trailText=`arms at +${(target*100).toFixed(1)}%`; }
     rows.push({
-      icon: '📈',
-      label: 'Trailing stop',
-      detail: `Once peak hits +${(t.trail_trigger*100).toFixed(1)}%, exits if drops below +${(t.trail_floor*100).toFixed(1)}% · peak ${(peakPct*100).toFixed(2)}%`,
+      icon: '📈', label: 'Trailing stop',
+      detail: `Once peak ≥ +${(target*100).toFixed(1)}%, exits if drops ${(trailGiveback*100).toFixed(1)}% below peak · current peak ${(peakPct*100).toFixed(2)}%`,
       status: trailText, statusCls: trailStatus,
     });
+  }
 
-    const remaining = t.time_exit_hours - ageHours;
-    const stagnant = Math.abs(usdPnlPct) < 0.015;
+  // Review or hard exit
+  if(hardExitDays != null){
+    const remaining = hardExitDays - ageDays;
     let timeStatus, timeText;
-    if(remaining <= 0 && stagnant){ timeStatus='danger'; timeText='WOULD TRIGGER (stagnant)'; }
-    else if(remaining <= 0){ timeStatus='ok'; timeText='past window · held'; }
-    else if(remaining < 0.5){ timeStatus='warn'; timeText=`${(remaining*60).toFixed(0)}m left`; }
-    else { timeStatus='ok'; timeText=`${remaining.toFixed(1)}h left`; }
+    if(remaining <= 0){ timeStatus='danger'; timeText='WOULD TRIGGER'; }
+    else if(remaining < 1){ timeStatus='warn'; timeText=`${(remaining*24).toFixed(0)}h left`; }
+    else { timeStatus='ok'; timeText=`${remaining.toFixed(1)}d left`; }
     rows.push({
-      icon: '⏰',
-      label: 'Time exit',
-      detail: `Sells after ${t.time_exit_hours}h if movement stays under ±1.5% · age ${ageHours.toFixed(1)}h`,
+      icon: '⏰', label: `${hardExitDays}-day hard exit`,
+      detail: `Position must close by day ${hardExitDays} regardless of P&L · age ${ageDays.toFixed(1)}d`,
       status: timeText, statusCls: timeStatus,
     });
-  } else {
+  } else if(reviewDays != null){
+    const remaining = reviewDays - ageDays;
+    let timeStatus, timeText;
+    if(remaining <= 0){ timeStatus='warn'; timeText='REVIEW DUE'; }
+    else if(remaining < 5){ timeStatus='warn'; timeText=`${remaining.toFixed(0)}d to review`; }
+    else { timeStatus='ok'; timeText=`${remaining.toFixed(0)}d to review`; }
     rows.push({
-      icon: '📅',
-      label: 'Friday EOD exit',
-      detail: 'US stock positions auto-close before each Friday US-market close to avoid weekend gaps',
-      status: 'auto-managed', statusCls: 'ok',
+      icon: '📅', label: `${reviewDays}-day review`,
+      detail: `Auto-exit at day ${reviewDays} if no stop/target hit before · age ${ageDays.toFixed(1)}d`,
+      status: timeText, statusCls: timeStatus,
     });
   }
 
@@ -1500,9 +1745,7 @@ function renderSymbolTradeHistory(trades, closedForSym){
       <div style="font-size:12px;color:#9aa0a6;text-align:center;padding:8px 0;">No trades recorded yet</div>
     </div>`;
   }
-
   const items = [];
-
   closedForSym.forEach(p => {
     const grossPct = Number(p.pnl_pct) || 0;
     const profile = (p.market||'').toLowerCase()==='alpaca' ? FEES.alpaca : FEES.coinspot;
@@ -1525,7 +1768,6 @@ function renderSymbolTradeHistory(trades, closedForSym){
       </div>`
     });
   });
-
   trades.forEach(t => {
     const action = t.action || '';
     const cls = action === 'BUY' ? 'buy' : 'sell';
@@ -1543,32 +1785,11 @@ function renderSymbolTradeHistory(trades, closedForSym){
       </div>`
     });
   });
-
   items.sort((a,b) => new Date(b.sortKey || 0) - new Date(a.sortKey || 0));
-
   return `<div class="dp-section">
     <div class="dp-section-title">Trade history for this symbol (${items.length})</div>
     ${items.slice(0, 12).map(i => i.html).join('')}
   </div>`;
-}
-
-function escapeHtml(s){
-  if(!s) return '';
-  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-}
-
-function drawHoldingChart(sym, prices){
-  const canvas = document.getElementById('holdingChart');
-  if(!canvas || !prices) return;
-  if(holdingChart){ holdingChart.destroy(); }
-  const labels = prices.map(p=>new Date(p[0]).toLocaleTimeString('en-AU',{hour:'2-digit', minute:'2-digit'}));
-  const values = prices.map(p=>p[1]);
-  const color = values[values.length-1] >= values[0] ? '#1a7340' : '#c4302b';
-  holdingChart = new Chart(canvas, {
-    type:'line',
-    data:{labels, datasets:[{data:values, borderColor:color, backgroundColor:color==='#1a7340'?'rgba(26,115,64,0.06)':'rgba(196,48,43,0.06)', fill:true, tension:0.3, pointRadius:0, borderWidth:2}]},
-    options:{responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{x:{ticks:{color:'#9aa0a6', font:{size:10}, maxTicksLimit:6}, grid:{color:'rgba(0,0,0,0.04)'}}, y:{ticks:{color:'#9aa0a6', font:{size:10}, callback:v=>'$'+(v<1?v.toFixed(4):v.toLocaleString('en-AU',{maximumFractionDigits:2}))}, grid:{color:'rgba(0,0,0,0.04)'}}}}
-  });
 }
 
 function renderTrades(){
@@ -1580,7 +1801,7 @@ function renderTrades(){
       const pnl = t.pnl_pct ? ' · ' + (t.pnl_pct*100>=0?'+':'') + (t.pnl_pct*100).toFixed(1) + '%' : '';
       const time = t.created_at ? new Date(t.created_at).toLocaleTimeString('en-AU',{hour:'2-digit', minute:'2-digit'}) : '';
       const date = t.created_at ? new Date(t.created_at).toLocaleDateString('en-AU',{day:'numeric', month:'short'}) : '';
-      return `<div class="trade"><div class="trade-icon ${ac}">${t.action}</div><div class="trade-body"><div class="trade-title">${t.symbol}${pnl}</div><div class="trade-detail">${t.details||'—'}</div></div><div class="trade-time">${date} ${time}</div></div>`;
+      return `<div class="trade"><div class="trade-icon ${ac}">${t.action}</div><div class="trade-body"><div class="trade-title">${t.symbol}${pnl}</div><div class="trade-detail">${escapeHtml(t.details||'—')}</div></div><div class="trade-time">${date} ${time}</div></div>`;
     }).join('');
   };
   render(allTrades.slice(0,6), 'recent-trades', 'No trades yet');
@@ -1601,47 +1822,44 @@ function renderChart(tf){
   let labels, values, points, title, note, mode;
   const now = Date.now();
 
-  if(tf === '1H' || tf === '24H'){
-    // Rolling intraday window from intraday_snapshots (5-min cadence)
-    const windowMs = tf === '1H' ? 60*60*1000 : 24*60*60*1000;
-    const cutoff = now - windowMs;
-    const inWindow = allIntraday
-      .filter(s => new Date(s.recorded_at).getTime() >= cutoff)
-      .slice()
-      .reverse(); // oldest → newest
-    if(inWindow.length){
-      points = inWindow.map(s => ({t: new Date(s.recorded_at), v: Number(s.total_aud)}));
-      title = tf === '1H' ? 'Portfolio value — last hour' : 'Portfolio value — last 24 hours';
-      note = `${inWindow.length} snapshots · 5-min granularity`;
-      mode = tf === '1H' ? 'minutes' : 'hours';
-    } else {
-      points = [{t: new Date(), v: STARTING_AUD}];
-      title = tf === '1H' ? 'Portfolio value — last hour' : 'Portfolio value — last 24 hours';
-      note = 'Waiting for snapshots — bot writes one every 5 min';
-      mode = 'hours';
-    }
+  // v2 writes to `snapshots` table with `created_at`. Filter by window.
+  const windowMs = {'1H': 60*60*1000, '24H': 24*60*60*1000, '1W': 7*24*60*60*1000,
+                    '1M': 30*24*60*60*1000, 'ALL': 365*24*60*60*1000}[tf] || 24*60*60*1000;
+  const cutoff = now - windowMs;
+  const inWindow = allSnapshots
+    .filter(s => {
+      const t = s.created_at || s.recorded_at || s.date;
+      return t && new Date(t).getTime() >= cutoff;
+    })
+    .slice()
+    .reverse();
+
+  if(inWindow.length){
+    points = inWindow.map(s => ({
+      t: new Date(s.created_at || s.recorded_at || s.date),
+      v: Number(s.total_aud)
+    }));
+    title = ({
+      '1H': 'Portfolio value — last hour',
+      '24H': 'Portfolio value — last 24 hours',
+      '1W': 'Portfolio value — last 7 days',
+      '1M': 'Portfolio value — last 30 days',
+      'ALL': 'Portfolio value — all time'
+    })[tf];
+    note = `${inWindow.length} snapshots · 5-min granularity`;
+    mode = (tf === '1H' || tf === '24H') ? 'time' : 'date';
   } else {
-    // Daily series from snapshots table (one per day, written at 6:30am AEST)
-    const limits = {'1W':7, '1M':30, 'ALL':9999};
-    let filtered = allSnapshots.slice().reverse();
-    if(limits[tf]) filtered = filtered.slice(-limits[tf]);
-    if(!filtered.length){
-      points = [{t: new Date(), v: STARTING_AUD}];
-      note = 'Daily snapshots begin at 6:30am AEST';
-    } else {
-      points = filtered.map(s => ({t: new Date(s.date), v: Number(s.total_aud)||STARTING_AUD}));
-      note = 'Daily snapshots';
-    }
+    points = [{t: new Date(), v: STARTING_AUD}];
     title = 'Portfolio value';
-    mode = 'days';
+    note = 'Waiting for snapshots — bot writes one every 5 min';
+    mode = 'time';
   }
 
-  // Build label strings based on mode
-  labels = points.map(p => {
-    if(mode === 'minutes') return p.t.toLocaleTimeString('en-AU',{hour:'2-digit', minute:'2-digit'});
-    if(mode === 'hours')   return p.t.toLocaleTimeString('en-AU',{hour:'2-digit', minute:'2-digit'});
-    return p.t.toLocaleDateString('en-AU',{month:'short', day:'numeric'});
-  });
+  labels = points.map(p =>
+    mode === 'time'
+      ? p.t.toLocaleTimeString('en-AU',{hour:'2-digit', minute:'2-digit'})
+      : p.t.toLocaleDateString('en-AU',{month:'short', day:'numeric'})
+  );
   values = points.map(p => p.v);
 
   document.getElementById('chart-title').textContent = title;
@@ -1650,96 +1868,103 @@ function renderChart(tf){
   perfChart = new Chart(canvas, {
     type:'line',
     data:{labels, datasets:[{
-      data:values,
-      borderColor:'#0d1f38',
-      backgroundColor:'rgba(13,31,56,0.05)',
-      fill:true,
-      tension:0.3,
-      pointRadius: values.length>60 ? 0 : 2,
-      borderWidth:2,
+      data:values, borderColor:'#0d1f38', backgroundColor:'rgba(13,31,56,0.05)',
+      fill:true, tension:0.3, pointRadius: values.length>60 ? 0 : 2, borderWidth:2,
     }]},
     options:{
       responsive:true, maintainAspectRatio:false,
       plugins:{
         legend:{display:false},
-        tooltip:{
-          callbacks:{
-            title: ctx => {
-              const p = points[ctx[0].dataIndex];
-              if(!p) return '';
-              if(mode === 'minutes' || mode === 'hours'){
-                return p.t.toLocaleString('en-AU',{weekday:'short', day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'});
-              }
-              return p.t.toLocaleDateString('en-AU',{weekday:'short', day:'numeric', month:'short', year:'numeric'});
-            },
-            label: ctx => '$' + ctx.parsed.y.toLocaleString('en-AU',{maximumFractionDigits:2}) + ' AUD'
-          }
-        }
+        tooltip:{callbacks:{
+          title: ctx => {
+            const p = points[ctx[0].dataIndex];
+            if(!p) return '';
+            return mode === 'time'
+              ? p.t.toLocaleString('en-AU',{weekday:'short', day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'})
+              : p.t.toLocaleDateString('en-AU',{weekday:'short', day:'numeric', month:'short', year:'numeric'});
+          },
+          label: ctx => '$' + ctx.parsed.y.toLocaleString('en-AU',{maximumFractionDigits:2}) + ' AUD'
+        }}
       },
       scales:{
-        x:{
-          ticks:{color:'#9aa0a6', font:{size:10}, maxTicksLimit: mode==='minutes'?8:(mode==='hours'?12:8)},
-          grid:{color:'rgba(0,0,0,0.04)'}
-        },
-        y:{
-          ticks:{color:'#9aa0a6', font:{size:10}, callback:v=>'$'+v.toLocaleString('en-AU',{maximumFractionDigits:0})},
-          grid:{color:'rgba(0,0,0,0.04)'}
-        }
+        x:{ticks:{color:'#9aa0a6', font:{size:10}, maxTicksLimit: mode==='time'?12:8}, grid:{color:'rgba(0,0,0,0.04)'}},
+        y:{ticks:{color:'#9aa0a6', font:{size:10}, callback:v=>'$'+v.toLocaleString('en-AU',{maximumFractionDigits:0})}, grid:{color:'rgba(0,0,0,0.04)'}}
       }
     }
   });
 }
 
 function renderIntelligence(){
-  const latest = allChecks[0];
-  document.getElementById('market-view').textContent = latest && latest.reasoning ? latest.reasoning : 'Bot will begin monitoring at next 15-minute interval.';
+  // Latest market view: prefer most recent claude_decision reason, fallback to crypto_check
+  const latestDecision = allDecisions[0];
+  const latestCheck = allChecks[0];
+  const view = (latestDecision && latestDecision.reason) || (latestCheck && latestCheck.reasoning) ||
+               'Bot will provide reasoning at next scan.';
+  document.getElementById('market-view').textContent = view;
 
   const decEl = document.getElementById('decisions');
-  if(!allChecks.length){ decEl.innerHTML = '<div class="empty">No decisions yet</div>'; return; }
-  decEl.innerHTML = allChecks.slice(0,10).map(c=>{
-    const time = new Date(c.checked_at).toLocaleTimeString('en-AU',{hour:'2-digit', minute:'2-digit'});
-    const date = new Date(c.checked_at).toLocaleDateString('en-AU',{day:'numeric', month:'short'});
-    return `<div class="trade"><div class="trade-body"><div class="trade-title" style="font-weight:normal;">${c.reasoning||'(no reasoning)'}</div></div><div class="trade-time">${date} ${time}</div></div>`;
+  if(!allDecisions.length){
+    // Fall back to crypto_checks for legacy data
+    if(allChecks.length){
+      decEl.innerHTML = allChecks.slice(0,10).map(c=>{
+        const time = new Date(c.checked_at).toLocaleTimeString('en-AU',{hour:'2-digit', minute:'2-digit'});
+        const date = new Date(c.checked_at).toLocaleDateString('en-AU',{day:'numeric', month:'short'});
+        return `<div class="trade"><div class="trade-body"><div class="trade-title" style="font-weight:normal;">${escapeHtml(c.reasoning||'(no reasoning)')}</div></div><div class="trade-time">${date} ${time}</div></div>`;
+      }).join('');
+    } else {
+      decEl.innerHTML = '<div class="empty">No decisions yet</div>';
+    }
+    return;
+  }
+
+  decEl.innerHTML = allDecisions.slice(0,20).map(d=>{
+    const time = new Date(d.decided_at).toLocaleTimeString('en-AU',{hour:'2-digit', minute:'2-digit'});
+    const date = new Date(d.decided_at).toLocaleDateString('en-AU',{day:'numeric', month:'short'});
+    const conf = d.confidence != null ? ` · ${(Number(d.confidence)*100).toFixed(0)}% conf` : '';
+    const action = (d.action || 'skip').toUpperCase();
+    const actionCls = action === 'BUY' ? 'buy' : 'sell';
+    const bk = d.bucket || '?';
+    const bMeta = BUCKETS[bk] || {short:'?', cssKey:''};
+    let outcome = '';
+    if(d.realized_pnl_pct != null && d.executed){
+      const pct = Number(d.realized_pnl_pct);
+      const cls = pct > 0 ? 'up' : pct < 0 ? 'down' : '';
+      outcome = ` · realised <span class="risk-status ${cls}">${fmtSignedPct(pct)}</span>`;
+    } else if(d.executed){
+      outcome = ' · open';
+    }
+    return `<div class="sym-trade">
+      <span class="sym-trade-action ${actionCls}">${action}</span>
+      <div class="sym-trade-body">
+        <div class="sym-trade-line1">${d.symbol} <span class="pos-bucket-tag ${bMeta.cssKey}" style="font-size:9px;">${bMeta.short}</span>${conf}${outcome}</div>
+        <div class="sym-trade-line2">${escapeHtml(d.reason || '—')}</div>
+      </div>
+      <div class="sym-trade-time">${date} ${time}</div>
+    </div>`;
   }).join('');
 }
 
-// Lightweight markdown renderer for Q&A answers — handles bold, line breaks,
-// and bullet lists. Escapes HTML first to prevent injection.
 function renderMarkdown(text){
   if(!text) return '';
-  // 1) escape HTML
   let s = text.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  // 2) bold **text**
   s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
-  // 3) bullet lists — group consecutive "- " lines into <ul>...</ul> as a single block
   const lines = s.split('\n');
   const blocks = [];
-  let buf = [];
-  let inList = false;
+  let buf = []; let inList = false;
   for(const line of lines){
     const m = line.match(/^\s*[-•]\s+(.+)$/);
     if(m){
-      if(!inList){
-        if(buf.length){ blocks.push({type:'p', text: buf.join('\n')}); buf = []; }
-        inList = true; buf = [];
-      }
+      if(!inList){ if(buf.length){ blocks.push({type:'p', text: buf.join('\n')}); buf = []; } inList = true; buf = []; }
       buf.push(m[1]);
     } else {
-      if(inList){
-        blocks.push({type:'ul', items: buf}); buf = []; inList = false;
-      }
+      if(inList){ blocks.push({type:'ul', items: buf}); buf = []; inList = false; }
       buf.push(line);
     }
   }
   if(inList) blocks.push({type:'ul', items: buf});
   else if(buf.length) blocks.push({type:'p', text: buf.join('\n')});
-
-  // 4) build HTML — split p blocks on blank lines, join others with <br>
   return blocks.map(b => {
-    if(b.type === 'ul'){
-      return `<ul>${b.items.map(i => `<li>${i}</li>`).join('')}</ul>`;
-    }
-    // paragraph: split on blank lines
+    if(b.type === 'ul') return `<ul>${b.items.map(i => `<li>${i}</li>`).join('')}</ul>`;
     return b.text.replace(/^\s+/, '').split(/\n\s*\n/)
       .filter(p => p.trim())
       .map(p => `<p>${p.replace(/\n/g, '<br>')}</p>`)
@@ -1749,23 +1974,17 @@ function renderMarkdown(text){
 
 function renderQA(){
   const el = document.getElementById('qa-thread');
-  // Filter to last 7 days defensively (the bot also cleans these up)
   const cutoff = Date.now() - 7*24*60*60*1000;
   const recent = (allQuestions || []).filter(q => {
     const t = q.asked_at ? new Date(q.asked_at).getTime() : 0;
     return t >= cutoff;
   });
-
   if(!recent.length){ el.innerHTML = '<div class="empty">Ask your first question above</div>'; return; }
-
   el.innerHTML = recent.slice(0,15).map((q, idx) => {
     const time = new Date(q.asked_at).toLocaleString('en-AU',
       {hour:'2-digit', minute:'2-digit', day:'numeric', month:'short'});
     const isPending = q.status === 'pending';
-    const answerHtml = isPending
-      ? '<em>Thinking… (30-60s)</em>'
-      : renderMarkdown(q.answer || '(no answer)');
-    // Latest expanded by default; older ones collapsed
+    const answerHtml = isPending ? '<em>Thinking… (30-60s)</em>' : renderMarkdown(q.answer || '(no answer)');
     const open = (idx === 0 || isPending) ? 'open' : '';
     return `<details class="qa-item" ${open}>
       <summary class="qa-q">
@@ -1789,13 +2008,12 @@ async function askQuestion(){
     await loadAll();
     let tries = 0;
     const poll = setInterval(async ()=>{
-      tries++;
-      await loadAll();
+      tries++; await loadAll();
       const latest = allQuestions[0];
       if((latest && latest.status !== 'pending') || tries > 24) clearInterval(poll);
     }, 5000);
   } else {
-    alert('Could not submit. Did you run the SQL setup?');
+    alert('Could not submit. Did you create the user_questions table?');
   }
   btn.disabled = false; btn.textContent = 'Ask';
 }
@@ -1806,7 +2024,6 @@ function renderCostWidget(){
   const cost = todayUsage ? Number(todayUsage.cost_usd) : 0;
   const calls = todayUsage ? Number(todayUsage.call_count) : 0;
   const pct = Math.min(100, cost / DAILY_BUDGET_USD * 100);
-
   const el = document.getElementById('cost-today');
   el.textContent = '$' + cost.toFixed(4);
   el.className = 'cost-val ' + (pct>=90?'danger':pct>=70?'warn':'ok');
@@ -1821,15 +2038,9 @@ function renderStory(){
   const todayTrades = allTrades.filter(t=>t.created_at && new Date(t.created_at).toDateString()===today);
   const todayBuys = todayTrades.filter(t=>t.action==='BUY').length;
   const todaySells = todayTrades.filter(t=>t.action==='SELL').length;
-  const todayChecks = allChecks.filter(c=>c.checked_at && new Date(c.checked_at).toDateString()===today);
+  const todayDecisions = allDecisions.filter(d=>d.decided_at && new Date(d.decided_at).toDateString()===today);
 
-  let cryptoVal=0, stocksVal=0;
-  allPositions.forEach(p=>{
-    const val = marketValueAud(p);
-    if(isStock(p)) stocksVal+=val;
-    else cryptoVal+=val;
-  });
-
+  const agg = bucketAggregates();
   const dayName = new Date().toLocaleDateString('en-AU', {weekday:'long'});
   const isWeekend = [0,6].includes(new Date().getDay());
 
@@ -1838,25 +2049,25 @@ function renderStory(){
     story += `No open positions. `;
   } else {
     const parts = [];
-    if(cryptoVal>0) parts.push(`$${cryptoVal.toFixed(0)} in crypto`);
-    if(stocksVal>0) parts.push(`$${stocksVal.toFixed(0)} in US stocks`);
-    story += `Holding ${allPositions.length} position${allPositions.length>1?'s':''} — ${parts.join(', ')}. `;
+    if(agg.swing_crypto.count > 0)    parts.push(`${agg.swing_crypto.count} swing crypto`);
+    if(agg.momentum_crypto.count > 0) parts.push(`${agg.momentum_crypto.count} momentum crypto`);
+    if(agg.swing_stock.count > 0)     parts.push(`${agg.swing_stock.count} US stock`);
+    story += `Holding ${parts.join(', ')} · ${fmtAud(allPositions.reduce((s,p)=>s+marketValueAud(p),0))} deployed. `;
   }
 
   if(isWeekend){
-    story += `It's weekend — US markets closed until Monday 11:30pm AEST. `;
-    if(stocksVal>0) story += `Stock positions are frozen at last close. `;
+    story += `Weekend — US markets closed until Monday 11:30pm AEST. `;
+    if(agg.swing_stock.count>0) story += `Stock positions frozen at last close. `;
   }
 
-  if(todayChecks.length>0){
-    story += `Bot has run ${todayChecks.length} crypto scan${todayChecks.length>1?'s':''} today. `;
+  if(todayDecisions.length > 0){
+    story += `Bot has made ${todayDecisions.length} Claude decision${todayDecisions.length>1?'s':''} today. `;
   }
   if(todayBuys>0 || todaySells>0){
     story += `${todayBuys} buy${todayBuys===1?'':'s'} and ${todaySells} sell${todaySells===1?'':'s'} executed today.`;
   } else {
-    story += `No trades have executed today.`;
+    story += `No trades executed today.`;
   }
-
   el.innerHTML = story;
 }
 
@@ -1864,13 +2075,23 @@ function renderLiveStatus(){
   const el = document.getElementById('live-status');
   const items = [];
 
-  if(allChecks.length){
-    const last = allChecks[0];
-    const ago = Math.round((Date.now() - new Date(last.checked_at).getTime()) / 60000);
+  // Heartbeat-driven liveness check
+  const hb = botFlags.last_heartbeat;
+  let hbAgo = 999;
+  if(hb){ hbAgo = Math.round((Date.now() - new Date(hb).getTime()) / 60000); }
+  if(hbAgo > 10){
+    items.push({icon:'⚠️', time:'now', text:`Bot may be offline — last heartbeat ${hbAgo}m ago`});
+  } else {
+    items.push({icon:'✓', time:'now', text:`Bot is alive — heartbeat ${hbAgo}m ago. Next scan when scheduled.`});
+  }
+
+  if(allDecisions.length){
+    const last = allDecisions[0];
+    const ago = Math.round((Date.now() - new Date(last.decided_at).getTime()) / 60000);
+    const agoStr = ago < 60 ? `${ago}m ago` : ago < 1440 ? `${Math.round(ago/60)}h ago` : `${Math.round(ago/1440)}d ago`;
     items.push({
-      icon: '🔍',
-      time: `${ago}m ago`,
-      text: `Last crypto scan — ${last.reasoning ? last.reasoning.substring(0, 120) : 'no reasoning'}`
+      icon: '🧠', time: agoStr,
+      text: `Last Claude decision — ${last.action.toUpperCase()} ${last.symbol}: ${last.reason ? last.reason.substring(0, 100) : 'no reason'}`
     });
   }
 
@@ -1879,108 +2100,82 @@ function renderLiveStatus(){
     const ago = Math.round((Date.now() - new Date(t.created_at).getTime()) / 60000);
     const agoStr = ago < 60 ? `${ago}m ago` : ago < 1440 ? `${Math.round(ago/60)}h ago` : `${Math.round(ago/1440)}d ago`;
     items.push({
-      icon: t.action === 'BUY' ? '🟢' : '🔴',
-      time: agoStr,
+      icon: t.action === 'BUY' ? '🟢' : '🔴', time: agoStr,
       text: `${t.action} ${t.symbol} — ${(t.details || '').substring(0, 100)}`
     });
   }
 
-  if(allIntraday.length){
-    const last = allIntraday[0];
-    const ago = Math.round((Date.now() - new Date(last.recorded_at).getTime()) / 60000);
-    items.push({
-      icon: '📸',
-      time: `${ago}m ago`,
-      text: `Portfolio snapshot — $${Number(last.total_aud).toFixed(2)} (${last.open_positions} open)`
-    });
+  if(allSnapshots.length){
+    const last = allSnapshots[0];
+    const tField = last.created_at || last.recorded_at;
+    if(tField){
+      const ago = Math.round((Date.now() - new Date(tField).getTime()) / 60000);
+      items.push({
+        icon: '📸', time: `${ago}m ago`,
+        text: `Portfolio snapshot — ${fmtAud(Number(last.total_aud))} (${allPositions.length} open)`
+      });
+    }
   }
 
   const today = new Date().toISOString().slice(0,10);
   const todayCost = (tokenUsage.find(u=>u.date===today) || {});
   if(todayCost.call_count){
     items.push({
-      icon: '💰',
-      time: `${todayCost.call_count} calls`,
+      icon: '💰', time: `${todayCost.call_count} calls`,
       text: `Today's Claude spend: $${Number(todayCost.cost_usd).toFixed(4)} of $2.00 daily cap`
     });
   }
 
-  const lastSnapshotAge = allIntraday.length ?
-    Math.round((Date.now() - new Date(allIntraday[0].recorded_at).getTime()) / 60000) : 999;
-  if(lastSnapshotAge > 15){
-    items.unshift({
-      icon: '⚠️',
-      time: 'now',
-      text: `Bot may be offline — last activity ${lastSnapshotAge}m ago`
-    });
-  } else {
-    items.unshift({
-      icon: '✓',
-      time: 'now',
-      text: `Bot is alive and running. Next crypto scan in ~${Math.max(0, 15 - lastSnapshotAge)}m.`
-    });
-  }
-
-  if(!items.length){
-    el.innerHTML = '<div class="empty">No activity yet</div>';
-    return;
-  }
+  if(!items.length){ el.innerHTML = '<div class="empty">No activity yet</div>'; return; }
   el.innerHTML = items.map(i=>
-    `<div class="status-row"><span class="status-icon">${i.icon}</span><span class="status-time">${i.time}</span><span class="status-text">${i.text}</span></div>`
+    `<div class="status-row"><span class="status-icon">${i.icon}</span><span class="status-time">${i.time}</span><span class="status-text">${escapeHtml(i.text)}</span></div>`
   ).join('');
 }
 
 function renderFailures(){
   const card = document.getElementById('failed-card');
   const list = document.getElementById('failed-list');
-
-  // Two distinct things to surface here, both important:
-  //   1. EXECUTION FAILURES — the bot tried to buy, broker rejected. User needs to see this.
-  //   2. SKIPPED SETUPS — Claude vetoed with a red flag. User can audit the reasoning.
-  // Old version regex-parsed the reasoning string and produced bogus symbols
-  // like "FOUR" from "skipped four 2.5-score setups". Now we read the
-  // structured `executions` and `skipped_setups` columns.
   const rows = [];
+
+  // v2: read from claude_decisions where action='rejected_by_safety' or action='skip'
+  allDecisions.slice(0, 30).forEach(d => {
+    if(d.action === 'rejected_by_safety'){
+      rows.push({
+        kind: 'fail',
+        symbol: d.symbol,
+        reason: `Safety blocked: ${d.reason || 'unknown'}`,
+        time: d.decided_at,
+      });
+    } else if(d.action === 'skip' && d.confidence != null && d.confidence < 0.6){
+      rows.push({
+        kind: 'skip',
+        symbol: d.symbol,
+        reason: `Claude conf ${(Number(d.confidence)*100).toFixed(0)}%: ${d.reason || ''}`,
+        time: d.decided_at,
+      });
+    }
+  });
+
+  // Legacy: parse crypto_checks
   allChecks.slice(0, 20).forEach(c => {
-    // Execution failures (highest priority)
     let executions = [];
     try { executions = JSON.parse(c.executions || '[]'); } catch(e){}
     executions.filter(e => e && !e.success).forEach(e => {
       rows.push({
         kind: 'fail',
         symbol: (e.symbol || '?').toUpperCase(),
-        reason: `${e.action || 'BUY'} failed: ${e.error || 'unknown error'}`,
-        time: c.checked_at,
-      });
-    });
-
-    // Claude-vetoed setups
-    let skipped = [];
-    try { skipped = JSON.parse(c.skipped_setups || '[]'); } catch(e){}
-    skipped.forEach(s => {
-      const sym = s && s.symbol;
-      if(!sym) return;
-      rows.push({
-        kind: 'skip',
-        symbol: String(sym).toUpperCase(),
-        reason: (s.red_flag || s.reason || 'no reason given'),
+        reason: `${e.action || 'BUY'} failed: ${e.error || 'unknown'}`,
         time: c.checked_at,
       });
     });
   });
 
-  if(!rows.length){
-    card.style.display = 'none';
-    return;
-  }
-
+  if(!rows.length){ card.style.display = 'none'; return; }
   card.style.display = 'block';
   document.getElementById('failed-count').textContent =
     `${rows.length} ${rows.length===1?'event':'events'}`;
-
   list.innerHTML = rows.slice(0, 12).map(f => {
-    const time = new Date(f.time).toLocaleTimeString('en-AU',
-      {hour:'2-digit', minute:'2-digit'});
+    const time = new Date(f.time).toLocaleTimeString('en-AU', {hour:'2-digit', minute:'2-digit'});
     const badge = f.kind === 'fail'
       ? '<span class="fail-badge fail-err">FAILED</span>'
       : '<span class="fail-badge fail-skip">SKIPPED</span>';
@@ -2006,11 +2201,15 @@ function renderCostChart(){
   const values = last7.map(u=>Number(u.cost_usd));
   const totalWeek = values.reduce((a,b)=>a+b, 0);
   const projMonth = totalWeek / last7.length * 30;
-  document.getElementById('cost-summary').textContent = `7-day total: $${totalWeek.toFixed(2)} · projected monthly: $${projMonth.toFixed(2)}`;
+  document.getElementById('cost-summary').textContent =
+    `7-day total: $${totalWeek.toFixed(2)} · projected monthly: $${projMonth.toFixed(2)}`;
   costChart = new Chart(canvas, {
     type:'bar',
     data:{labels, datasets:[{data:values, backgroundColor:'#0d1f38', borderRadius:4}]},
-    options:{responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}, tooltip:{callbacks:{label:ctx=>'$'+ctx.parsed.y.toFixed(4)}}}, scales:{x:{ticks:{color:'#9aa0a6', font:{size:10}}, grid:{display:false}}, y:{ticks:{color:'#9aa0a6', font:{size:10}, callback:v=>'$'+v.toFixed(2)}, grid:{color:'rgba(0,0,0,0.04)'}}}}
+    options:{responsive:true, maintainAspectRatio:false,
+      plugins:{legend:{display:false}, tooltip:{callbacks:{label:ctx=>'$'+ctx.parsed.y.toFixed(4)}}},
+      scales:{x:{ticks:{color:'#9aa0a6', font:{size:10}}, grid:{display:false}},
+              y:{ticks:{color:'#9aa0a6', font:{size:10}, callback:v=>'$'+v.toFixed(2)}, grid:{color:'rgba(0,0,0,0.04)'}}}}
   });
 }
 </script>
