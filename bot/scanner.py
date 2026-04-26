@@ -46,7 +46,7 @@ import statistics
 from pathlib import Path
 from typing import Optional
 
-import strategy
+from . import strategy
 
 log = logging.getLogger(__name__)
 
@@ -509,7 +509,7 @@ def scan_stocks() -> list:
     """
     try:
         # Lazy import so this module doesn't fail without bot/ context
-        from brain import _fetch_bars
+        from .brain import _fetch_bars
     except ImportError:
         try:
             from bot.brain import _fetch_bars  # production path
