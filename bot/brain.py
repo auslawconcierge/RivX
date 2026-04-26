@@ -1,499 +1,459 @@
 """
-RivX brain.py — Claude wrapper for trading decisions.
+RivX strategy.py — the trading rules.
 
-═══════════════════════════════════════════════════════════════════════════
-NON-NEGOTIABLE RULE: Claude is never the final authority. If Claude:
-  - fails (API exception, network error)
-  - times out
-  - returns invalid JSON
-  - returns empty decisions
-  - returns confidence below MIN_CONFIDENCE
-  - returns "buy" for symbols already held
-  - returns "buy" for buckets that are full
-  - returns "buy" that would breach the ops floor
+This module owns "what we buy and when," "what we sell and why," and "how
+much money goes where." It produces decisions, but it does NOT execute
+them. Execution is in bot.py. Data fetching is in prices.py and scanner.py.
+This file is pure logic — easy to test, easy to change.
 
-→ result is NO TRADE. There is no "mechanical fallback" path. Empty is fine.
-═══════════════════════════════════════════════════════════════════════════
+Yesterday's lessons baked into these rules:
 
-Job: given a list of candidates from scanner.py and the current portfolio
-state, ask Claude which (if any) to buy. Return structured decisions.
+  - DON'T buy things that have already pumped 15%+ in 24h. That's chasing
+    the top of a move. Yesterday's scoring rewarded that. We've inverted it.
 
-This module is intentionally narrow:
+  - DON'T auto-sell after 4 hours of "no movement." Sideways is normal.
+    Most of the time, most assets are sideways. Selling on sideways
+    guarantees turnover for no edge.
 
-  - It does NOT fetch market data (that's prices.py + scanner.py).
-  - It does NOT execute trades (that's bot.py).
-  - It does NOT decide rules (that's strategy.py).
-  - It DOES translate "scanner says these qualify" + "we have these positions"
-    into "Claude says: buy these, skip those, here's why."
+  - DO use wider stops. -2.5% gets stopped out by normal noise. Real
+    swing trades need -8% room. Real momentum trades need -10%.
 
-Why Claude in the loop at all (when strategy.py already qualifies things)?
-Because qualification is binary — it says "this matches a pullback pattern."
-Claude adds judgment — "of these 8 qualified pullbacks, which 2 actually look
-clean, and which look like falling knives or news-driven panic?" The
-strategy rules are the floor; Claude is the editor.
+  - DO favor inaction. If nothing is a clean setup, buy nothing.
+    Cash is a position. Empty slots are fine.
 
-Yesterday's lessons baked in:
+────────────────────────────────────────────────────────────────────────────
+Capital allocation ($10,000 total)
+────────────────────────────────────────────────────────────────────────────
 
-  - We never tell Claude "fill all slots" or use a "mechanical fallback."
-    If Claude says no to all candidates, we buy nothing. Empty is fine.
+  Swing crypto    $4,000   up to 5 positions   $800 each      patient pile
+  Momentum crypto $2,000   up to 4 positions   $500 each      aggressive pile
+  Swing stocks    $3,500   up to 3 positions   ~$1,170 each   FX-cost aware
+  Ops floor          $500   not deployed                       fees + FX buffer
 
-  - The prompt explicitly forbids buying coins that have already pumped.
-    Even if a candidate slipped through (it shouldn't, scanner blocks this),
-    Claude is told: pumps and breakouts beyond their initial move are skips.
+  Bot CAN deploy up to $9,500 if good setups exist. Doesn't HAVE to.
 
-  - Token budget is hard-capped per call. No 6000-token responses.
+────────────────────────────────────────────────────────────────────────────
+Entry rules
+────────────────────────────────────────────────────────────────────────────
 
-  - Output is structured JSON only — no free-form "I'd suggest..." text
-    that yesterday's parser tried (and failed) to regex-extract trades from.
+  SWING CRYPTO — buying quality on pullbacks
+    - Top 30 by market cap (filter out micro-cap garbage)
+    - Currently DOWN 5-15% from 7-day high (the pullback)
+    - But still above 50-day moving average (the uptrend is intact)
+    - Decision once daily at 8 AM AEST
+
+  MOMENTUM CRYPTO — catching the start of moves
+    - Outside top 30 (mid/small cap, more upside potential)
+    - Just broke above 7-day high TODAY (not "already up 15%, late")
+    - Volume in last 24h > 2x its 7-day average (real interest, not noise)
+    - Decision twice daily, 8 AM and 4 PM AEST
+
+  SWING STOCKS — buying quality on pullbacks (US equities)
+    - From staples list (NVDA, AAPL, MSFT, etc.) or top Alpaca screener
+    - Down 3-8% from 7-day high
+    - Above 50-day MA
+    - Decision once daily at 8 AM AEST during market hours window
+
+────────────────────────────────────────────────────────────────────────────
+Exit rules
+────────────────────────────────────────────────────────────────────────────
+
+  SWING (crypto + stocks)
+    Stop: -8% from entry (crypto), -5% from entry (stocks)
+    Target: +15% takes HALF, trailing stop on the rest (5% trail)
+    Time: review at 30 days, no auto-exit
+
+  MOMENTUM
+    Stop: -10% from entry
+    Target: +30% (no take-half — let it run or stop out)
+    Time: max 7 days, then exit if not at target
+
+  Removed entirely: 4-hour "no movement" rule. Sideways is fine.
+
+────────────────────────────────────────────────────────────────────────────
 """
 
-import os
-import json
-import logging
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass
 from typing import Optional
 
-import strategy
 
-log = logging.getLogger(__name__)
+# ── Allocation constants ──────────────────────────────────────────────────
 
+STARTING_CAPITAL_AUD = 10_000.0
+OPS_FLOOR_AUD        = 500.0   # always-cash buffer for fees, FX
 
-# ── Model + budget ────────────────────────────────────────────────────────
+SWING_CRYPTO_BUDGET    = 4_000.0
+SWING_CRYPTO_SLOTS     = 5
+SWING_CRYPTO_SIZE      = SWING_CRYPTO_BUDGET / SWING_CRYPTO_SLOTS  # $800
 
-MODEL_DECIDE = "claude-opus-4-7"   # the model that picks trades
-MAX_TOKENS_DECIDE = 1500           # generous enough for 10 candidates × short reasoning
-DAILY_USD_CAP = 2.0                # hard ceiling — same as before
-SYSTEM_PROMPT_VERSION = 4          # bump this when prompt changes for tracking
-MIN_CONFIDENCE = 0.6               # below this, treat as "skip" even if Claude said buy
-MAX_CANDIDATES_TO_CLAUDE = 8       # token-budget cap; rank scanner output, send top 8
-MAX_BUYS_PER_CLUSTER = 2           # don't buy 3 highly-correlated assets in one round
+MOMENTUM_CRYPTO_BUDGET = 2_000.0
+MOMENTUM_CRYPTO_SLOTS  = 4
+MOMENTUM_CRYPTO_SIZE   = MOMENTUM_CRYPTO_BUDGET / MOMENTUM_CRYPTO_SLOTS  # $500
 
-
-# ── Correlation clusters ─────────────────────────────────────────────────
-# Coarse but useful grouping: assets in the same cluster tend to move together,
-# so buying multiple from one cluster isn't diversification — it's concentration.
-# Anything not listed defaults to its own single-asset cluster.
-ASSET_CLUSTERS = {
-    # Layer-1 platforms — usually move together on "L1 narrative" days
-    "ETH": "l1", "SOL": "l1", "AVAX": "l1", "NEAR": "l1", "APT": "l1",
-    "SUI": "l1", "SEI": "l1", "ICP": "l1", "ATOM": "l1", "DOT": "l1",
-    "TON": "l1", "TRX": "l1", "ALGO": "l1", "HBAR": "l1",
-
-    # L2/scaling
-    "ARB": "l2", "OP": "l2", "MATIC": "l2", "IMX": "l2", "STX": "l2",
-
-    # Memecoins — extreme correlation in retail-driven moves
-    "DOGE": "meme", "SHIB": "meme", "PEPE": "meme", "WIF": "meme",
-    "BONK": "meme", "FLOKI": "meme",
-
-    # AI tokens
-    "FET": "ai", "TAO": "ai", "WLD": "ai", "RNDR": "ai", "AGIX": "ai",
-
-    # DeFi blue chips
-    "UNI": "defi", "AAVE": "defi", "CRV": "defi", "COMP": "defi",
-    "MKR": "defi", "SUSHI": "defi", "LDO": "defi",
-
-    # Tech/semi stocks (when buying multiple at once = sector concentration)
-    "NVDA": "semi", "AMD": "semi", "AVGO": "semi", "TSM": "semi",
-    "AAPL": "megacap", "MSFT": "megacap", "GOOGL": "megacap",
-    "AMZN": "megacap", "META": "megacap", "TSLA": "megacap", "NFLX": "megacap",
-
-    # ETFs — own cluster each (hard to "diversify" by buying multiple broad ETFs)
-    "SPY": "etf", "QQQ": "etf", "IWM": "etf",
-    # BTC: own cluster — uncorrelated enough with everything else to ignore here
-}
+SWING_STOCKS_BUDGET    = 3_500.0
+SWING_STOCKS_SLOTS     = 3
+SWING_STOCKS_SIZE      = SWING_STOCKS_BUDGET / SWING_STOCKS_SLOTS  # ~$1,167
 
 
-def _cluster_for(symbol: str) -> str:
-    """Returns the cluster name for a symbol, or 'solo:SYM' if not mapped."""
-    sym = symbol.upper()
-    return ASSET_CLUSTERS.get(sym, f"solo:{sym}")
+# ── Exit rules ────────────────────────────────────────────────────────────
+
+# Crypto swing
+SWING_CRYPTO_STOP_PCT       = -0.08    # -8%
+SWING_CRYPTO_TARGET_PCT     = 0.15     # +15%
+SWING_CRYPTO_TRAIL_TRIGGER  = 0.15     # arm trailing at +15%
+SWING_CRYPTO_TRAIL_GIVEBACK = 0.05     # exit if 5% below trailing peak
+SWING_CRYPTO_REVIEW_DAYS    = 30
+
+# Crypto momentum
+MOMENTUM_STOP_PCT     = -0.10    # -10%
+MOMENTUM_TARGET_PCT   = 0.30     # +30% (no half-out — runs or stops)
+MOMENTUM_MAX_DAYS     = 7
+
+# Stocks (lower volatility, tighter rules)
+SWING_STOCKS_STOP_PCT       = -0.05
+SWING_STOCKS_TARGET_PCT     = 0.12
+SWING_STOCKS_TRAIL_TRIGGER  = 0.12
+SWING_STOCKS_TRAIL_GIVEBACK = 0.04
+SWING_STOCKS_REVIEW_DAYS    = 30
 
 
-# ── Data classes ──────────────────────────────────────────────────────────
+# ── Bucket enum ───────────────────────────────────────────────────────────
+
+class Bucket:
+    SWING_CRYPTO    = "swing_crypto"
+    MOMENTUM_CRYPTO = "momentum_crypto"
+    SWING_STOCK     = "swing_stock"
+
+
+# ── Entry decision ────────────────────────────────────────────────────────
 
 @dataclass
-class TradeDecision:
-    """One decision from Claude on one candidate."""
+class EntrySignal:
+    """One candidate that passes the entry filter for a bucket."""
     symbol: str
     bucket: str
-    action: str              # "buy" | "skip"
-    confidence: float        # 0..1, Claude's self-rated confidence
-    reason: str              # Claude's short reasoning
+    size_aud: float
+    reason: str        # short, human-readable: why this one
 
 
-@dataclass
-class BrainResult:
-    """Full output of decide_buys()."""
-    decisions: list = field(default_factory=list)
-    summary: str = ""
-    used_input_tokens: int = 0
-    used_output_tokens: int = 0
-    estimated_cost_usd: float = 0.0
-    error: str = ""
-
-
-# ── Prompt construction ─────────────────────────────────────────────────
-
-def _format_candidate(c: dict) -> str:
-    """Render one candidate as a short bullet for the prompt."""
-    sig = c.get("signal", {})
-    bits = []
-    if "rank" in sig:
-        bits.append(f"rank {sig['rank']}")
-    if "pullback_pct" in sig:
-        bits.append(f"pullback {sig['pullback_pct']*100:+.1f}%")
-    if "above_50d_ma" in sig:
-        bits.append("above 50dMA" if sig["above_50d_ma"] else "BELOW 50dMA")
-    if "broke_7d_high_today" in sig and sig["broke_7d_high_today"]:
-        bits.append("broke 7d high today")
-    if "volume_ratio" in sig:
-        bits.append(f"vol {sig['volume_ratio']:.1f}x avg")
-    if "close" in sig:
-        bits.append(f"close ${sig['close']:.4f}")
-
-    return f"- {c['symbol']} ({c['bucket']}): {', '.join(bits)} | qualifies because: {c.get('reasoning','')}"
-
-
-def _prescore_candidate(c: dict) -> float:
-    """
-    Deterministic ranking score. Used to cap candidates sent to Claude when
-    there are more than MAX_CANDIDATES_TO_CLAUDE qualified setups. Higher = better.
-    """
-    sig = c.get("signal", {})
-    bucket = c.get("bucket", "")
-    if bucket == strategy.Bucket.SWING_CRYPTO:
-        return strategy.prescore_swing_crypto(
-            market_cap_rank=sig.get("rank", 9999),
-            pullback_pct=sig.get("pullback_pct", 0.0),
-            above_50d_ma=sig.get("above_50d_ma", False),
-        )
-    if bucket == strategy.Bucket.MOMENTUM_CRYPTO:
-        return strategy.prescore_momentum_crypto(
-            market_cap_rank=sig.get("rank", 9999),
-            broke_7d_high_today=sig.get("broke_7d_high_today", False),
-            volume_ratio=sig.get("volume_ratio", 0.0),
-        )
-    if bucket == strategy.Bucket.SWING_STOCK:
-        return strategy.prescore_swing_stock(
-            pullback_pct=sig.get("pullback_pct", 0.0),
-            above_50d_ma=sig.get("above_50d_ma", False),
-        )
-    return 0.0
-
-
-def _format_portfolio(positions: dict, slot_state: dict, cash_aud: float) -> str:
-    """Render current portfolio state for Claude's context."""
-    lines = []
-    lines.append(f"Cash available: ${cash_aud:.2f} AUD (ops floor: ${strategy.OPS_FLOOR_AUD:.0f})")
-    lines.append(f"Slots used:")
-    lines.append(f"  swing_crypto    {slot_state.get('swing_crypto', 0)}/{strategy.SWING_CRYPTO_SLOTS}    "
-                 f"(${strategy.SWING_CRYPTO_SIZE:.0f} per buy)")
-    lines.append(f"  momentum_crypto {slot_state.get('momentum_crypto', 0)}/{strategy.MOMENTUM_CRYPTO_SLOTS}    "
-                 f"(${strategy.MOMENTUM_CRYPTO_SIZE:.0f} per buy)")
-    lines.append(f"  swing_stock     {slot_state.get('swing_stock', 0)}/{strategy.SWING_STOCKS_SLOTS}    "
-                 f"(${strategy.SWING_STOCKS_SIZE:.0f} per buy)")
-
-    if positions:
-        lines.append(f"\nCurrently holding ({len(positions)}):")
-        for sym, p in positions.items():
-            pnl = float(p.get("pnl_pct") or 0) * 100
-            mkt = (p.get("market") or "?")
-            lines.append(f"  {sym} ({mkt}) {pnl:+.2f}%")
-    else:
-        lines.append("\nNo current positions.")
-    return "\n".join(lines)
-
-
-SYSTEM_PROMPT = """You are RivX's trade decider. You see candidates that ALREADY passed the strategy's mechanical rules (correct rank, correct pullback or breakout, correct volume). Your job is judgment: of these qualified candidates, which actually look clean enough to buy now?
-
-CORE PRINCIPLES (non-negotiable):
-
-1. SKIP IS THE DEFAULT. If you have any meaningful doubt, skip. Empty slots are fine. Cash is a position.
-
-2. NEVER buy something that has already pumped 15%+ in the last 24h. The scanner shouldn't show you these, but if one slips through (e.g. a 24h surge after qualifying earlier), skip it. You're catching pullbacks and fresh breakouts, not chasing tops.
-
-3. NEVER buy something the user already holds. Re-entries get explicit approval, not bot autonomy.
-
-4. RESPECT BUCKET CAPS. If swing_crypto has 5/5 slots full, don't buy more for that bucket no matter how good the setup looks.
-
-5. AT MOST 3 BUYS PER CALL. Even if 8 candidates look great, pick the 3 cleanest. Diversification isn't piling in.
-
-OUTPUT FORMAT (strict JSON, no preamble, no markdown):
-
-{
-  "decisions": [
-    {"symbol": "BTC", "bucket": "swing_crypto", "action": "buy", "confidence": 0.7, "reason": "clean -8% pullback in established uptrend, top-1 cap, no red flags"},
-    {"symbol": "DOGE", "bucket": "momentum_crypto", "action": "skip", "confidence": 0.8, "reason": "breakout but price already +12% intraday, late entry"}
-  ],
-  "summary": "1 buy, 5 skips. Most candidates are post-pump, not entries."
-}
-
-Every candidate I show you must appear in `decisions` with action either "buy" or "skip". Nothing else. confidence is your self-rated 0-1 of the call."""
-
-
-def _build_user_message(
-    candidates: list,
-    positions: dict,
-    slot_state: dict,
-    cash_aud: float,
-) -> str:
-    """The user-facing message Claude reads to make decisions."""
-    if not candidates:
-        return "No candidates today. Output {\"decisions\":[], \"summary\":\"no candidates\"}."
-
-    portfolio_block = _format_portfolio(positions, slot_state, cash_aud)
-    candidate_lines = "\n".join(_format_candidate(c) for c in candidates)
-
-    return f"""PORTFOLIO STATE
-{portfolio_block}
-
-CANDIDATES ({len(candidates)} qualified)
-{candidate_lines}
-
-Decide: which to buy, which to skip, and why. Remember: skip is default; never buy something the user already holds; respect bucket caps; at most 3 buys."""
-
-
-# ── Response parsing ────────────────────────────────────────────────────
-
-def _parse_response(text: str) -> tuple[list, str, str]:
-    """
-    Parse Claude's JSON output.
-    Returns (decisions_list, summary, error_str). error_str is "" on success.
-    """
-    # Strip common prefixes/suffixes Claude sometimes adds despite system prompt
-    text = text.strip()
-    if text.startswith("```"):
-        # Remove ``` and ```json wrappers
-        lines = text.split("\n")
-        if lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].startswith("```"):
-            lines = lines[:-1]
-        text = "\n".join(lines)
-
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as e:
-        return [], "", f"JSON parse error: {e}. Raw: {text[:200]}"
-
-    if not isinstance(data, dict):
-        return [], "", f"Response not a dict: {type(data).__name__}"
-
-    decisions = data.get("decisions", [])
-    if not isinstance(decisions, list):
-        return [], "", "decisions field is not a list"
-
-    parsed = []
-    for d in decisions:
-        if not isinstance(d, dict):
-            continue
-        sym = d.get("symbol", "").upper().strip()
-        bucket = d.get("bucket", "").strip()
-        action = d.get("action", "").lower().strip()
-        if action not in ("buy", "skip"):
-            continue
-        if not sym or not bucket:
-            continue
-        try:
-            confidence = float(d.get("confidence", 0))
-            confidence = max(0.0, min(1.0, confidence))
-        except (TypeError, ValueError):
-            confidence = 0.0
-        parsed.append(TradeDecision(
-            symbol=sym,
-            bucket=bucket,
-            action=action,
-            confidence=confidence,
-            reason=str(d.get("reason", ""))[:300],
-        ))
-
-    summary = str(data.get("summary", ""))[:500]
-    return parsed, summary, ""
-
-
-# ── Cost estimate (Claude Opus 4.7 pricing) ──────────────────────────────
-
-def _estimate_cost_usd(input_tokens: int, output_tokens: int) -> float:
-    """
-    Opus 4.7 pricing per Anthropic's docs at the time of writing:
-      $15 per 1M input tokens
-      $75 per 1M output tokens
-    Conservative; if pricing changes the number is just a soft estimate.
-    """
-    return (input_tokens * 15.0 + output_tokens * 75.0) / 1_000_000
-
-
-# ── Main entry point ────────────────────────────────────────────────────
-
-def decide_buys(
+def qualifies_swing_crypto(
     *,
-    candidates: list,
-    positions: dict,
-    slot_state: dict,
-    cash_aud: float,
-    anthropic_client=None,
-    daily_spent_usd: float = 0.0,
-) -> BrainResult:
+    market_cap_rank: int,                # 1 = biggest. None if unknown
+    pullback_from_7d_high_pct: float,   # negative number, e.g. -0.08 = 8% off the high
+    above_50d_ma: bool,
+) -> tuple[bool, str]:
     """
-    Ask Claude which candidates to actually buy.
-
-    Args:
-        candidates: list of dicts from scanner.scan_*()
-        positions: {symbol: {pnl_pct, market, ...}} — currently held
-        slot_state: {bucket: count_used} — for cap awareness
-        cash_aud: available cash for buying
-        anthropic_client: an Anthropic client object with .messages.create().
-                          Pass None to skip the API call (used by tests)
-        daily_spent_usd: how much already spent today; aborts if over cap
-
-    Returns: BrainResult with decisions list + metadata
+    Returns (qualifies, reason).
+    Quality + pullback + uptrend intact.
     """
-    if daily_spent_usd >= DAILY_USD_CAP:
-        log.warning(f"brain: daily cap ${DAILY_USD_CAP} reached, skipping decision")
-        return BrainResult(
-            decisions=[],
-            summary="daily Claude budget exhausted",
-            error=f"daily_spent ${daily_spent_usd:.2f} >= cap ${DAILY_USD_CAP:.2f}",
-        )
+    if market_cap_rank is None or market_cap_rank > 30:
+        return False, f"rank {market_cap_rank} outside top 30"
 
-    # Filter out candidates for symbols we already hold — never call Claude on
-    # those. Saves tokens and removes a class of mistakes.
-    held = {s.upper() for s in (positions or {}).keys()}
-    fresh_candidates = [c for c in candidates if c.get("symbol", "").upper() not in held]
-    if len(fresh_candidates) < len(candidates):
-        skipped = [c["symbol"] for c in candidates if c["symbol"].upper() in held]
-        log.info(f"brain: skipped {len(skipped)} already-held: {skipped}")
+    # Pullback should be 5-15% off recent high (not too shallow, not crashing)
+    if pullback_from_7d_high_pct >= -0.05:
+        return False, f"only {pullback_from_7d_high_pct*100:.1f}% off 7d high (need -5% to -15%)"
+    if pullback_from_7d_high_pct < -0.15:
+        return False, f"{pullback_from_7d_high_pct*100:.1f}% off 7d high (too deep, possible breakdown)"
 
-    if not fresh_candidates:
-        return BrainResult(decisions=[], summary="no fresh candidates after held-position filter")
+    if not above_50d_ma:
+        return False, "below 50-day MA — uptrend not intact"
 
-    # Pre-filter against slot caps. If swing_crypto is full, drop swing_crypto
-    # candidates from what we even ask Claude. Saves the model from having to
-    # juggle that.
-    available = []
-    for c in fresh_candidates:
-        bucket = c.get("bucket", "")
-        slots_left = strategy.slots_available(bucket, slot_state.get(bucket, 0))
-        if slots_left > 0:
-            available.append(c)
-    if len(available) < len(fresh_candidates):
-        log.info(f"brain: dropped {len(fresh_candidates) - len(available)} candidates whose buckets are full")
-
-    if not available:
-        return BrainResult(decisions=[], summary="all relevant buckets full")
-
-    # Cap candidates by deterministic pre-score (token control + dilution control).
-    # Send Claude only the top N strongest setups, not 50 borderline ones.
-    if len(available) > MAX_CANDIDATES_TO_CLAUDE:
-        scored = [(_prescore_candidate(c), c) for c in available]
-        scored.sort(key=lambda x: x[0], reverse=True)
-        available = [c for _, c in scored[:MAX_CANDIDATES_TO_CLAUDE]]
-        log.info(f"brain: capped to top {MAX_CANDIDATES_TO_CLAUDE} candidates by pre-score")
-
-    if anthropic_client is None:
-        log.warning("brain: no anthropic_client passed, returning empty (test mode)")
-        return BrainResult(decisions=[], summary="test mode — no client")
-
-    user_msg = _build_user_message(available, positions, slot_state, cash_aud)
-
-    try:
-        resp = anthropic_client.messages.create(
-            model=MODEL_DECIDE,
-            max_tokens=MAX_TOKENS_DECIDE,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_msg}],
-        )
-    except Exception as e:
-        log.error(f"brain: Claude API failed: {e}")
-        return BrainResult(decisions=[], summary="", error=f"API error: {e}")
-
-    # Extract text from response
-    try:
-        text = resp.content[0].text
-    except (AttributeError, IndexError) as e:
-        return BrainResult(decisions=[], summary="", error=f"unexpected response shape: {e}")
-
-    decisions, summary, parse_err = _parse_response(text)
-    if parse_err:
-        log.error(f"brain: {parse_err}")
-        return BrainResult(decisions=[], summary="", error=parse_err)
-
-    # Get token usage from response (Anthropic SDK uses .usage attribute)
-    in_tok = getattr(getattr(resp, "usage", None), "input_tokens", 0) or 0
-    out_tok = getattr(getattr(resp, "usage", None), "output_tokens", 0) or 0
-    cost = _estimate_cost_usd(in_tok, out_tok)
-
-    return BrainResult(
-        decisions=decisions,
-        summary=summary,
-        used_input_tokens=in_tok,
-        used_output_tokens=out_tok,
-        estimated_cost_usd=cost,
+    return True, (
+        f"top-{market_cap_rank} cap, "
+        f"{pullback_from_7d_high_pct*100:.1f}% pullback in uptrend"
     )
 
 
-# ── Validation against strategy rules ──────────────────────────────────
-
-def filter_decisions_by_safety(
-    decisions: list,
-    cash_aud: float,
-    slot_state: dict,
-) -> tuple[list, list]:
+def qualifies_momentum_crypto(
+    *,
+    market_cap_rank: int,
+    broke_7d_high_today: bool,            # True if today's high > prior 7d high
+    volume_vs_7d_avg_ratio: float,       # 2.5 = 2.5x average volume
+) -> tuple[bool, str]:
     """
-    Final gate: even if Claude said "buy", refuse if:
-      - bucket cap reached (defensive — we already filtered, but Claude might
-        have said buy on multiple from same bucket)
-      - ops floor would be breached
-      - duplicate symbols (Claude returned same symbol twice)
-
-    Returns (allowed_decisions, rejected_with_reason).
+    Catching the START of a breakout, not the middle.
+    Outside top 30 (more upside), broke a recent high TODAY, on real volume.
     """
-    allowed = []
-    rejected = []
-    seen_symbols = set()
-    cluster_used_this_round = {}    # cluster_name -> count bought this round
-    bucket_used_this_round = dict(slot_state)
-    cash_remaining = cash_aud
+    if market_cap_rank is None:
+        return False, "no rank"
+    if market_cap_rank <= 30:
+        return False, f"rank {market_cap_rank} too big for momentum bucket"
+    if market_cap_rank > 200:
+        return False, f"rank {market_cap_rank} too obscure"
 
-    for d in decisions:
-        if d.action != "buy":
-            continue
+    if not broke_7d_high_today:
+        return False, "no 7d-high breakout today"
 
-        # Confidence floor: Claude often hedges at 0.5 ("could go either way").
-        # We treat anything below MIN_CONFIDENCE as a skip, even if Claude said buy.
-        if d.confidence < MIN_CONFIDENCE:
-            rejected.append((d, f"confidence {d.confidence:.2f} below floor {MIN_CONFIDENCE}"))
-            continue
+    if volume_vs_7d_avg_ratio < 2.0:
+        return False, f"volume only {volume_vs_7d_avg_ratio:.1f}x average (need ≥2x)"
 
-        if d.symbol in seen_symbols:
-            rejected.append((d, "duplicate symbol in same decision"))
-            continue
-        seen_symbols.add(d.symbol)
+    return True, (
+        f"rank {market_cap_rank} broke 7d high today on "
+        f"{volume_vs_7d_avg_ratio:.1f}x volume"
+    )
 
-        # Correlation cluster cap: don't buy 3 things that move together
-        cluster = _cluster_for(d.symbol)
-        if cluster_used_this_round.get(cluster, 0) >= MAX_BUYS_PER_CLUSTER:
-            rejected.append((d, f"cluster '{cluster}' already has {MAX_BUYS_PER_CLUSTER} buys this round"))
-            continue
 
-        slots_left = strategy.slots_available(d.bucket, bucket_used_this_round.get(d.bucket, 0))
-        if slots_left <= 0:
-            rejected.append((d, f"bucket {d.bucket} full"))
-            continue
+def qualifies_swing_stock(
+    *,
+    is_quality: bool,                     # in staples list, or passes quality filter
+    pullback_from_7d_high_pct: float,
+    above_50d_ma: bool,
+) -> tuple[bool, str]:
+    """Same as swing crypto but with stock-appropriate thresholds."""
+    if not is_quality:
+        return False, "not in quality list"
 
-        size = strategy.position_size_for(d.bucket)
-        ok, reason = strategy.buy_respects_ops_floor(
-            current_cash_aud=cash_remaining,
-            intended_buy_aud=size,
+    if pullback_from_7d_high_pct >= -0.03:
+        return False, f"only {pullback_from_7d_high_pct*100:.1f}% off 7d high (need -3% to -8%)"
+    if pullback_from_7d_high_pct < -0.08:
+        return False, f"{pullback_from_7d_high_pct*100:.1f}% off 7d high (too deep)"
+
+    if not above_50d_ma:
+        return False, "below 50-day MA"
+
+    return True, f"quality stock, {pullback_from_7d_high_pct*100:.1f}% pullback in uptrend"
+
+
+# ── Slot accounting ───────────────────────────────────────────────────────
+
+def slots_available(bucket: str, current_positions_in_bucket: int) -> int:
+    """How many more positions can this bucket hold?"""
+    cap = {
+        Bucket.SWING_CRYPTO:    SWING_CRYPTO_SLOTS,
+        Bucket.MOMENTUM_CRYPTO: MOMENTUM_CRYPTO_SLOTS,
+        Bucket.SWING_STOCK:     SWING_STOCKS_SLOTS,
+    }.get(bucket, 0)
+    return max(0, cap - current_positions_in_bucket)
+
+
+def position_size_for(bucket: str) -> float:
+    """How much AUD goes into one position of this bucket type?"""
+    return {
+        Bucket.SWING_CRYPTO:    SWING_CRYPTO_SIZE,
+        Bucket.MOMENTUM_CRYPTO: MOMENTUM_CRYPTO_SIZE,
+        Bucket.SWING_STOCK:     SWING_STOCKS_SIZE,
+    }.get(bucket, 0.0)
+
+
+# ── Pre-score (deterministic ranking, used to cap candidates) ─────────────
+# This is the score used to pick the top N candidates to send to Claude.
+# It's NOT the qualification gate — qualifies_* already did that. This just
+# orders the ones that already qualified, so we send the strongest first.
+
+def prescore_swing_crypto(*, market_cap_rank: int, pullback_pct: float,
+                          above_50d_ma: bool) -> float:
+    """
+    Higher = better setup. Used to pick top 8 of N qualified candidates.
+
+    Reward:
+      - higher market cap (lower rank number) = quality preference
+      - pullback in the sweet spot (-7% to -10%) = better reward/risk
+      - above 50d MA confirmed = uptrend
+    """
+    if not above_50d_ma:
+        return 0.0
+    score = 0.0
+    # Rank: top 5 = 2.0, top 10 = 1.5, top 30 = 1.0, else 0
+    if market_cap_rank <= 5:    score += 2.0
+    elif market_cap_rank <= 10: score += 1.5
+    elif market_cap_rank <= 30: score += 1.0
+    # Pullback sweet spot: -8 to -10%
+    abs_pull = abs(pullback_pct)
+    if 0.07 <= abs_pull <= 0.10:    score += 2.0
+    elif 0.05 <= abs_pull <= 0.13:  score += 1.0
+    return score
+
+
+def prescore_momentum_crypto(*, market_cap_rank: int, broke_7d_high_today: bool,
+                             volume_ratio: float) -> float:
+    """
+    Reward fresh breakouts on big volume in the right cap range.
+    """
+    if not broke_7d_high_today:
+        return 0.0
+    score = 1.0  # base for any breakout
+    # Bigger volume = stronger conviction
+    if volume_ratio >= 4.0:    score += 2.0
+    elif volume_ratio >= 3.0:  score += 1.5
+    elif volume_ratio >= 2.0:  score += 1.0
+    # Mid-cap sweet spot (rank 30-100): biggest upside-with-floor
+    if 30 < market_cap_rank <= 80:    score += 1.5
+    elif 80 < market_cap_rank <= 150: score += 1.0
+    return score
+
+
+def prescore_swing_stock(*, pullback_pct: float, above_50d_ma: bool) -> float:
+    """Same shape as crypto, tighter window."""
+    if not above_50d_ma:
+        return 0.0
+    score = 1.0  # quality stock list = base
+    abs_pull = abs(pullback_pct)
+    if 0.04 <= abs_pull <= 0.06:    score += 2.0
+    elif 0.03 <= abs_pull <= 0.08:  score += 1.0
+    return score
+
+
+def cash_remaining_after_buy(
+    *,
+    current_cash_aud: float,
+    intended_buy_aud: float,
+) -> float:
+    """How much cash would be left after this buy?"""
+    return current_cash_aud - intended_buy_aud
+
+
+def buy_respects_ops_floor(
+    *,
+    current_cash_aud: float,
+    intended_buy_aud: float,
+) -> tuple[bool, str]:
+    """
+    Don't deploy below the ops floor. The floor exists for fees + FX,
+    not strategic dry powder.
+    """
+    after = cash_remaining_after_buy(
+        current_cash_aud=current_cash_aud,
+        intended_buy_aud=intended_buy_aud,
+    )
+    if after < OPS_FLOOR_AUD:
+        return False, (
+            f"would leave ${after:.0f} cash, below ops floor ${OPS_FLOOR_AUD:.0f}"
         )
-        if not ok:
-            rejected.append((d, reason))
-            continue
+    return True, f"${after:.0f} cash remains, floor ${OPS_FLOOR_AUD:.0f} respected"
 
-        allowed.append(d)
-        bucket_used_this_round[d.bucket] = bucket_used_this_round.get(d.bucket, 0) + 1
-        cluster_used_this_round[cluster] = cluster_used_this_round.get(cluster, 0) + 1
-        cash_remaining -= size
 
-    return allowed, rejected
+# ── Exit decision ────────────────────────────────────────────────────────
+
+@dataclass
+class ExitDecision:
+    """Result of applying exit rules to one open position."""
+    should_exit: bool
+    fraction: float       # 1.0 = full exit, 0.5 = take half, 0.0 = keep
+    reason: str
+    new_peak_pnl_pct: float = 0.0   # what to update the trailing-stop watermark to
+
+
+def decide_exit_swing_crypto(
+    *,
+    pnl_pct: float,                  # current unrealized P&L as fraction (0.05 = +5%)
+    peak_pnl_pct: float,             # highest pnl_pct seen so far for trailing
+    age_days: float,
+) -> ExitDecision:
+    """
+    Stop: -8%. Target: +15% takes half, then trail with 5% give-back.
+    No 4hr time-exit — review at 30 days only.
+    """
+    new_peak = max(peak_pnl_pct, pnl_pct)
+
+    # Stop loss
+    if pnl_pct <= SWING_CRYPTO_STOP_PCT:
+        return ExitDecision(
+            should_exit=True,
+            fraction=1.0,
+            reason=f"stop loss hit ({pnl_pct*100:.2f}% ≤ {SWING_CRYPTO_STOP_PCT*100:.0f}%)",
+            new_peak_pnl_pct=new_peak,
+        )
+
+    # Trailing stop (only armed once we hit +15%)
+    if peak_pnl_pct >= SWING_CRYPTO_TRAIL_TRIGGER:
+        if pnl_pct <= peak_pnl_pct - SWING_CRYPTO_TRAIL_GIVEBACK:
+            return ExitDecision(
+                should_exit=True,
+                fraction=1.0,
+                reason=f"trailing stop ({pnl_pct*100:.2f}% gave back "
+                       f"{(peak_pnl_pct - pnl_pct)*100:.2f}% from peak {peak_pnl_pct*100:.2f}%)",
+                new_peak_pnl_pct=new_peak,
+            )
+
+    # Time review at 30 days
+    if age_days >= SWING_CRYPTO_REVIEW_DAYS:
+        return ExitDecision(
+            should_exit=True,
+            fraction=1.0,
+            reason=f"30-day review reached (age {age_days:.1f}d, pnl {pnl_pct*100:.2f}%)",
+            new_peak_pnl_pct=new_peak,
+        )
+
+    # Hold
+    return ExitDecision(
+        should_exit=False,
+        fraction=0.0,
+        reason=f"holding ({pnl_pct*100:+.2f}%, peak {new_peak*100:+.2f}%, age {age_days:.1f}d)",
+        new_peak_pnl_pct=new_peak,
+    )
+
+
+def decide_exit_momentum(
+    *,
+    pnl_pct: float,
+    age_days: float,
+) -> ExitDecision:
+    """
+    Stop: -10%. Target: +30% (no half-out, runs or stops).
+    Hard time-exit at 7 days — momentum thesis is dead by then.
+    """
+    if pnl_pct <= MOMENTUM_STOP_PCT:
+        return ExitDecision(
+            should_exit=True,
+            fraction=1.0,
+            reason=f"stop loss ({pnl_pct*100:.2f}% ≤ {MOMENTUM_STOP_PCT*100:.0f}%)",
+        )
+
+    if pnl_pct >= MOMENTUM_TARGET_PCT:
+        return ExitDecision(
+            should_exit=True,
+            fraction=1.0,
+            reason=f"target reached ({pnl_pct*100:.2f}% ≥ {MOMENTUM_TARGET_PCT*100:.0f}%)",
+        )
+
+    if age_days >= MOMENTUM_MAX_DAYS:
+        return ExitDecision(
+            should_exit=True,
+            fraction=1.0,
+            reason=f"7-day momentum window expired (age {age_days:.1f}d, pnl {pnl_pct*100:+.2f}%)",
+        )
+
+    return ExitDecision(
+        should_exit=False,
+        fraction=0.0,
+        reason=f"holding ({pnl_pct*100:+.2f}%, age {age_days:.1f}d)",
+    )
+
+
+def decide_exit_swing_stock(
+    *,
+    pnl_pct: float,
+    peak_pnl_pct: float,
+    age_days: float,
+) -> ExitDecision:
+    """Same shape as swing crypto with stock-tuned thresholds."""
+    new_peak = max(peak_pnl_pct, pnl_pct)
+
+    if pnl_pct <= SWING_STOCKS_STOP_PCT:
+        return ExitDecision(
+            should_exit=True, fraction=1.0,
+            reason=f"stop loss ({pnl_pct*100:.2f}% ≤ {SWING_STOCKS_STOP_PCT*100:.0f}%)",
+            new_peak_pnl_pct=new_peak,
+        )
+
+    if peak_pnl_pct >= SWING_STOCKS_TRAIL_TRIGGER:
+        if pnl_pct <= peak_pnl_pct - SWING_STOCKS_TRAIL_GIVEBACK:
+            return ExitDecision(
+                should_exit=True, fraction=1.0,
+                reason=f"trailing stop ({pnl_pct*100:.2f}% gave back "
+                       f"{(peak_pnl_pct - pnl_pct)*100:.2f}% from peak {peak_pnl_pct*100:.2f}%)",
+                new_peak_pnl_pct=new_peak,
+            )
+
+    if age_days >= SWING_STOCKS_REVIEW_DAYS:
+        return ExitDecision(
+            should_exit=True, fraction=1.0,
+            reason=f"30-day review (age {age_days:.1f}d, pnl {pnl_pct*100:.2f}%)",
+            new_peak_pnl_pct=new_peak,
+        )
+
+    return ExitDecision(
+        should_exit=False, fraction=0.0,
+        reason=f"holding ({pnl_pct*100:+.2f}%, peak {new_peak*100:+.2f}%, age {age_days:.1f}d)",
+        new_peak_pnl_pct=new_peak,
+    )
