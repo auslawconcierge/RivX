@@ -1,4 +1,4 @@
-# RIVX_VERSION: v2.2-schedule-fixed-2026-04-26
+# RIVX_VERSION: v2.3-qa-handler-2026-04-26
 """
 RivX bot.py — main loop orchestrator (v2 strategy).
 
@@ -764,6 +764,190 @@ def run_manual_orders(db, alpaca, coinspot, tg: TelegramNotifier):
             log.warning(f"manual order {oid}: {e}")
 
 
+# ── Q&A: answer dashboard questions (was missing in v2.2 — added in v2.3) ────
+
+QA_MODEL = "claude-sonnet-4-6"  # cheap, fast — we don't need Opus to answer "what are you doing?"
+QA_MAX_TOKENS = 600
+QA_POLL_LIMIT = 3  # max pending questions to process per main-loop iteration
+
+QA_SYSTEM_PROMPT = """You are RivX, a paper-trading bot answering questions from your owner.
+
+You trade three buckets with $10K total starting capital:
+- Swing crypto ($4000 budget, 5 slots, $800/buy): buy on 5-15% pullbacks from 7d high in top 30 by market cap, above 50d MA
+- Momentum crypto ($2000, 4 slots, $500/buy): buy when something breaks its 7d high TODAY with 2x average volume, rank 30-200
+- Swing stocks ($3500, 3 slots, $1167/buy): 3-8% pullbacks above 50d MA, quality list (NVDA AAPL MSFT META GOOGL AMZN AMD AVGO TSM TSLA NFLX ADBE CRM SPY QQQ IWM)
+- $500 always-cash ops floor
+
+Auto-exits per bucket:
+- Swing crypto: -8% stop / +15% target (take half) / 5% trail / 30d review
+- Momentum: -10% stop / +30% target (full exit) / 7d hard exit
+- Swing stocks: -5% stop / +12% target (take half) / 4% trail / 30d review
+
+Schedule:
+- Crypto scans 8 AM + 4 PM AEST
+- Stock scans 11 PM + 3 AM AEST (US weekdays)
+- Snapshots every 5 min, heartbeat every 30 sec
+
+When answering:
+- Be direct, conversational, no fluff
+- Reference actual current data when relevant
+- If you don't know something, say so
+- Use markdown sparingly for clarity (bold for emphasis, lists when actually a list)
+- Keep answers under 250 words unless the question demands detail
+- If asked why no trades fired, the most common reason is "0 candidates met the entry rules" — patience is a feature, not a bug
+"""
+
+
+def process_pending_questions(db):
+    """Poll user_questions for pending rows and answer them using Claude."""
+    try:
+        pending = db._get("user_questions",
+                          {"status": "eq.pending",
+                           "order": "asked_at.asc",
+                           "limit": str(QA_POLL_LIMIT)})
+    except Exception as e:
+        if int(time.time()) % 60 == 0:
+            log.debug(f"Q&A poll: {e}")
+        return
+
+    if not pending:
+        return
+
+    client = get_anthropic_client()
+    if client is None:
+        log.warning("Q&A: anthropic client unavailable — skipping")
+        return
+
+    # Build shared context once for this batch
+    try:
+        positions = db.get_positions() or {}
+        portfolio = db.get_portfolio_value() or {}
+        recent = db.get_recent_trades(limit=15) or []
+    except Exception as e:
+        log.error(f"Q&A context build: {e}")
+        return
+
+    context_msg = _build_qa_context(positions, portfolio, recent, db)
+
+    for q in pending:
+        qid = q.get("id")
+        question_text = (q.get("question") or "").strip()
+        if not question_text:
+            db._patch("user_questions",
+                      {"status": "error", "answer": "(empty question)"},
+                      "id", str(qid))
+            continue
+
+        log.info(f"Q&A: answering q{qid}: {question_text[:60]!r}")
+        try:
+            answer = _call_claude_for_qa(client, context_msg, question_text)
+        except Exception as e:
+            log.error(f"Q&A Claude call failed for q{qid}: {e}")
+            db._patch("user_questions",
+                      {"status": "error",
+                       "answer": f"Sorry — Claude call failed: {e}"},
+                      "id", str(qid))
+            continue
+
+        ok = db._patch("user_questions",
+                       {"status": "complete",
+                        "answer": answer,
+                        "answered_at": safety.now_utc_iso()},
+                       "id", str(qid))
+        if ok:
+            log.info(f"Q&A: q{qid} answered ({len(answer)} chars)")
+        else:
+            log.warning(f"Q&A: PATCH user_questions failed for q{qid} — "
+                        f"check RLS/grants on the table")
+
+
+def _build_qa_context(positions: dict, portfolio: dict, recent: list, db) -> str:
+    """Build a compact context string for Claude with current bot state."""
+    parts = []
+
+    total = float(portfolio.get("total_aud") or 0)
+    cash = float(portfolio.get("cash_aud") or 0)
+    deployed = float(portfolio.get("deployed_aud") or 0)
+    total_pnl = float(portfolio.get("total_pnl") or 0)
+    parts.append(
+        f"PORTFOLIO: ${total:,.2f} AUD total · ${cash:,.0f} cash · "
+        f"${deployed:,.0f} deployed · P&L {total_pnl:+,.2f}"
+    )
+
+    # Open positions grouped by bucket
+    if positions:
+        parts.append(f"\nOPEN POSITIONS ({len(positions)}):")
+        for sym, p in positions.items():
+            bucket = p.get("bucket") or "(legacy)"
+            aud = float(p.get("aud_amount") or 0)
+            pnl_pct = float(p.get("pnl_pct") or 0) * 100
+            market = p.get("market") or "?"
+            created = (p.get("created_at") or "")[:10]
+            parts.append(
+                f"  - {sym} [{bucket}] ${aud:.0f} on {market} · "
+                f"{pnl_pct:+.2f}% P&L · opened {created}"
+            )
+    else:
+        parts.append("\nOPEN POSITIONS: none — entirely in cash")
+
+    # Recent trades
+    if recent:
+        n = min(len(recent), 10)
+        parts.append(f"\nRECENT TRADES (last {n}):")
+        for t in recent[:10]:
+            sym = t.get("symbol") or "?"
+            action = (t.get("action") or "?").upper()
+            aud = float(t.get("aud_amount") or 0)
+            pnl = t.get("pnl_pct")
+            pnl_str = f" P&L {float(pnl)*100:+.1f}%" if pnl is not None else ""
+            details = (t.get("details") or "")[:90]
+            ts = (t.get("created_at") or "")[:16]
+            parts.append(f"  - {ts} {action} {sym} ${aud:.0f}{pnl_str} · {details}")
+    else:
+        parts.append("\nRECENT TRADES: none yet")
+
+    # Last scan results from claude_decisions
+    try:
+        decisions = db._get("claude_decisions",
+                            {"order": "decided_at.desc", "limit": "5"}) or []
+        if decisions:
+            parts.append("\nLAST 5 CLAUDE DECISIONS:")
+            for d in decisions:
+                sym = d.get("symbol") or "?"
+                action = (d.get("action") or "?").upper()
+                conf = d.get("confidence")
+                conf_str = f" ({float(conf)*100:.0f}%)" if conf is not None else ""
+                reason = (d.get("reason") or "")[:120]
+                ts = (d.get("decided_at") or "")[:16]
+                parts.append(f"  - {ts} {action} {sym}{conf_str}: {reason}")
+    except Exception:
+        pass
+
+    aest = timezone(timedelta(hours=10))
+    now_aest = datetime.now(aest)
+    parts.append(f"\nCURRENT TIME: {now_aest.strftime('%A %Y-%m-%d %H:%M')} AEST")
+
+    return "\n".join(parts)
+
+
+def _call_claude_for_qa(client, context: str, question: str) -> str:
+    """Send context+question to Claude, return the answer text."""
+    user_msg = f"{context}\n\n---\n\nQUESTION FROM USER: {question}"
+
+    resp = client.messages.create(
+        model=QA_MODEL,
+        max_tokens=QA_MAX_TOKENS,
+        system=QA_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": user_msg}],
+    )
+
+    if resp.content and len(resp.content) > 0:
+        first = resp.content[0]
+        if hasattr(first, "text"):
+            return first.text.strip()
+    return "(no answer generated)"
+
+
 # ── Main loop ────────────────────────────────────────────────────────────
 
 def main():
@@ -825,12 +1009,13 @@ def main():
 
             write_heartbeat(db)
 
-            # Always: kill switch + manual orders + telegram polling
+            # Always: kill switch + manual orders + Q&A polling + telegram polling
             try:
                 tg.check_kill_switch(db)
             except Exception as e:
                 log.debug(f"telegram poll: {e}")
             run_manual_orders(db, alpaca, coinspot, tg)
+            process_pending_questions(db)
 
             # Snapshot every 5 min
             if now_ts - last_snapshot >= SNAPSHOT_INTERVAL_SEC:
