@@ -1,3 +1,4 @@
+# RIVX_VERSION: v2.2-schedule-fixed-2026-04-26
 """
 RivX bot.py — main loop orchestrator (v2 strategy).
 
@@ -75,12 +76,14 @@ from bot.coinspot_trader import CoinSpotTrader
 
 # ── Loop cadence ──────────────────────────────────────────────────────────
 
-MAIN_TICK_SECONDS       = 30      # outer loop: kill switch, manual orders, heartbeat
-SNAPSHOT_INTERVAL_SEC   = 300     # 5 min — mark portfolio to market
-SWING_CRYPTO_TIMES_AEST = ["08:00"]              # once a day at 8 AM AEST
-MOMENTUM_TIMES_AEST     = ["08:00", "16:00"]     # twice a day
-SWING_STOCK_TIMES_AEST  = ["08:00"]
-HEARTBEAT_FLAG          = "last_heartbeat"
+MAIN_TICK_SECONDS         = 30      # outer loop: kill switch, manual orders, heartbeat
+SNAPSHOT_INTERVAL_SEC     = 300     # 5 min — mark portfolio to market
+SWING_CRYPTO_TIMES_AEST   = ["08:00"]              # once a day at 8 AM AEST
+MOMENTUM_TIMES_AEST       = ["08:00", "16:00"]     # 8 AM + 4 PM AEST
+SWING_STOCK_TIMES_AEST    = ["23:00", "03:00"]     # 30 min before NYSE open + mid-session
+                                                    # weekdays only (skipped Sat/Sun in AEST)
+DAILY_SUMMARY_TIMES_AEST  = ["08:00", "20:00"]     # morning + evening Telegram summary
+HEARTBEAT_FLAG            = "last_heartbeat"
 
 
 # ── Time helpers ──────────────────────────────────────────────────────────
@@ -112,6 +115,25 @@ def at_or_past_time_today(target_hhmm: str, last_run_iso: str | None) -> bool:
         return last_aest < target_today
     except Exception:
         return True
+
+
+def is_us_trading_weekday_aest() -> bool:
+    """
+    True if it's currently a US-market trading weekday in AEST terms.
+    NYSE runs Mon-Fri ET. AEST is ahead of ET by 14-16 hours, so:
+      - AEST Mon morning = ET Sun evening → no trading yet (Sun is weekend)
+      - AEST Mon evening (NYSE open) = ET Mon morning → trading
+      - AEST Tue 3am (NYSE mid-session) = ET Mon noon → trading
+      - AEST Sat morning = ET Fri evening → trading just closed (last scan ok)
+      - AEST Sun = ET Sat → no trading
+
+    For stock SCAN purposes (we scan to queue trades for the next session),
+    we want to scan when ET is a weekday. Easier check: convert AEST to ET
+    and ask if THAT day is a weekday.
+    """
+    now_aest = aest_now()
+    et_now = now_aest - timedelta(hours=14)  # rough; close enough for weekday check
+    return et_now.weekday() < 5
 
 
 # ── Anthropic client lazy-load ────────────────────────────────────────────
@@ -643,6 +665,56 @@ def run_buy_cycle(
         tg.send(f"⚠️ buy cycle error ({mode}): {e}")
 
 
+# ── Daily summary push ───────────────────────────────────────────────────
+
+def run_daily_summary(db, tg: TelegramNotifier):
+    """
+    Send an end-of-window summary to Telegram.
+    Called from the scheduler at 8 AM and 8 PM AEST.
+
+    Uses the same data the /summary command pulls so the two views agree.
+    """
+    try:
+        portfolio = db.get_portfolio_value() or {}
+        recent    = db.get_recent_trades(limit=50) or []
+
+        total_aud = float(portfolio.get("total_aud") or strategy.STARTING_CAPITAL_AUD)
+        day_pnl   = float(portfolio.get("day_pnl") or 0.0)
+        total_pnl = float(portfolio.get("total_pnl") or 0.0)
+
+        # Build action list from today's trades (same midnight-AEST window
+        # the /summary command uses)
+        midnight_aest = aest_now().replace(hour=0, minute=0, second=0, microsecond=0)
+        midnight_utc  = midnight_aest.astimezone(timezone.utc)
+        actions = []
+        for t in recent:
+            try:
+                ts_str = (t.get("created_at") or "").replace("Z", "+00:00")
+                ts = datetime.fromisoformat(ts_str)
+                if ts < midnight_utc:
+                    continue
+                a = (t.get("action") or "").upper()
+                sym = t.get("symbol", "?")
+                pct = float(t.get("pnl_pct") or 0) * 100 if a == "SELL" else 0.0
+                if a == "SELL":
+                    actions.append(f"SELL {sym} ({pct:+.2f}%)")
+                elif a == "BUY":
+                    actions.append(f"BUY {sym}")
+            except Exception:
+                pass
+
+        tg.send_daily_summary(
+            total_aud=total_aud,
+            day_pnl=day_pnl,
+            total_pnl=total_pnl,
+            actions=actions,
+        )
+        log.info(f"daily summary sent: {len(actions)} actions, total=${total_aud:.2f}")
+    except Exception as e:
+        log.error(f"daily summary failed: {e}")
+        log.debug(traceback.format_exc())
+
+
 # ── Manual orders (Telegram /sell, dashboard force-sell) ─────────────────
 
 def run_manual_orders(db, alpaca, coinspot, tg: TelegramNotifier):
@@ -699,6 +771,7 @@ def main():
     try:
         log.info(f"RivX v2 starting — {'PAPER' if PAPER_MODE else 'LIVE'} mode")
         log.info(f"Strategy: $4K swing crypto / $2K momentum crypto / $3.5K stocks / $500 ops floor")
+        log.info(f"Schedule: crypto 8 AM + 4 PM AEST | stocks 11 PM + 3 AM AEST (weekdays) | summaries 8 AM + 8 PM AEST")
         sys.stdout.flush()
 
         db = SupabaseLogger()
@@ -743,7 +816,8 @@ def main():
     last_snapshot = 0.0
     last_swing_crypto_run = db.get_flag("last_swing_crypto_run")
     last_momentum_runs = {t: db.get_flag(f"last_momentum_{t}") for t in MOMENTUM_TIMES_AEST}
-    last_stock_run = db.get_flag("last_stock_run")
+    last_stock_runs = {t: db.get_flag(f"last_stock_{t}") for t in SWING_STOCK_TIMES_AEST}
+    last_summary_runs = {t: db.get_flag(f"last_summary_{t}") for t in DAILY_SUMMARY_TIMES_AEST}
 
     while True:
         try:
@@ -764,6 +838,13 @@ def main():
                 manage_open_positions(db, alpaca, coinspot, tg)
                 last_snapshot = now_ts
 
+            # Daily summaries (always run, even when paused — informational only)
+            for t in DAILY_SUMMARY_TIMES_AEST:
+                if at_or_past_time_today(t, last_summary_runs.get(t)):
+                    run_daily_summary(db, tg)
+                    last_summary_runs[t] = safety.now_utc_iso()
+                    db.set_flag(f"last_summary_{t}", last_summary_runs[t])
+
             kill = (db.get_flag("kill_switch") or "").lower() in ("on", "1", "true")
             if not kill:
                 # Swing crypto: once a day at 8 AM AEST
@@ -774,7 +855,7 @@ def main():
                         last_swing_crypto_run = safety.now_utc_iso()
                         db.set_flag("last_swing_crypto_run", last_swing_crypto_run)
 
-                # Momentum: 8 AM and 4 PM
+                # Momentum crypto: 8 AM and 4 PM AEST
                 for t in MOMENTUM_TIMES_AEST:
                     if at_or_past_time_today(t, last_momentum_runs.get(t)):
                         run_buy_cycle(mode=strategy.Bucket.MOMENTUM_CRYPTO,
@@ -782,15 +863,17 @@ def main():
                         last_momentum_runs[t] = safety.now_utc_iso()
                         db.set_flag(f"last_momentum_{t}", last_momentum_runs[t])
 
-                # Swing stocks: 8 AM AEST (during US market hours window — actually
-                # 8am AEST = 6pm ET previous day, after-hours. We still scan; trades
-                # execute when market opens. Alpaca handles queueing during off-hours).
-                for t in SWING_STOCK_TIMES_AEST:
-                    if at_or_past_time_today(t, last_stock_run):
-                        run_buy_cycle(mode=strategy.Bucket.SWING_STOCK,
-                                      db=db, alpaca=alpaca, coinspot=coinspot, tg=tg)
-                        last_stock_run = safety.now_utc_iso()
-                        db.set_flag("last_stock_run", last_stock_run)
+                # Swing stocks: 11 PM (NYSE pre-open) + 3 AM (mid-session) AEST,
+                # weekdays only (we treat "today is a US weekday" as the gate so
+                # Sat/Sun AEST scans are skipped — there's no point queueing
+                # stock orders into a closed market).
+                if is_us_trading_weekday_aest():
+                    for t in SWING_STOCK_TIMES_AEST:
+                        if at_or_past_time_today(t, last_stock_runs.get(t)):
+                            run_buy_cycle(mode=strategy.Bucket.SWING_STOCK,
+                                          db=db, alpaca=alpaca, coinspot=coinspot, tg=tg)
+                            last_stock_runs[t] = safety.now_utc_iso()
+                            db.set_flag(f"last_stock_{t}", last_stock_runs[t])
 
             time.sleep(MAIN_TICK_SECONDS)
 
