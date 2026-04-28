@@ -1052,11 +1052,16 @@ function usMarketState(){
 
 function entryPriceAud(pos){
   if(!isStock(pos)) return Number(pos.entry_price) || 0;
+  // Alpaca's avg_entry_price (stored as USD) is the source of truth for stocks.
+  // Use it × FX. aud_amount records what we INTENDED to deploy, not what
+  // actually got filled — Alpaca's FX conversion + slippage means actual fill
+  // cost differs. Falling back to aud_amount/qty here previously gave a
+  // wrongly-inflated entry price and made dashboard pnl disagree with chat pnl.
+  const usd = Number(pos.entry_price) || 0;
+  if(usd > 0) return usd * USD_TO_AUD;
   const qty = Number(pos.qty) || 0;
   const amt = Number(pos.aud_amount) || 0;
-  if(qty > 0 && amt > 0) return amt / qty;
-  const usd = Number(pos.entry_price) || 0;
-  return usd > 0 ? usd * USD_TO_AUD : 0;
+  return (qty > 0 && amt > 0) ? amt / qty : 0;
 }
 
 function currentPriceAud(pos){
@@ -1083,7 +1088,14 @@ function marketValueAud(pos){
   return amt * (1 + (Number(pos.pnl_pct) || 0));
 }
 
-function entryCostAud(pos){ return Number(pos.aud_amount) || 0; }
+function entryCostAud(pos){
+  if(isStock(pos)){
+    const qty = Number(pos.qty) || 0;
+    const usd = Number(pos.entry_price) || 0;
+    if(qty > 0 && usd > 0) return qty * usd * USD_TO_AUD;
+  }
+  return Number(pos.aud_amount) || 0;
+}
 function grossPnlAud(pos){ return marketValueAud(pos) - entryCostAud(pos); }
 function grossPnlPct(pos){
   const e = entryCostAud(pos);
