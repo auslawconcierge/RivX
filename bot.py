@@ -220,15 +220,17 @@ def run_snapshot(db: SupabaseLogger, alpaca: AlpacaTrader):
 def _sync_alpaca_stocks(db, alpaca, symbols):
     """
     Pull current_price + pnl + avg_entry from Alpaca for held stocks.
-    v2.4: now passes avg_entry_price (converted to AUD/share) so
-    update_position_from_alpaca can heal entry_price=0 rows.
+
+    IMPORTANT — UNITS: dashboard's index.html does the USD→AUD conversion
+    itself when displaying stock prices. It expects current_price and
+    entry_price in the DB to be USD-per-share. We store USD here.
+    Multiplying by FX before storing causes double-conversion on display.
     """
     import requests
     headers = {
         "APCA-API-KEY-ID": ALPACA_API_KEY,
         "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
     }
-    usd_to_aud = prices.get_usd_aud_rate()
     for sym in symbols:
         try:
             r = requests.get(
@@ -243,15 +245,12 @@ def _sync_alpaca_stocks(db, alpaca, symbols):
             pnl_pct = float(data.get("unrealized_plpc") or 0)
             avg_entry_usd = float(data.get("avg_entry_price") or 0)
 
-            current_price_aud = current_price_usd * usd_to_aud if current_price_usd > 0 else 0
-            avg_entry_aud = avg_entry_usd * usd_to_aud if avg_entry_usd > 0 else 0
-
             db.update_position_from_alpaca(
                 symbol=sym,
-                current_price=current_price_aud,
+                current_price=current_price_usd,    # USD — dashboard converts
                 qty=qty,
                 pnl_pct=pnl_pct,
-                avg_entry_price=avg_entry_aud,
+                avg_entry_price=avg_entry_usd,      # USD — dashboard converts
             )
         except Exception as e:
             log.debug(f"alpaca sync {sym}: {e}")
@@ -288,12 +287,11 @@ def execute_buy(
                           "symbol", symbol)
                 return True, "ok (fill pending)"
 
-            usd_to_aud = prices.get_usd_aud_rate()
-            entry_aud_per_share = fill_usd * usd_to_aud
-
+            # Dashboard expects entry_price in USD-per-share. It converts
+            # to AUD itself. Store USD here.
             db.save_position(
                 symbol=symbol,
-                entry_price=entry_aud_per_share,
+                entry_price=fill_usd,
                 aud_amount=size_aud,
                 market="alpaca",
             )
@@ -301,7 +299,7 @@ def execute_buy(
                       {"bucket": bucket, "qty": qty},
                       "symbol", symbol)
             log.info(f"BUY {symbol}: {qty:.4f} sh @ ${fill_usd:.2f} USD "
-                     f"(${entry_aud_per_share:.2f} AUD/sh) · ${size_aud:.0f} AUD total")
+                     f"· ${size_aud:.0f} AUD total")
             return True, "ok"
         except Exception as e:
             log.error(f"alpaca buy {symbol}: {e}")
