@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- RIVX_VERSION: v2.2-dashboard-2026-04-26 -->
+<!-- RIVX_VERSION: v2.3-dashboard-coinspot-truth-2026-04-28 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -424,7 +424,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
           <div style="font-size:10px;color:#c4c7cc;">why net ≠ gross</div>
         </div>
         <div style="font-size:12px;color:#555;line-height:1.7;">
-          All values shown in AUD. Stocks priced in USD by Alpaca, converted at the live AUD/USD rate from the European Central Bank via Frankfurter.
+          All values shown in AUD. Stocks priced in USD by Alpaca, converted at the live AUD/USD rate from the European Central Bank via Frankfurter. Crypto prices come from CoinSpot (the platform we'd actually trade on) — the price you see is what you'd actually pay or receive.
           <br><br>
           <strong>Gross P&amp;L</strong> = market move only, before transaction costs.
           <strong>Net P&amp;L</strong> = gross minus estimated round-trip fees.
@@ -612,7 +612,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     </div>
 
   </div>
-  <div class="footer">NYSE · NASDAQ · CRYPTO · AUD · BRISBANE · v2.2</div>
+  <div class="footer">NYSE · NASDAQ · CRYPTO · AUD · BRISBANE · v2.3</div>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
@@ -988,6 +988,11 @@ function entryPriceAud(pos){
 
 function currentPriceAud(pos){
   if(!isStock(pos)){
+    // CoinSpot is the source of truth — bot writes current_price as
+    // CoinSpot AUD price each snapshot. Use that first. Fall back to
+    // CoinPaprika (USD×FX) or entry×pnl only if bot hasn't run a snapshot yet.
+    const stored = Number(pos.current_price) || 0;
+    if(stored > 0) return stored;
     const lp = livePrices[pos.symbol.toUpperCase()];
     if(lp && lp.aud > 0) return Number(lp.aud);
     return entryPriceAud(pos) * (1 + (Number(pos.pnl_pct) || 0));
@@ -1391,7 +1396,7 @@ function renderPositions(){
     const groupNet     = groupGross - groupFees;
     const groupNetPct  = groupCapital > 0 ? groupNet / groupCapital : 0;
     const cls = groupNet > 0.01 ? 'up' : groupNet < -0.01 ? 'down' : 'flat';
-    const subtitle = `${k === 'swing_stock' ? 'Alpaca · USD-priced, AUD displayed' + usStateLabel : 'CoinSpot · 24/7 trading'}` +
+    const subtitle = `${k === 'swing_stock' ? 'Alpaca · USD-priced, AUD displayed' + usStateLabel : 'CoinSpot · 24/7 trading · live AUD prices'}` +
                      ` · $${b.budget.toFixed(0)} budget · ${b.slots} slots`;
 
     return `
@@ -1569,6 +1574,8 @@ async function selectHolding(sym){
     }
   }
 
+  const sourceNote = stock ? 'AUD · live' : 'AUD · CoinSpot live';
+
   const statsHtml = `
     <div class="hd-grid">
       <div class="hd-stat">
@@ -1579,7 +1586,7 @@ async function selectHolding(sym){
       <div class="hd-stat">
         <div class="hd-stat-label">Current price</div>
         <div class="hd-stat-val">${cur>0 ? fmtPrice(cur) : '—'}</div>
-        <div class="hd-stat-sub">${cur>0 ? 'AUD · live' : 'syncing'}${todayLine?' · '+todayLine:''}</div>
+        <div class="hd-stat-sub">${cur>0 ? sourceNote : 'syncing'}${todayLine?' · '+todayLine:''}</div>
       </div>
       <div class="hd-stat">
         <div class="hd-stat-label">Capital deployed</div>
