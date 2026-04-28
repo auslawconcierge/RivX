@@ -226,7 +226,37 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .fail-reason{color:#9aa0a6;flex:1;}
 .fail-time{color:#c4c7cc;font-size:11px;flex-shrink:0;}
 
-/* Detail panel sections */
+/* Period toggle (Day/Week/Month/All) */
+.period-toggle{display:flex;gap:1px;background:#f5f6f8;border-radius:5px;padding:2px;}
+.period-btn{font-size:9px;padding:2px 6px;border-radius:3px;border:none;background:none;color:#9aa0a6;cursor:pointer;font-weight:600;letter-spacing:0.02em;}
+.period-btn.active{background:white;color:#0d1f38;box-shadow:0 1px 2px rgba(0,0,0,0.06);}
+.period-btn:hover:not(.active){color:#1a1a2e;}
+
+/* Trade history table */
+.history-table{width:100%;border-collapse:collapse;font-size:11px;font-variant-numeric:tabular-nums;}
+.history-table thead{background:#f5f6f8;}
+.history-table th{text-align:left;padding:8px 10px;font-size:9px;color:#9aa0a6;letter-spacing:0.08em;text-transform:uppercase;font-weight:600;border-bottom:1px solid #e8eaed;white-space:nowrap;}
+.history-table th.num{text-align:right;}
+.history-table td{padding:9px 10px;border-bottom:1px solid #f0f0f0;color:#1a1a2e;white-space:nowrap;}
+.history-table td.num{text-align:right;font-variant-numeric:tabular-nums;}
+.history-table td.up{color:#1a7340;font-weight:600;}
+.history-table td.down{color:#c0392b;font-weight:600;}
+.history-table td.flat{color:#6b7280;}
+.history-table td.muted{color:#9aa0a6;}
+.history-table tr:hover td{background:#fafbfc;}
+.history-table .sym-cell{font-weight:700;color:#0d1f38;}
+.history-table .pill{display:inline-block;font-size:9px;font-weight:600;padding:1px 5px;border-radius:3px;letter-spacing:0.04em;text-transform:uppercase;margin-left:4px;}
+.history-table .pill.crypto{background:#fef3c7;color:#92400e;}
+.history-table .pill.stock{background:#dbeafe;color:#1e3a8a;}
+.history-empty{text-align:center;padding:30px;font-size:12px;color:#9aa0a6;}
+.export-btn{font-size:10px;padding:5px 10px;border:1px solid #0d1f38;border-radius:5px;background:white;color:#0d1f38;cursor:pointer;font-weight:600;letter-spacing:0.04em;}
+.export-btn:hover{background:#0d1f38;color:white;}
+.export-btn:disabled{opacity:0.4;cursor:not-allowed;}
+.export-row{display:flex;gap:6px;align-items:center;}
+@media(max-width:720px){
+  .history-table{font-size:10px;}
+  .history-table th,.history-table td{padding:6px 5px;}
+}
 .dp-section{background:#fafbfc;border:1px solid #e8eaed;border-radius:8px;padding:12px 14px;margin-top:12px;}
 .dp-section-title{font-size:10px;color:#9aa0a6;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:10px;font-weight:600;}
 .dp-pnl-row{display:grid;grid-template-columns:1fr auto;gap:6px 14px;font-size:12px;align-items:baseline;}
@@ -362,7 +392,19 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       <div class="stats">
         <div class="stat"><div class="stat-label">Portfolio</div><div class="stat-value" id="s-port">$10,000.00</div><div class="stat-sub" id="s-port-sub">AUD total</div></div>
         <div class="stat"><div class="stat-label">P&L</div><div class="stat-value" id="s-pnl">+$0.00</div><div class="stat-sub" id="s-pnl-sub">since start</div></div>
-        <div class="stat"><div class="stat-label">Realised P&L</div><div class="stat-value" id="s-realised">$0.00</div><div class="stat-sub" id="s-realised-sub">no closed positions</div></div>
+        <div class="stat">
+          <div class="stat-label" style="display:flex;justify-content:space-between;align-items:center;gap:6px;">
+            <span>Realised P&L</span>
+            <div class="period-toggle" id="realised-period-toggle">
+              <button class="period-btn" data-period="day" onclick="setRealisedPeriod('day')">Day</button>
+              <button class="period-btn" data-period="week" onclick="setRealisedPeriod('week')">Week</button>
+              <button class="period-btn" data-period="month" onclick="setRealisedPeriod('month')">Month</button>
+              <button class="period-btn active" data-period="all" onclick="setRealisedPeriod('all')">All</button>
+            </div>
+          </div>
+          <div class="stat-value" id="s-realised">$0.00</div>
+          <div class="stat-sub" id="s-realised-sub">no closed positions</div>
+        </div>
         <div class="stat"><div class="stat-label">Today's cost</div><div class="stat-value" id="s-cost">$0.00</div><div class="stat-sub">Claude API</div></div>
       </div>
 
@@ -544,10 +586,40 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
       <div class="card" id="closed-positions-card" style="display:none;">
         <div class="card-row" style="margin-bottom:10px;">
-          <div class="card-title" style="margin-bottom:0;">Closed positions</div>
-          <div style="font-size:10px;color:#c4c7cc;" id="closed-count"></div>
+          <div>
+            <div class="card-title" style="margin-bottom:2px;">Closed positions — full trade history</div>
+            <div style="font-size:10px;color:#9aa0a6;" id="closed-count">0 closed trades</div>
+          </div>
+          <div class="export-row">
+            <button class="export-btn" id="export-csv-btn" onclick="exportTradeHistory('csv')">Export CSV</button>
+            <button class="export-btn" id="export-json-btn" onclick="exportTradeHistory('json')">Export JSON</button>
+          </div>
         </div>
-        <div class="closed-list" id="closed-list"></div>
+        <div style="overflow-x:auto;">
+          <table class="history-table" id="history-table">
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Bought</th>
+                <th class="num">Buy price</th>
+                <th class="num">Qty</th>
+                <th class="num">Buy cost</th>
+                <th class="num">Buy fees</th>
+                <th class="num">Total in</th>
+                <th>Sold</th>
+                <th class="num">Sell price</th>
+                <th class="num">Proceeds</th>
+                <th class="num">Sell fees</th>
+                <th class="num">Net out</th>
+                <th class="num">Realised $</th>
+                <th class="num">Realised %</th>
+                <th>Held</th>
+              </tr>
+            </thead>
+            <tbody id="history-tbody"></tbody>
+          </table>
+        </div>
+        <div class="history-empty" id="history-empty" style="display:none;">No closed trades yet</div>
       </div>
 
       <div class="card">
@@ -723,6 +795,7 @@ const SYM_TO_PAPRIKA = {
 
 let perfChart=null, costChart=null;
 let currentTf='24H', selectedHolding=null;
+let realisedPeriod='all';
 let allSnapshots=[], allTrades=[], allPositions=[], allClosed=[],
     allChecks=[], allDecisions=[], allQuestions=[], tokenUsage=[],
     botFlags={}, livePrices={};
@@ -1285,11 +1358,21 @@ function renderStats(){
     realisedEl.className = 'stat-value';
     realisedSub.textContent = 'no closed positions';
   } else {
-    const paperRealised = closedGrossPaperAud();
-    const liveRealised = closedNetLiveAud();
-    realisedEl.textContent = fmtSignedAud(liveRealised);
-    realisedEl.className = 'stat-value ' + (liveRealised>0.01?'up':liveRealised<-0.01?'down':'');
-    realisedSub.textContent = `${allClosed.length} closed · after est. fees · paper ${fmtSignedAud(paperRealised)}`;
+    const periodTotals = realisedTotalsForPeriod(realisedPeriod);
+    realisedEl.textContent = fmtSignedAud(periodTotals.realisedAud);
+    realisedEl.className = 'stat-value ' + (periodTotals.realisedAud>0.01?'up':periodTotals.realisedAud<-0.01?'down':'');
+    const periodLabel = ({
+      day:   'today (Brisbane)',
+      week:  'last 7 days',
+      month: 'last 30 days',
+      all:   'all time',
+    })[realisedPeriod] || 'all time';
+    if(periodTotals.count === 0){
+      realisedSub.textContent = `0 closed in ${periodLabel}`;
+    } else {
+      realisedSub.textContent =
+        `${periodTotals.count} closed · ${periodLabel} · ${fmtSignedPct(periodTotals.realisedPct)}`;
+    }
   }
 
   const today = new Date().toISOString().slice(0,10);
@@ -1426,102 +1509,242 @@ function renderPositions(){
   }
 }
 
-function renderClosedPositions(){
-  const card = document.getElementById('closed-positions-card');
-  const list = document.getElementById('closed-list');
-  if(!allClosed.length){
-    card.style.display = 'none';
-    return;
+// ─── Realised P&L period filtering ─────────────────────────────────────────
+// Day = since midnight Brisbane (AEST, UTC+10).
+// Week = last 7 days. Month = last 30 days. All = no filter.
+function periodCutoffMs(period){
+  const now = Date.now();
+  if(period === 'day'){
+    // Brisbane is UTC+10 (no DST). Find the most recent 14:00 UTC moment,
+    // which equals midnight Brisbane.
+    const utcNow = new Date(now);
+    const brisbaneOffsetMin = 10 * 60;
+    const brisbaneNow = new Date(utcNow.getTime() + brisbaneOffsetMin * 60000);
+    const brisbaneMidnight = new Date(Date.UTC(
+      brisbaneNow.getUTCFullYear(),
+      brisbaneNow.getUTCMonth(),
+      brisbaneNow.getUTCDate(),
+      0, 0, 0, 0
+    ));
+    return brisbaneMidnight.getTime() - brisbaneOffsetMin * 60000;
   }
-  card.style.display = 'block';
-  document.getElementById('closed-count').textContent =
-    `${allClosed.length} closed · realised P&L tracked`;
+  if(period === 'week')  return now - 7  * 24 * 60 * 60 * 1000;
+  if(period === 'month') return now - 30 * 24 * 60 * 60 * 1000;
+  return 0; // all
+}
 
-  list.innerHTML = allClosed.map(p => {
+function closedInPeriod(period){
+  const cutoff = periodCutoffMs(period);
+  if(cutoff === 0) return allClosed.slice();
+  return allClosed.filter(p => {
+    const t = p.closed_at ? new Date(p.closed_at).getTime() : 0;
+    return t >= cutoff;
+  });
+}
+
+function setRealisedPeriod(period){
+  realisedPeriod = period;
+  document.querySelectorAll('#realised-period-toggle .period-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.period === period);
+  });
+  renderStats();
+}
+
+// Build a flat row per closed trade — used by both the history table and CSV export.
+function tradeHistoryRows(){
+  return allClosed.map(p => {
     const stock = (p.market || '').toLowerCase() === 'alpaca';
     const profile = stock ? FEES.alpaca : FEES.coinspot;
     const entryAud = Number(p.aud_amount) || 0;
     const pnlPct = Number(p.pnl_pct) || 0;
     const proceedsAud = entryAud * (1 + pnlPct);
-    const grossAud = proceedsAud - entryAud;
-
     const qty = Number(p.qty) || 0;
-    let entryPerUnitAud, exitPerUnitAud;
+
+    let entryPriceAudPerUnit, exitPriceAudPerUnit;
     if(stock){
-      entryPerUnitAud = qty > 0 ? entryAud / qty : 0;
-      exitPerUnitAud  = qty > 0 ? proceedsAud / qty : 0;
+      entryPriceAudPerUnit = qty > 0 ? entryAud / qty : 0;
+      exitPriceAudPerUnit  = qty > 0 ? proceedsAud / qty : 0;
     } else {
-      entryPerUnitAud = Number(p.entry_price) || 0;
-      exitPerUnitAud  = Number(p.exit_price) || (entryPerUnitAud * (1 + pnlPct));
+      entryPriceAudPerUnit = Number(p.entry_price) || 0;
+      exitPriceAudPerUnit  = Number(p.exit_price) || (entryPriceAudPerUnit * (1 + pnlPct));
     }
 
     const buyFee  = entryAud * profile.buyPct;
     const sellFee = proceedsAud * profile.sellPct;
     const fxIn    = entryAud * profile.fxOneWayPct;
     const fxOut   = proceedsAud * profile.fxOneWayPct;
-    const totalFees = buyFee + sellFee + fxIn + fxOut;
 
-    const netAud = grossAud - totalFees;
-    const netPct = entryAud > 0 ? netAud / entryAud : 0;
-    const grossCls = grossAud > 0.01 ? 'up' : grossAud < -0.01 ? 'down' : 'flat';
-    const netCls   = netAud > 0.01 ? 'up' : netAud < -0.01 ? 'down' : 'flat';
+    const buyFeesTotal  = buyFee + fxIn;     // fees paid going in
+    const sellFeesTotal = sellFee + fxOut;   // fees paid going out
+    const totalIn       = entryAud + buyFeesTotal;       // out of pocket
+    const netOut        = proceedsAud - sellFeesTotal;   // landed in pocket
+    const realisedAud   = netOut - totalIn;
+    const realisedPct   = totalIn > 0 ? realisedAud / totalIn : 0;
 
-    const feeLines = [];
-    if(profile.buyPct > 0)
-      feeLines.push(`<div class="closed-pnl-k">Buy fee (${(profile.buyPct*100).toFixed(2)}%, paid at entry)</div><div class="closed-pnl-v fee">−${fmtAud(buyFee)}</div>`);
-    if(profile.sellPct > 0)
-      feeLines.push(`<div class="closed-pnl-k">Sell fee (${(profile.sellPct*100).toFixed(2)}%, paid at exit)</div><div class="closed-pnl-v fee">−${fmtAud(sellFee)}</div>`);
-    if(profile.fxOneWayPct > 0){
-      feeLines.push(`<div class="closed-pnl-k">FX in (${(profile.fxOneWayPct*100).toFixed(2)}%, AUD→USD)</div><div class="closed-pnl-v fee">−${fmtAud(fxIn)}</div>`);
-      feeLines.push(`<div class="closed-pnl-k">FX out (${(profile.fxOneWayPct*100).toFixed(2)}%, USD→AUD)</div><div class="closed-pnl-v fee">−${fmtAud(fxOut)}</div>`);
-    }
+    return {
+      symbol: p.symbol,
+      market: stock ? 'Alpaca' : 'CoinSpot',
+      isStock: stock,
+      bucket: bucketOf(p),
+      bought_at: p.created_at,
+      closed_at: p.closed_at,
+      qty: qty,
+      buy_price_aud_per_unit: entryPriceAudPerUnit,
+      buy_cost_aud: entryAud,
+      buy_fees_aud: buyFeesTotal,
+      total_in_aud: totalIn,
+      sell_price_aud_per_unit: exitPriceAudPerUnit,
+      proceeds_aud: proceedsAud,
+      sell_fees_aud: sellFeesTotal,
+      net_out_aud: netOut,
+      realised_aud: realisedAud,
+      realised_pct: realisedPct,
+      gross_pnl_pct: pnlPct,
+    };
+  });
+}
 
-    const hold = fmtHoldDuration(p.created_at, p.closed_at);
-    const market = stock ? 'Alpaca · US stock' : 'CoinSpot · crypto';
-    const entryPrice = entryPerUnitAud > 0 ? `@ ${fmtPrice(entryPerUnitAud)} AUD` : '';
-    const exitPrice  = exitPerUnitAud  > 0 ? `@ ${fmtPrice(exitPerUnitAud)} AUD` : '';
-    const qtyLine    = qty > 0 ? ` · ${qty.toFixed(qty<1?6:(qty<100?4:2))} ${stock?'shares':'units'}` : '';
-    const bk = bucketOf(p);
-    const bMeta = BUCKETS[bk] || {label:'?'};
+function realisedTotalsForPeriod(period){
+  const cutoff = periodCutoffMs(period);
+  const rows = tradeHistoryRows().filter(r => {
+    if(cutoff === 0) return true;
+    const t = r.closed_at ? new Date(r.closed_at).getTime() : 0;
+    return t >= cutoff;
+  });
+  let realisedAud = 0, totalIn = 0;
+  rows.forEach(r => {
+    realisedAud += r.realised_aud;
+    totalIn += r.total_in_aud;
+  });
+  const realisedPct = totalIn > 0 ? realisedAud / totalIn : 0;
+  return { count: rows.length, realisedAud, realisedPct };
+}
 
-    return `<div class="closed-card">
-      <div class="closed-header">
-        <span class="closed-sym">${p.symbol} <span class="pos-bucket-tag ${bMeta.cssKey}" style="font-size:9px;">${bMeta.short || '?'}</span></span>
-        <div style="text-align:right;">
-          <div class="pos-headline ${netCls}" style="font-size:20px;">${netAud>=0?'+':'−'}$${Math.abs(netAud).toFixed(2)}</div>
-          <div style="font-size:10px;color:#9aa0a6;">${fmtSignedPct(netPct)} after est. fees · paper ${fmtSignedAud(grossAud)}</div>
-        </div>
-      </div>
-      <div class="closed-meta">${market} · held ${hold}${qtyLine}</div>
+function exportTradeHistory(format){
+  const rows = tradeHistoryRows();
+  if(!rows.length){
+    alert('No closed trades to export yet.');
+    return;
+  }
+  rows.sort((a,b) => new Date(b.closed_at || 0) - new Date(a.closed_at || 0));
 
-      <div class="closed-flow">
-        <div class="closed-flow-side">
-          <div class="closed-flow-label buy">BOUGHT</div>
-          <div class="closed-flow-date">${fmtDateTime(p.created_at)}</div>
-          <div class="closed-flow-amt">${fmtAud(entryAud)}</div>
-          <div class="closed-flow-price">${entryPrice}</div>
-        </div>
-        <div class="closed-arrow">→</div>
-        <div class="closed-flow-side" style="text-align:right;">
-          <div class="closed-flow-label sell">SOLD</div>
-          <div class="closed-flow-date">${fmtDateTime(p.closed_at)}</div>
-          <div class="closed-flow-amt">${fmtAud(proceedsAud)}</div>
-          <div class="closed-flow-price">${exitPrice}</div>
-        </div>
-      </div>
+  let blob, filename;
+  if(format === 'json'){
+    blob = new Blob([JSON.stringify(rows, null, 2)], {type: 'application/json'});
+    filename = `rivx_trade_history_${new Date().toISOString().slice(0,10)}.json`;
+  } else {
+    const headers = [
+      'Symbol','Market','Bucket','Bought (UTC)','Closed (UTC)','Qty',
+      'Buy price AUD/unit','Buy cost AUD','Buy fees AUD','Total in AUD',
+      'Sell price AUD/unit','Proceeds AUD','Sell fees AUD','Net out AUD',
+      'Realised AUD','Realised %','Gross %',
+    ];
+    const csvRows = [headers.join(',')];
+    rows.forEach(r => {
+      csvRows.push([
+        r.symbol, r.market, r.bucket, r.bought_at || '', r.closed_at || '',
+        r.qty.toFixed(8),
+        r.buy_price_aud_per_unit.toFixed(6),
+        r.buy_cost_aud.toFixed(2),
+        r.buy_fees_aud.toFixed(2),
+        r.total_in_aud.toFixed(2),
+        r.sell_price_aud_per_unit.toFixed(6),
+        r.proceeds_aud.toFixed(2),
+        r.sell_fees_aud.toFixed(2),
+        r.net_out_aud.toFixed(2),
+        r.realised_aud.toFixed(2),
+        (r.realised_pct * 100).toFixed(4),
+        (r.gross_pnl_pct * 100).toFixed(4),
+      ].join(','));
+    });
+    blob = new Blob([csvRows.join('\n')], {type: 'text/csv;charset=utf-8;'});
+    filename = `rivx_trade_history_${new Date().toISOString().slice(0,10)}.csv`;
+  }
 
-      <div style="font-size:11px;color:#854d0e;background:#fffbeb;border:1px solid #fde68a;padding:7px 10px;border-radius:6px;margin-bottom:8px;line-height:1.5;">
-        Paper mode: ${fmtAud(proceedsAud)} returned to cash, no actual fees deducted. Below shows what would have happened with real money.
-      </div>
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 
-      <div class="closed-pnl-table">
-        <div class="closed-pnl-k">Gross P&L (market move)</div>
-        <div class="closed-pnl-v ${grossCls}">${fmtSignedAud(grossAud)} (${fmtSignedPct(pnlPct)})</div>
-        ${feeLines.join('')}
-        <div class="closed-pnl-k closed-pnl-net-row">Net P&L (real-money equivalent)</div>
-        <div class="closed-pnl-v ${netCls} closed-pnl-net-row">${fmtSignedAud(netAud)} (${fmtSignedPct(netPct)})</div>
-      </div>
-    </div>`;
+function renderClosedPositions(){
+  const card = document.getElementById('closed-positions-card');
+  const tbody = document.getElementById('history-tbody');
+  const emptyEl = document.getElementById('history-empty');
+  const exportCsvBtn = document.getElementById('export-csv-btn');
+  const exportJsonBtn = document.getElementById('export-json-btn');
+
+  if(!allClosed.length){
+    card.style.display = 'none';
+    if(exportCsvBtn) exportCsvBtn.disabled = true;
+    if(exportJsonBtn) exportJsonBtn.disabled = true;
+    return;
+  }
+  card.style.display = 'block';
+  if(exportCsvBtn) exportCsvBtn.disabled = false;
+  if(exportJsonBtn) exportJsonBtn.disabled = false;
+
+  const rows = tradeHistoryRows();
+  rows.sort((a,b) => new Date(b.closed_at || 0) - new Date(a.closed_at || 0));
+
+  document.getElementById('closed-count').textContent =
+    `${rows.length} closed ${rows.length===1?'trade':'trades'} · all amounts AUD · paper-mode fees estimated`;
+
+  if(!rows.length){
+    tbody.innerHTML = '';
+    emptyEl.style.display = 'block';
+    return;
+  }
+  emptyEl.style.display = 'none';
+
+  const fmtNum = v => Number(v).toLocaleString('en-AU', {minimumFractionDigits:2, maximumFractionDigits:2});
+  const fmtPriceCell = v => {
+    if(!v || !isFinite(v)) return '—';
+    if(v >= 100) return Number(v).toLocaleString('en-AU', {maximumFractionDigits:2});
+    if(v >= 1) return Number(v).toFixed(2);
+    if(v >= 0.01) return Number(v).toFixed(4);
+    return Number(v).toFixed(6);
+  };
+  const fmtQty = v => {
+    if(!v) return '—';
+    if(v < 1) return Number(v).toFixed(6);
+    if(v < 100) return Number(v).toFixed(4);
+    return Number(v).toFixed(2);
+  };
+  const fmtShortDate = iso => {
+    if(!iso) return '—';
+    const d = new Date(iso);
+    return d.toLocaleDateString('en-AU',{day:'2-digit',month:'short'}) + ' ' +
+           d.toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit',hour12:false});
+  };
+
+  tbody.innerHTML = rows.map(r => {
+    const pillCls = r.isStock ? 'stock' : 'crypto';
+    const pillLabel = r.isStock ? 'STK' : 'CRY';
+    const realCls = r.realised_aud > 0.01 ? 'up' : r.realised_aud < -0.01 ? 'down' : 'flat';
+    const realisedSign = r.realised_aud >= 0 ? '+' : '−';
+    const pctSign = r.realised_pct >= 0 ? '+' : '';
+    return `<tr>
+      <td><span class="sym-cell">${escapeHtml(r.symbol)}</span><span class="pill ${pillCls}">${pillLabel}</span></td>
+      <td class="muted">${fmtShortDate(r.bought_at)}</td>
+      <td class="num">${fmtPriceCell(r.buy_price_aud_per_unit)}</td>
+      <td class="num">${fmtQty(r.qty)}</td>
+      <td class="num">${fmtNum(r.buy_cost_aud)}</td>
+      <td class="num muted">${fmtNum(r.buy_fees_aud)}</td>
+      <td class="num">${fmtNum(r.total_in_aud)}</td>
+      <td class="muted">${fmtShortDate(r.closed_at)}</td>
+      <td class="num">${fmtPriceCell(r.sell_price_aud_per_unit)}</td>
+      <td class="num">${fmtNum(r.proceeds_aud)}</td>
+      <td class="num muted">${fmtNum(r.sell_fees_aud)}</td>
+      <td class="num">${fmtNum(r.net_out_aud)}</td>
+      <td class="num ${realCls}">${realisedSign}${fmtNum(Math.abs(r.realised_aud))}</td>
+      <td class="num ${realCls}">${pctSign}${(r.realised_pct*100).toFixed(2)}%</td>
+      <td class="muted">${fmtHoldDuration(r.bought_at, r.closed_at)}</td>
+    </tr>`;
   }).join('');
 }
 
