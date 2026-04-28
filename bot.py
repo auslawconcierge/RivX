@@ -89,6 +89,35 @@ def is_us_trading_weekday_aest() -> bool:
     return et_now.weekday() < 5
 
 
+def is_us_market_open_aest() -> bool:
+    """
+    True iff the US equity market is currently open (M-F, 09:30-16:00 ET).
+
+    Stop-loss / take-profit / trailing checks for stocks must gate on this.
+    Without it, the snapshot loop fires sells against stale after-hours prices
+    and Alpaca paper will queue/partially-fill at whatever last-trade tick it
+    has cached, producing nonsense P&L. Crypto is 24/7 so this only applies
+    to swing_stock positions.
+
+    Uses zoneinfo when available (proper DST handling), falls back to a
+    month-based EDT/EST approximation otherwise.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        now_et = datetime.now(ZoneInfo("America/New_York"))
+    except Exception:
+        now_aest = aest_now()
+        # Approximate DST: EDT (UTC-4) Mar-Oct, EST (UTC-5) Nov-Feb.
+        # Off by 1-2 weeks at DST transitions; acceptable for a stop-gap.
+        et_offset = 14 if 3 <= now_aest.month <= 10 else 15
+        now_et = (now_aest - timedelta(hours=et_offset)).replace(tzinfo=None)
+
+    if now_et.weekday() >= 5:
+        return False
+    minutes = now_et.hour * 60 + now_et.minute
+    return (9 * 60 + 30) <= minutes < (16 * 60)
+
+
 # ── Anthropic client lazy-load ────────────────────────────────────────────
 
 _anthropic_client = None
@@ -377,47 +406,78 @@ def execute_sell(
     *, symbol: str, position: dict, db, alpaca, coinspot,
     is_forced: bool = False, reason: str = "exit rule",
 ) -> tuple[bool, str]:
+    """
+    Close a position.
+
+    UNITS — critical, because mixing them once cost us a -5% stop-loss being
+    recorded as +26.76%.
+
+      For STOCKS (Alpaca):
+        - entry_price stored as USD/share
+        - exit_price stored as USD/share
+        - pnl_pct comes from Alpaca's unrealized_plpc — already in same units
+        - We re-fetch the live Alpaca position right before selling so we
+          don't rely on whatever stale state is in our DB.
+
+      For CRYPTO (CoinSpot):
+        - entry_price stored as AUD/unit
+        - exit_price stored as AUD/unit
+        - pnl_pct computed from those (consistent units)
+    """
     market = (position.get("market") or "").lower()
     is_stock = market == "alpaca"
-    entry_aud = float(position.get("entry_price") or 0)
 
     if is_stock:
-        current_aud = float(position.get("current_price") or 0) * prices.get_usd_aud_rate()
-    else:
-        quote = prices.get_crypto_price(symbol)
-        if not quote or quote.aud <= 0:
-            if not is_forced:
-                return False, "no validated price for crypto sell"
-            current_aud = 0.0
-        else:
-            current_aud = quote.aud
+        # Source of truth: Alpaca's live position record. Don't trust DB state.
+        try:
+            live = alpaca.get_position(symbol)
+        except Exception as e:
+            return False, f"{symbol}: alpaca position fetch failed: {e}"
+        if not live:
+            return False, f"{symbol}: alpaca reports no live position (already closed?)"
 
-    if entry_aud > 0 and current_aud > 0:
-        verdict = safety.check_can_sell(
-            symbol=symbol,
-            entry_aud=entry_aud,
-            exit_aud=current_aud,
-            is_forced=is_forced,
-        )
-        if not verdict.allowed:
-            return False, f"safety blocked: {verdict.reason}"
+        try:
+            avg_entry_usd = float(live.get("avg_entry_price") or 0)
+            current_usd   = float(live.get("current_price") or 0)
+            pnl_pct_alp   = float(live.get("unrealized_plpc") or 0)
+        except (TypeError, ValueError) as e:
+            return False, f"{symbol}: malformed alpaca data: {e}"
 
-    try:
-        if is_stock:
+        if avg_entry_usd <= 0 or current_usd <= 0:
+            return False, (f"{symbol}: alpaca returned zero/missing prices "
+                           f"(entry={avg_entry_usd}, current={current_usd}) — refusing sell")
+
+        # Safety check. Pass USD on both sides — check_sell_loss is a ratio,
+        # so units cancel and the percentage threshold works correctly.
+        if not is_forced:
+            v = safety.check_can_sell(
+                symbol=symbol,
+                entry_aud=avg_entry_usd,
+                exit_aud=current_usd,
+                is_forced=False,
+            )
+            if not v.allowed:
+                return False, f"safety blocked: {v.reason}"
+
+        # Place the close order
+        try:
             res = alpaca.sell(symbol)
-        else:
-            res = coinspot.sell(symbol)
+        except Exception as e:
+            return False, f"alpaca sell error: {e}"
         if not res:
-            return False, "exchange returned None"
-        exit_price = float(res.get("price") or current_aud or 0)
-        pnl_pct = (exit_price - entry_aud) / entry_aud if entry_aud > 0 else 0
-        db.close_position(symbol=symbol, exit_price=exit_price, pnl_pct=pnl_pct)
+            return False, "alpaca sell returned None"
+
+        # Record using Alpaca's truth, both prices in USD for unit consistency
+        # with how entry_price was stored at buy time.
+        exit_price_usd = current_usd
+        pnl_pct        = pnl_pct_alp
+        db.close_position(symbol=symbol, exit_price=exit_price_usd, pnl_pct=pnl_pct)
 
         prior = int(db.get_flag("consec_losses") or 0)
         new_count = safety.update_consecutive_losses(prior, last_trade_was_loss=(pnl_pct < 0))
         db.set_flag("consec_losses", str(new_count))
 
-        log.info(f"SELL {symbol}: ${exit_price:.4f} ({pnl_pct*100:+.2f}%) — {reason}")
+        log.info(f"SELL {symbol}: ${exit_price_usd:.4f} USD ({pnl_pct*100:+.2f}%) — {reason}")
 
         try:
             recent = db._get("claude_decisions", {
@@ -438,9 +498,63 @@ def execute_sell(
         except Exception as e:
             log.debug(f"claude_decisions outcome update {symbol}: {e}")
 
-        return True, f"sold @ ${exit_price:.4f} ({pnl_pct*100:+.2f}%)"
+        return True, f"sold @ ${exit_price_usd:.4f} USD ({pnl_pct*100:+.2f}%)"
+
+    # ── Crypto branch (entry_price and exit_price both AUD) ────────────────
+    entry_aud = float(position.get("entry_price") or 0)
+    quote = prices.get_crypto_price(symbol)
+    if not quote or quote.aud <= 0:
+        if not is_forced:
+            return False, "no validated price for crypto sell"
+        current_aud = 0.0
+    else:
+        current_aud = quote.aud
+
+    if entry_aud > 0 and current_aud > 0:
+        v = safety.check_can_sell(
+            symbol=symbol, entry_aud=entry_aud, exit_aud=current_aud,
+            is_forced=is_forced,
+        )
+        if not v.allowed:
+            return False, f"safety blocked: {v.reason}"
+
+    try:
+        res = coinspot.sell(symbol)
     except Exception as e:
-        return False, f"sell error: {e}"
+        return False, f"coinspot sell error: {e}"
+    if not res:
+        return False, "coinspot returned None"
+
+    exit_price = float(res.get("price") or current_aud or 0)
+    pnl_pct = (exit_price - entry_aud) / entry_aud if entry_aud > 0 else 0
+    db.close_position(symbol=symbol, exit_price=exit_price, pnl_pct=pnl_pct)
+
+    prior = int(db.get_flag("consec_losses") or 0)
+    new_count = safety.update_consecutive_losses(prior, last_trade_was_loss=(pnl_pct < 0))
+    db.set_flag("consec_losses", str(new_count))
+
+    log.info(f"SELL {symbol}: ${exit_price:.4f} AUD ({pnl_pct*100:+.2f}%) — {reason}")
+
+    try:
+        recent = db._get("claude_decisions", {
+            "symbol": f"eq.{symbol}",
+            "executed": "eq.true",
+            "closed_at": "is.null",
+            "order": "decided_at.desc",
+            "limit": "1",
+        })
+        if recent:
+            row_id = recent[0].get("id")
+            if row_id:
+                db._patch("claude_decisions", {
+                    "closed_at": safety.now_utc_iso(),
+                    "realized_pnl_pct": pnl_pct,
+                    "exit_reason": reason[:200] if reason else "",
+                }, "id", str(row_id))
+    except Exception as e:
+        log.debug(f"claude_decisions outcome update {symbol}: {e}")
+
+    return True, f"sold @ ${exit_price:.4f} AUD ({pnl_pct*100:+.2f}%)"
 
 
 # ── Position management ─────────────────────────────────────────────────
@@ -450,9 +564,20 @@ def manage_open_positions(db, alpaca, coinspot, tg: TelegramNotifier):
     if not positions:
         return
 
+    # Stop-loss / target / trail checks for STOCKS must only run while the
+    # US market is open. Outside hours, Alpaca returns last-trade ticks that
+    # are stale and any DELETE-position call queues at whatever cached price
+    # it has — leading to bogus fills and unit-mismatched P&L. Crypto is 24/7.
+    stock_market_open = is_us_market_open_aest()
+
     for sym, pos in positions.items():
         try:
             bucket = (pos.get("bucket") or "").strip()
+
+            if bucket == strategy.Bucket.SWING_STOCK and not stock_market_open:
+                # Skip silently — this isn't an error, just out-of-hours.
+                continue
+
             entry = float(pos.get("entry_price") or 0)
             if entry <= 0:
                 continue
