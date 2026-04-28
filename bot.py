@@ -164,7 +164,10 @@ def run_snapshot(db: SupabaseLogger, alpaca: AlpacaTrader):
                 if not quote:
                     log.warning(f"snapshot: no price for {sym}, skipping")
                     continue
-                mark_aud = quote.aud if quote.aud > 0 else (quote.usd * quote.fx_rate)
+                # For held positions: prefer CoinSpot AUD price (cs_aud) — that's
+                # what we'd actually receive on sell. Fall back to Binance×FX only
+                # if CoinSpot doesn't list it.
+                mark_aud = quote.cs_aud if quote.cs_aud > 0 else (quote.usd * quote.fx_rate)
                 if mark_aud <= 0:
                     continue
                 try:
@@ -182,7 +185,12 @@ def run_snapshot(db: SupabaseLogger, alpaca: AlpacaTrader):
                             log.info(f"snapshot: backfilled {sym} entry to ${quote.cs_aud:.4f}")
                         continue
                     pnl_pct = (mark_aud - entry) / entry
-                    db.update_position_pnl_direct(symbol=sym, pnl_pct=pnl_pct)
+                    # Write BOTH pnl_pct AND current_price so dashboard has one
+                    # source of truth (the bot's CoinSpot price).
+                    db.update_position_from_alpaca(
+                        symbol=sym, current_price=mark_aud,
+                        qty=pos.get("qty"), pnl_pct=pnl_pct,
+                    )
                 except Exception as e:
                     log.warning(f"snapshot crypto {sym}: {e}")
 
