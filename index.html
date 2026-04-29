@@ -1,5 +1,19 @@
 <!DOCTYPE html>
-<!-- RIVX_VERSION: v2.3-dashboard-coinspot-truth-2026-04-28 -->
+<!-- RIVX_VERSION: v2.5-dashboard-math-fix-2026-04-29 -->
+<!--
+  v2.5 changes from v2.3:
+    1. Portfolio + P&L cards now use gross mark-to-market (cash + market_value),
+       matching Telegram and the bot's snapshot. Hypothetical sell fees no
+       longer subtracted from the headline. They show as small grey text
+       underneath ("if liquidated now: $X after $Y in fees").
+    2. Position cards lead with the P&L delta (big green/red), worth-now
+       moves to a smaller second line. The dashboard now answers "am I
+       winning or losing" at a glance instead of forcing the user to do
+       mental subtraction.
+    3. Bucket headers show net delta-from-deployed in the same green/red.
+    4. Strategy bucket constants in the BUCKETS object are unchanged from
+       v2.3 — they match strategy.py.
+-->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -95,7 +109,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .alloc-bar{display:flex;height:6px;border-radius:3px;overflow:hidden;background:#eeeef0;}
 .alloc-bar-fill{height:100%;transition:width 0.3s;}
 
-/* Positions */
+/* Positions — REDESIGNED so the P&L delta is the hero, not the position value */
 .pos-grid{display:flex;flex-direction:column;gap:18px;}
 .pos-group-header{margin-bottom:0;}
 .pos-group-titlebar{display:flex;justify-content:space-between;align-items:flex-end;padding:0 0 8px 0;border-bottom:1px solid #e8eaed;margin-bottom:10px;}
@@ -103,16 +117,17 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .pos-group-count{font-weight:400;color:#9aa0a6;font-size:11px;margin-left:4px;}
 .pos-group-sub{font-size:10px;color:#9aa0a6;margin-top:2px;letter-spacing:0.02em;}
 .pos-group-totals{text-align:right;}
-.pos-group-val{font-size:14px;font-weight:600;color:#1a1a2e;font-variant-numeric:tabular-nums;}
-.pos-group-pnl{font-size:11px;font-variant-numeric:tabular-nums;margin-top:1px;}
-.pos-group-pnl.up{color:#1a7340;}
-.pos-group-pnl.down{color:#c0392b;}
-.pos-group-pnl.flat{color:#9aa0a6;}
+/* bucket header now leads with the delta, not the value */
+.pos-group-pnl-big{font-size:18px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-0.5px;line-height:1.1;}
+.pos-group-pnl-big.up{color:#1a7340;}
+.pos-group-pnl-big.down{color:#c0392b;}
+.pos-group-pnl-big.flat{color:#9aa0a6;}
+.pos-group-val-small{font-size:11px;color:#9aa0a6;font-variant-numeric:tabular-nums;margin-top:2px;}
 .pos-group-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px;}
 .pos-card{background:#fafbfc;border:1px solid #e8eaed;border-radius:8px;padding:14px 14px 12px;cursor:pointer;transition:all 0.15s;}
 .pos-card:hover{border-color:#0d1f38;}
 .pos-card.active{border-color:#0d1f38;box-shadow:0 0 0 1px #0d1f38;}
-.pos-card-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
+.pos-card-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;}
 .pos-sym{font-size:14px;font-weight:700;color:#1a1a2e;letter-spacing:0.02em;}
 .pos-bucket-tag{font-size:9px;font-weight:600;padding:2px 6px;border-radius:3px;background:#f5f6f8;color:#6b7280;letter-spacing:0.05em;text-transform:uppercase;margin-left:6px;}
 .pos-bucket-tag.swing-crypto{background:#fef3c7;color:#92400e;}
@@ -122,11 +137,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .pos-pct-badge.up{background:#e8f5e9;color:#1a7340;}
 .pos-pct-badge.down{background:#fdecea;color:#c0392b;}
 .pos-pct-badge.flat{background:#f5f6f8;color:#6b7280;}
-.pos-headline{font-size:24px;font-weight:700;letter-spacing:-0.5px;line-height:1.1;margin-bottom:2px;font-variant-numeric:tabular-nums;}
-.pos-headline.up{color:#1a7340;}
-.pos-headline.down{color:#c0392b;}
-.pos-headline.flat{color:#1a1a2e;}
-.pos-headline-sub{font-size:11px;color:#9aa0a6;margin-bottom:10px;}
+
+/* THE BIG GREEN/RED DELTA — this is now the headline of every position card */
+.pos-delta-big{font-size:28px;font-weight:700;letter-spacing:-1px;line-height:1.05;font-variant-numeric:tabular-nums;margin-bottom:2px;}
+.pos-delta-big.up{color:#1a7340;}
+.pos-delta-big.down{color:#c0392b;}
+.pos-delta-big.flat{color:#1a1a2e;}
+.pos-delta-sub{font-size:11px;color:#6b7280;margin-bottom:10px;line-height:1.5;}
 .pos-divider{height:1px;background:#eef0f2;margin:10px 0 8px;}
 .pos-row{display:flex;justify-content:space-between;font-size:11px;line-height:1.7;}
 .pos-row-k{color:#9aa0a6;}
@@ -463,18 +480,19 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       <div class="card">
         <div class="card-row" style="margin-bottom:8px;">
           <div class="card-title" style="margin-bottom:0;">Fees &amp; methodology</div>
-          <div style="font-size:10px;color:#c4c7cc;">why net ≠ gross</div>
+          <div style="font-size:10px;color:#c4c7cc;">how we count things</div>
         </div>
         <div style="font-size:12px;color:#555;line-height:1.7;">
-          All values shown in AUD. Stocks priced in USD by Alpaca, converted at the live AUD/USD rate from the European Central Bank via Frankfurter. Crypto prices come from CoinSpot (the platform we'd actually trade on) — the price you see is what you'd actually pay or receive.
+          All values shown in AUD. Stocks priced in USD by Alpaca, converted at the live AUD/USD rate from the European Central Bank via Frankfurter. Crypto prices come from CoinSpot — the price you see is what you'd actually pay or receive.
           <br><br>
-          <strong>Gross P&amp;L</strong> = market move only, before transaction costs.
-          <strong>Net P&amp;L</strong> = gross minus estimated round-trip fees.
+          <strong>Portfolio</strong> = cash + (qty × current price) for every open position. Same number Telegram shows in the daily summary.
+          <strong>P&amp;L</strong> = portfolio − $10,000 starting capital. Open and closed combined.
+          <strong>Net if liquidated</strong> = portfolio minus what you'd pay in sell-side fees if you closed everything right now. Shown in small text — informational, not the headline.
           <br><br>
-          <strong>CoinSpot (crypto)</strong>: 1% per side via Instant Buy/Sell = 2% round-trip. Plus 1–2% spread baked into quotes.
-          <strong>Alpaca (US stocks)</strong>: $0 commission on buys, ~0.05% SEC/TAF on sells. AUD↔USD conversion via Wise ≈ 0.5% per direction.
+          <strong>CoinSpot fees</strong>: 1% per side via Instant Buy/Sell = 2% round-trip. Plus 1–2% spread baked into quotes.
+          <strong>Alpaca fees</strong>: $0 commission on buys, ~0.05% SEC/TAF on sells. AUD↔USD via Wise ≈ 0.5% per direction.
           <br><br>
-          <strong>Paper mode</strong>: no actual fees charged. Net figure is a forecast of real-money outcome.
+          <strong>Paper mode</strong>: no actual fees charged. Fee figures are forecasts of real-money outcome.
         </div>
       </div>
     </div>
@@ -684,7 +702,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     </div>
 
   </div>
-  <div class="footer">NYSE · NASDAQ · CRYPTO · AUD · BRISBANE · v2.3</div>
+  <div class="footer">NYSE · NASDAQ · CRYPTO · AUD · BRISBANE · v2.5</div>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
@@ -778,21 +796,6 @@ const BUCKET_ORDER = ['swing_crypto', 'momentum_crypto', 'swing_stock'];
 
 let USD_TO_AUD = 1.57;
 
-// CoinPaprika returns symbols with ID; this maps our held symbols.
-const SYM_TO_PAPRIKA = {
-  BTC:'btc-bitcoin', ETH:'eth-ethereum', SOL:'sol-solana', XRP:'xrp-xrp',
-  ADA:'ada-cardano', DOGE:'doge-dogecoin', AVAX:'avax-avalanche',
-  LINK:'link-chainlink', LTC:'ltc-litecoin', BCH:'bch-bitcoin-cash',
-  DOT:'dot-polkadot', UNI:'uni-uniswap', AAVE:'aave-new', MATIC:'matic-polygon',
-  ATOM:'atom-cosmos', ALGO:'algo-algorand', NEAR:'near-near-protocol',
-  FTM:'ftm-fantom', SAND:'sand-the-sandbox', MANA:'mana-decentraland',
-  PEPE:'pepe-pepe', SHIB:'shib-shiba-inu', FLOKI:'floki-floki-inu',
-  WIF:'wif-dogwifhat', BONK:'bonk-bonk', FET:'fet-fetchai',
-  TAO:'tao-bittensor', ARB:'arb-arbitrum', OP:'op-optimism',
-  SUI:'sui-sui', APT:'apt-aptos', SEI:'sei-sei', TIA:'tia-celestia',
-  INJ:'inj-injective-protocol',
-};
-
 let perfChart=null, costChart=null;
 let currentTf='24H', selectedHolding=null;
 let realisedPeriod='all';
@@ -831,7 +834,6 @@ async function toggleKillSwitch(){
                 : 'Bot resumes normal trading on next cycle.'))){
     return;
   }
-  // v2: write to bot_flags table directly (key = 'kill_switch')
   try {
     const existing = await sb('bot_flags', {key:'eq.kill_switch'});
     let ok;
@@ -1030,7 +1032,6 @@ const FEES = {
 function bucketOf(pos){
   const b = (pos.bucket || '').trim();
   if(BUCKETS[b]) return b;
-  // Legacy positions: infer from market
   if((pos.market || '').toLowerCase() === 'alpaca') return 'swing_stock';
   return 'swing_crypto';
 }
@@ -1052,11 +1053,6 @@ function usMarketState(){
 
 function entryPriceAud(pos){
   if(!isStock(pos)) return Number(pos.entry_price) || 0;
-  // Alpaca's avg_entry_price (stored as USD) is the source of truth for stocks.
-  // Use it × FX. aud_amount records what we INTENDED to deploy, not what
-  // actually got filled — Alpaca's FX conversion + slippage means actual fill
-  // cost differs. Falling back to aud_amount/qty here previously gave a
-  // wrongly-inflated entry price and made dashboard pnl disagree with chat pnl.
   const usd = Number(pos.entry_price) || 0;
   if(usd > 0) return usd * USD_TO_AUD;
   const qty = Number(pos.qty) || 0;
@@ -1066,9 +1062,6 @@ function entryPriceAud(pos){
 
 function currentPriceAud(pos){
   if(!isStock(pos)){
-    // CoinSpot is the source of truth — bot writes current_price as
-    // CoinSpot AUD price each snapshot. Use that first. Fall back to
-    // CoinPaprika (USD×FX) or entry×pnl only if bot hasn't run a snapshot yet.
     const stored = Number(pos.current_price) || 0;
     if(stored > 0) return stored;
     const lp = livePrices[pos.symbol.toUpperCase()];
@@ -1137,7 +1130,6 @@ function closedFeesEstAud(){
     return s + fee;
   }, 0);
 }
-function closedNetLiveAud(){ return closedGrossPaperAud() - closedFeesEstAud(); }
 
 function fmtPrice(v){
   if(!v || !isFinite(v)) return '—';
@@ -1211,9 +1203,31 @@ function totalDeployed(){
 }
 
 function cashAud(){
-  // Paper-mode cash balance: starting capital minus what's still deployed
-  // plus any realised proceeds from closed positions.
   return Math.max(0, STARTING_AUD - totalDeployed() + closedGrossPaperAud());
+}
+
+// ─── THE SINGLE SOURCE OF TRUTH FOR PORTFOLIO VALUE ─────────────────────────
+// This must agree with Telegram's daily summary AND with snapshots written by
+// bot/supabase_logger.py:get_portfolio_value(). All three compute the same
+// thing the same way.
+//
+//   portfolio = cash + sum(market_value of every open position)
+//             = cash + sum(qty × current_price)
+//
+// No subtraction of hypothetical sell fees. Fees are a separate informational
+// number, shown smaller, labelled "if liquidated now".
+function portfolioTotalAud(){
+  let mv = 0;
+  for(const p of allPositions) mv += marketValueAud(p);
+  return cashAud() + mv;
+}
+
+function portfolioPnlAud(){
+  return portfolioTotalAud() - STARTING_AUD;
+}
+
+function portfolioPnlPct(){
+  return portfolioPnlAud() / STARTING_AUD;
 }
 
 // ─── Bucket strip on Overview ──────────────────────────────────────────────
@@ -1268,9 +1282,8 @@ function renderStrategyPage(){
 }
 
 function renderRiskStatus(){
-  // Drawdown: check current portfolio vs portfolio_peak
   const peak = Number(botFlags.portfolio_peak) || STARTING_AUD;
-  const total = computePortfolioTotal();
+  const total = portfolioTotalAud();
   const drop = peak > 0 ? (peak - total) / peak : 0;
   const ddEl = document.getElementById('risk-drawdown');
   if(ddEl){
@@ -1286,7 +1299,6 @@ function renderRiskStatus(){
     }
   }
 
-  // Buys today
   const today = new Date().toISOString().slice(0,10).replace(/-/g,'');
   const buysToday = Number(botFlags['buys_today_'+today]) || 0;
   const buysEl = document.getElementById('risk-buys-today');
@@ -1295,7 +1307,6 @@ function renderRiskStatus(){
     buysEl.className = 'risk-status ' + (buysToday >= 6 ? 'danger' : buysToday >= 4 ? 'warn' : 'ok');
   }
 
-  // Consec losses
   const consec = Number(botFlags.consec_losses) || 0;
   const cEl = document.getElementById('risk-consec');
   if(cEl){
@@ -1303,7 +1314,6 @@ function renderRiskStatus(){
     cEl.className = 'risk-status ' + (consec >= 4 ? 'danger' : consec >= 3 ? 'warn' : 'ok');
   }
 
-  // Heartbeat
   const hb = botFlags.last_heartbeat;
   const hbEl = document.getElementById('risk-heartbeat');
   if(hbEl){
@@ -1318,22 +1328,14 @@ function renderRiskStatus(){
   }
 }
 
-function computePortfolioTotal(){
-  let valSum = 0;
-  allPositions.forEach(p => valSum += marketValueAud(p));
-  return cashAud() + valSum;
-}
-
-// ─── Stats ─────────────────────────────────────────────────────────────────
+// ─── Stats — FIXED. Uses portfolioTotalAud() / portfolioPnlAud() so the
+// headline numbers match Telegram and the snapshot card. Hypothetical sell
+// fees moved into the sub-line as informational text.
+// ───────────────────────────────────────────────────────────────────────────
 function renderStats(){
-  const agg = bucketAggregates();
-  let entryCost = 0, grossPnl = 0, openEstFees = 0, todayPnlAud = 0;
-  let valSum = 0;
+  let openEstFees = 0, todayPnlAud = 0;
 
-  allPositions.forEach(p=>{
-    valSum += marketValueAud(p);
-    entryCost += entryCostAud(p);
-    grossPnl += grossPnlAud(p);
+  allPositions.forEach(p => {
     openEstFees += estimatedFeesAud(p).total;
 
     const amt = entryCostAud(p);
@@ -1347,22 +1349,24 @@ function renderStats(){
     }
   });
 
-  const cash = cashAud();
-  const paperTotal = cash + valSum;
+  const total = portfolioTotalAud();
+  const pnl = portfolioPnlAud();
   const closedFees = closedFeesEstAud();
-  const liveEquivTotal = paperTotal - openEstFees - closedFees;
+  const liquidationValue = total - openEstFees - closedFees;
 
-  document.getElementById('s-port').textContent = fmtAud(liveEquivTotal);
+  // Portfolio card — gross mark-to-market, matches Telegram
+  document.getElementById('s-port').textContent = fmtAud(total);
   document.getElementById('s-port-sub').textContent =
-    `${allPositions.length} open · after est. fees · paper ${fmtAud(paperTotal)}`;
+    `${allPositions.length} open · if liquidated ${fmtAud(liquidationValue)} after fees`;
 
-  const netOpen = grossPnl - openEstFees;
+  // P&L card — vs $10K starting capital, gross
   const pnlEl = document.getElementById('s-pnl');
-  pnlEl.textContent = fmtSignedAud(netOpen);
-  pnlEl.className = 'stat-value ' + (netOpen>0?'up':netOpen<0?'down':'');
+  pnlEl.textContent = fmtSignedAud(pnl);
+  pnlEl.className = 'stat-value ' + (pnl>0.01?'up':pnl<-0.01?'down':'');
   const todayStr = Math.abs(todayPnlAud) > 0.005 ? `${fmtSignedAud(todayPnlAud)} today · ` : '';
-  document.getElementById('s-pnl-sub').textContent = `${todayStr}open · net · gross ${fmtSignedAud(grossPnl)}`;
+  document.getElementById('s-pnl-sub').textContent = `${todayStr}${fmtSignedPct(portfolioPnlPct())} since start`;
 
+  // Realised
   const realisedEl = document.getElementById('s-realised');
   const realisedSub = document.getElementById('s-realised-sub');
   if(allClosed.length === 0){
@@ -1418,7 +1422,7 @@ function renderAllocation(){
   document.getElementById('bar-st').style.width   = (st/total*100)+'%';
 }
 
-// ─── Positions ─────────────────────────────────────────────────────────────
+// ─── Positions — REDESIGNED to lead with the P&L delta ─────────────────────
 function renderPositions(){
   const el = document.getElementById('positions-grid');
   if(!allPositions.length){
@@ -1438,10 +1442,10 @@ function renderPositions(){
 
   const renderCard = p => {
     const grossAud  = grossPnlAud(p);
+    const grossPct  = grossPnlPct(p);
     const fees      = estimatedFeesAud(p);
     const netAud    = grossAud - fees.total;
     const netPctVal = netPnlPct(p);
-    const grossPct  = grossPnlPct(p);
     const cur       = currentPriceAud(p);
     const entry     = entryPriceAud(p);
     const valAud    = marketValueAud(p);
@@ -1450,8 +1454,10 @@ function renderPositions(){
     const bk        = bucketOf(p);
     const bMeta     = BUCKETS[bk] || {label:'?', cssKey:'', short:'?'};
 
-    const cls = (valAud - entryCost) > 0.01 ? 'up' : (valAud - entryCost) < -0.01 ? 'down' : 'flat';
-    const valueDelta = valAud - entryCost;
+    // The headline class is driven by the GROSS P&L sign — that's what users
+    // actually want to see ("am I winning or losing right now?"). Net-of-fees
+    // becomes the secondary detail.
+    const cls = grossAud > 0.01 ? 'up' : grossAud < -0.01 ? 'down' : 'flat';
     const active = selectedHolding === p.symbol ? 'active' : '';
 
     const sharesLine = qty > 0
@@ -1467,19 +1473,21 @@ function renderPositions(){
           <span class="pos-sym">${p.symbol}</span>
           <span class="pos-bucket-tag ${bMeta.cssKey}">${bMeta.short}</span>
         </span>
-        <span class="pos-pct-badge ${cls}">${fmtSignedPct(netPctVal)} net</span>
+        <span class="pos-pct-badge ${cls}">${fmtSignedPct(grossPct)}</span>
       </div>
-      <div class="pos-headline ${cls}">${fmtAud(valAud)}</div>
-      <div class="pos-headline-sub">worth now · ${valueDelta>=0?'+':'−'}${fmtAud(Math.abs(valueDelta))} from $${entryCost.toFixed(0)} deployed</div>
+
+      <!-- HERO: the big green/red signed-dollar delta -->
+      <div class="pos-delta-big ${cls}">${fmtSignedAud(grossAud)}</div>
+      <div class="pos-delta-sub">${fmtAud(valAud)} now · from $${entryCost.toFixed(0)} deployed</div>
+
       <div class="pos-divider"></div>
-      <div class="pos-row"><span class="pos-row-k">Gross P&L</span><span class="pos-row-v ${grossAud>0.01?'up':grossAud<-0.01?'down':''}">${grossAud>=0?'+':'−'}${fmtAud(Math.abs(grossAud))} (${fmtSignedPct(grossPct)})</span></div>
-      <div class="pos-row"><span class="pos-row-k">Est. round-trip fees</span><span class="pos-row-v">${fees.total>0.005?'−':''}${fmtAud(fees.total)}</span></div>
-      <div class="pos-row"><span class="pos-row-k">Net P&L if sold now</span><span class="pos-row-v ${netAud>0.01?'up':netAud<-0.01?'down':''}">${netAud>=0?'+':'−'}${fmtAud(Math.abs(netAud))} (${fmtSignedPct(netPctVal)})</span></div>
+      <div class="pos-row"><span class="pos-row-k">If sold now (after fees)</span><span class="pos-row-v ${netAud>0.01?'up':netAud<-0.01?'down':''}">${fmtSignedAud(netAud)} (${fmtSignedPct(netPctVal)})</span></div>
+      <div class="pos-row"><span class="pos-row-k">Est. round-trip fees</span><span class="pos-row-v">−${fmtAud(fees.total)}</span></div>
       <div class="pos-foot">${sharesLine}${sharesLine?' · ':''}${entryLine} · ${p.market||'—'} · ${fmtRelativeFromIso(p.created_at)}</div>
     </div>`;
   };
 
-  // Group by bucket primarily
+  // Group by bucket; bucket header now shows the delta as the headline
   const html = BUCKET_ORDER.map(k => {
     const items = agg[k].positions;
     if(!items.length) return '';
@@ -1487,10 +1495,8 @@ function renderPositions(){
     const groupValue   = items.reduce((s, p) => s + marketValueAud(p), 0);
     const groupCapital = items.reduce((s, p) => s + entryCostAud(p), 0);
     const groupGross   = items.reduce((s, p) => s + grossPnlAud(p), 0);
-    const groupFees    = items.reduce((s, p) => s + estimatedFeesAud(p).total, 0);
-    const groupNet     = groupGross - groupFees;
-    const groupNetPct  = groupCapital > 0 ? groupNet / groupCapital : 0;
-    const cls = groupNet > 0.01 ? 'up' : groupNet < -0.01 ? 'down' : 'flat';
+    const groupGrossPct = groupCapital > 0 ? groupGross / groupCapital : 0;
+    const cls = groupGross > 0.01 ? 'up' : groupGross < -0.01 ? 'down' : 'flat';
     const subtitle = `${k === 'swing_stock' ? 'Alpaca · USD-priced, AUD displayed' + usStateLabel : 'CoinSpot · 24/7 trading · live AUD prices'}` +
                      ` · $${b.budget.toFixed(0)} budget · ${b.slots} slots`;
 
@@ -1502,8 +1508,8 @@ function renderPositions(){
             <div class="pos-group-sub">${subtitle}</div>
           </div>
           <div class="pos-group-totals">
-            <div class="pos-group-val">${fmtAud(groupValue)}</div>
-            <div class="pos-group-pnl ${cls}">${fmtSignedAud(groupNet)} net (${fmtSignedPct(groupNetPct)})</div>
+            <div class="pos-group-pnl-big ${cls}">${fmtSignedAud(groupGross)} <span style="font-size:12px;font-weight:500;">(${fmtSignedPct(groupGrossPct)})</span></div>
+            <div class="pos-group-val-small">${fmtAud(groupValue)} from $${groupCapital.toFixed(0)} deployed</div>
           </div>
         </div>
       </div>
@@ -1522,13 +1528,9 @@ function renderPositions(){
 }
 
 // ─── Realised P&L period filtering ─────────────────────────────────────────
-// Day = since midnight Brisbane (AEST, UTC+10).
-// Week = last 7 days. Month = last 30 days. All = no filter.
 function periodCutoffMs(period){
   const now = Date.now();
   if(period === 'day'){
-    // Brisbane is UTC+10 (no DST). Find the most recent 14:00 UTC moment,
-    // which equals midnight Brisbane.
     const utcNow = new Date(now);
     const brisbaneOffsetMin = 10 * 60;
     const brisbaneNow = new Date(utcNow.getTime() + brisbaneOffsetMin * 60000);
@@ -1542,16 +1544,7 @@ function periodCutoffMs(period){
   }
   if(period === 'week')  return now - 7  * 24 * 60 * 60 * 1000;
   if(period === 'month') return now - 30 * 24 * 60 * 60 * 1000;
-  return 0; // all
-}
-
-function closedInPeriod(period){
-  const cutoff = periodCutoffMs(period);
-  if(cutoff === 0) return allClosed.slice();
-  return allClosed.filter(p => {
-    const t = p.closed_at ? new Date(p.closed_at).getTime() : 0;
-    return t >= cutoff;
-  });
+  return 0;
 }
 
 function setRealisedPeriod(period){
@@ -1562,7 +1555,6 @@ function setRealisedPeriod(period){
   renderStats();
 }
 
-// Build a flat row per closed trade — used by both the history table and CSV export.
 function tradeHistoryRows(){
   return allClosed.map(p => {
     const stock = (p.market || '').toLowerCase() === 'alpaca';
@@ -1586,10 +1578,10 @@ function tradeHistoryRows(){
     const fxIn    = entryAud * profile.fxOneWayPct;
     const fxOut   = proceedsAud * profile.fxOneWayPct;
 
-    const buyFeesTotal  = buyFee + fxIn;     // fees paid going in
-    const sellFeesTotal = sellFee + fxOut;   // fees paid going out
-    const totalIn       = entryAud + buyFeesTotal;       // out of pocket
-    const netOut        = proceedsAud - sellFeesTotal;   // landed in pocket
+    const buyFeesTotal  = buyFee + fxIn;
+    const sellFeesTotal = sellFee + fxOut;
+    const totalIn       = entryAud + buyFeesTotal;
+    const netOut        = proceedsAud - sellFeesTotal;
     const realisedAud   = netOut - totalIn;
     const realisedPct   = totalIn > 0 ? realisedAud / totalIn : 0;
 
@@ -1788,13 +1780,15 @@ async function selectHolding(sym){
   document.getElementById('holding-sub').textContent =
     `${bMeta.label} · ${marketLabel} · bought ${fmtRelativeFromIso(pos.created_at)}`;
 
-  const valueDelta = valAud - entryCost;
-  const valueColor = valueDelta > 0.01 ? '#1a7340' : valueDelta < -0.01 ? '#c0392b' : '#1a1a2e';
+  // Detail header lead with the BIG signed P&L delta, same convention as
+  // the cards. Value goes underneath.
+  const cls = grossAud > 0.01 ? 'up' : grossAud < -0.01 ? 'down' : 'flat';
+  const valueColor = cls === 'up' ? '#1a7340' : cls === 'down' ? '#c0392b' : '#1a1a2e';
 
   const priceEl = document.getElementById('holding-price');
   if(cur > 0){
-    priceEl.innerHTML = `<div style="font-size:24px;font-weight:700;color:${valueColor};letter-spacing:-0.5px;">${fmtAud(valAud)} <span style="font-size:11px;color:#9aa0a6;font-weight:500;">AUD worth</span></div>
-      <div style="font-size:11px;color:#9aa0a6;">${valueDelta>=0?'+':'−'}${fmtAud(Math.abs(valueDelta))} from $${entryCost.toFixed(0)} deployed · ${fmtSignedPct(netPct)} after fees</div>`;
+    priceEl.innerHTML = `<div style="font-size:28px;font-weight:700;color:${valueColor};letter-spacing:-1px;line-height:1.05;">${fmtSignedAud(grossAud)} <span style="font-size:14px;font-weight:500;">(${fmtSignedPct(grossPct)})</span></div>
+      <div style="font-size:11px;color:#9aa0a6;margin-top:4px;">${fmtAud(valAud)} now · from $${entryCost.toFixed(0)} deployed · ${fmtSignedAud(netAud)} after fees</div>`;
   } else {
     priceEl.innerHTML = `<div style="font-size:13px;color:#c4c7cc;">price syncing…</div>`;
   }
@@ -1861,7 +1855,6 @@ async function selectHolding(sym){
   const closedForSym = allClosed.filter(p => p.symbol === sym);
   const tradeRows = renderSymbolTradeHistory(trades, closedForSym);
 
-  // Find Claude decision rationale for this symbol
   const decision = allDecisions.find(d => d.symbol === sym && d.action === 'buy');
   const buyTrade = trades.find(t => t.action === 'BUY');
   const reason = decision ? decision.reason : (buyTrade ? buyTrade.details : null);
@@ -1882,7 +1875,6 @@ async function selectHolding(sym){
     statsHtml + pnlHtml + riskHtml + tradeRows + reasoningHtml + methodologyHtml;
 }
 
-// Bucket-specific risk levels matching strategy.py
 function renderRiskLevelsForBucket(pos, bucketKey){
   const pnlPct = Number(pos.pnl_pct) || 0;
   const peakPct = Number(pos.peak_pnl_pct) || pnlPct;
@@ -1896,11 +1888,10 @@ function renderRiskLevelsForBucket(pos, bucketKey){
     stop = -0.08; target = 0.15; trailGiveback = 0.05; reviewDays = 30;
   } else if(bucketKey === 'momentum_crypto'){
     stop = -0.10; target = 0.30; hardExitDays = 7;
-  } else { // swing_stock
+  } else {
     stop = -0.05; target = 0.12; trailGiveback = 0.04; reviewDays = 30;
   }
 
-  // Stop
   const stopDist = pnlPct - stop;
   let stopStatus, stopText;
   if(pnlPct <= stop){ stopStatus='danger'; stopText='WOULD TRIGGER'; }
@@ -1912,7 +1903,6 @@ function renderRiskLevelsForBucket(pos, bucketKey){
     status: stopText, statusCls: stopStatus,
   });
 
-  // Target
   const takeDist = target - pnlPct;
   let takeStatus, takeText;
   if(pnlPct >= target){ takeStatus='ok'; takeText='WOULD TRIGGER'; }
@@ -1924,7 +1914,6 @@ function renderRiskLevelsForBucket(pos, bucketKey){
     status: takeText, statusCls: takeStatus,
   });
 
-  // Trailing (if applicable)
   if(trailGiveback != null){
     const trailArmed = peakPct >= target;
     const trailFloor = peakPct - trailGiveback;
@@ -1939,7 +1928,6 @@ function renderRiskLevelsForBucket(pos, bucketKey){
     });
   }
 
-  // Review or hard exit
   if(hardExitDays != null){
     const remaining = hardExitDays - ageDays;
     let timeStatus, timeText;
@@ -2064,7 +2052,6 @@ function renderChart(tf){
   let labels, values, points, title, note, mode;
   const now = Date.now();
 
-  // v2 writes to `snapshots` table with `created_at`. Filter by window.
   const windowMs = {'1H': 60*60*1000, '24H': 24*60*60*1000, '1W': 7*24*60*60*1000,
                     '1M': 30*24*60*60*1000, 'ALL': 365*24*60*60*1000}[tf] || 24*60*60*1000;
   const cutoff = now - windowMs;
@@ -2137,7 +2124,6 @@ function renderChart(tf){
 }
 
 function renderIntelligence(){
-  // Latest market view: prefer most recent claude_decision reason, fallback to crypto_check
   const latestDecision = allDecisions[0];
   const latestCheck = allChecks[0];
   const view = (latestDecision && latestDecision.reason) || (latestCheck && latestCheck.reasoning) ||
@@ -2146,7 +2132,6 @@ function renderIntelligence(){
 
   const decEl = document.getElementById('decisions');
   if(!allDecisions.length){
-    // Fall back to crypto_checks for legacy data
     if(allChecks.length){
       decEl.innerHTML = allChecks.slice(0,10).map(c=>{
         const time = new Date(c.checked_at).toLocaleTimeString('en-AU',{hour:'2-digit', minute:'2-digit'});
@@ -2317,7 +2302,6 @@ function renderLiveStatus(){
   const el = document.getElementById('live-status');
   const items = [];
 
-  // Heartbeat-driven liveness check
   const hb = botFlags.last_heartbeat;
   let hbAgo = 999;
   if(hb){ hbAgo = Math.round((Date.now() - new Date(hb).getTime()) / 60000); }
@@ -2379,7 +2363,6 @@ function renderFailures(){
   const list = document.getElementById('failed-list');
   const rows = [];
 
-  // v2: read from claude_decisions where action='rejected_by_safety' or action='skip'
   allDecisions.slice(0, 30).forEach(d => {
     if(d.action === 'rejected_by_safety'){
       rows.push({
@@ -2398,7 +2381,6 @@ function renderFailures(){
     }
   });
 
-  // Legacy: parse crypto_checks
   allChecks.slice(0, 20).forEach(c => {
     let executions = [];
     try { executions = JSON.parse(c.executions || '[]'); } catch(e){}
