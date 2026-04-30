@@ -1,6 +1,11 @@
-# RIVX_VERSION: v2.7-asx-runner-2026-04-30
+# RIVX_VERSION: v2.7.1-asx-runner-2026-04-30
 """
 RivX-ASX runner — orchestrates the ASX scans.
+
+v2.7.1 fix: on first startup with empty flags, all four scheduled scans
+fired at once because _at_or_past_today() returned True for every past
+time. Now we seed the flags on first run so scans only fire at the
+NEXT scheduled time.
 
 bot.py calls into this with a tick on every main-loop iteration. This
 module decides whether it's time for a scan and fires it if so. All
@@ -14,8 +19,7 @@ Schedule (AEST weekdays only, except outcome-update which runs daily):
   - 10:00..16:00 every 15 min: high-conviction polling
   - 17:00  outcome update (resolve pending signals against today's bars)
 
-Failures are caught and logged. ASX failures NEVER halt RivX. The tick
-function returns silently on any error.
+Failures are caught and logged. ASX failures NEVER halt RivX.
 """
 
 from __future__ import annotations
@@ -38,17 +42,15 @@ OUTCOME_TIME       = "17:00"
 
 INTRADAY_START     = "10:00"
 INTRADAY_END       = "16:00"
-INTRADAY_POLL_MIN  = 15      # poll every 15 min
+INTRADAY_POLL_MIN  = 15
 
-# Bot-flags keys (avoid collisions with RivX flags)
+# Bot-flags keys
 FLAG_LAST_PRE_OPEN  = "asx_last_pre_open"
 FLAG_LAST_MIDDAY    = "asx_last_midday"
 FLAG_LAST_CLOSE     = "asx_last_close"
 FLAG_LAST_OUTCOME   = "asx_last_outcome"
 FLAG_LAST_INTRADAY  = "asx_last_intraday_poll"
-FLAG_LAST_HC_FIRED  = "asx_last_hc_fired"   # symbol-level dedupe key
-
-# Track which symbols fired in pre-open today, used by midday diff
+FLAG_FIRST_BOOT     = "asx_first_boot_done"
 FLAG_PRE_OPEN_SYMS  = "asx_pre_open_symbols_today"
 
 
@@ -80,7 +82,6 @@ def _at_or_past_today(target_hhmm: str, last_run_iso: str | None) -> bool:
 
 
 def _in_intraday_window() -> bool:
-    """True iff currently between INTRADAY_START and INTRADAY_END AEST."""
     now = _aest_now()
     sh, sm = map(int, INTRADAY_START.split(":"))
     eh, em = map(int, INTRADAY_END.split(":"))
@@ -90,7 +91,6 @@ def _in_intraday_window() -> bool:
 
 
 def _should_intraday_poll(last_iso: str | None) -> bool:
-    """True if it's been >= INTRADAY_POLL_MIN since last poll."""
     if not last_iso:
         return True
     try:
@@ -105,19 +105,63 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _seed_flags_for_first_boot(db, log_obj):
+    """
+    On the very first boot, mark all past-time scans for today as 'already
+    ran' so we don't avalanche. This means the first real scan will be
+    tomorrow's 09:30 AEST pre-open (or today's if we boot before 09:30).
+    """
+    if db.get_flag(FLAG_FIRST_BOOT):
+        return  # already seeded
+
+    now = _aest_now()
+    seeded = []
+
+    # For each scheduled time, if we're already past it today, mark it as
+    # done so it doesn't fire today. If we're before it, leave it empty
+    # so it can fire normally at the scheduled time.
+    schedule = [
+        (PRE_OPEN_TIME, FLAG_LAST_PRE_OPEN),
+        (MIDDAY_TIME,   FLAG_LAST_MIDDAY),
+        (CLOSE_TIME,    FLAG_LAST_CLOSE),
+        (OUTCOME_TIME,  FLAG_LAST_OUTCOME),
+    ]
+    for hhmm, flag_key in schedule:
+        h, m = map(int, hhmm.split(":"))
+        target = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        if now >= target:
+            db.set_flag(flag_key, _utc_now_iso())
+            seeded.append(hhmm)
+
+    # Also seed intraday so we don't immediately fire one
+    if _in_intraday_window():
+        db.set_flag(FLAG_LAST_INTRADAY, _utc_now_iso())
+        seeded.append("intraday")
+
+    db.set_flag(FLAG_FIRST_BOOT, _utc_now_iso())
+    if seeded:
+        log_obj.info(f"ASX first boot: seeded {seeded} as already-run for today. "
+                     f"Next scan will be next scheduled time.")
+    else:
+        log_obj.info("ASX first boot: nothing to seed (booted before any scheduled scan)")
+
+
 # ── Main tick (called from bot.py main loop) ─────────────────────────────
 
 def tick(db, tg, log_obj=None):
     """
     Called once per main-loop iteration from bot.py.
-    Cheap when nothing's due — does only one DB read per call usually.
+    Cheap when nothing's due — does only a few DB reads per call.
     """
     if log_obj is None:
         log_obj = log
 
     try:
+        # First-time setup: seed flags so we don't avalanche
+        _seed_flags_for_first_boot(db, log_obj)
+
         if not _is_weekday():
-            return  # weekends: nothing to do (yfinance has no fresh data anyway)
+            return
 
         last_pre_open = db.get_flag(FLAG_LAST_PRE_OPEN) or ""
         last_midday   = db.get_flag(FLAG_LAST_MIDDAY) or ""
@@ -125,31 +169,26 @@ def tick(db, tg, log_obj=None):
         last_outcome  = db.get_flag(FLAG_LAST_OUTCOME) or ""
         last_intraday = db.get_flag(FLAG_LAST_INTRADAY) or ""
 
-        # ── Pre-open scan ──
         if _at_or_past_today(PRE_OPEN_TIME, last_pre_open):
             _run_pre_open(db, tg, log_obj)
             db.set_flag(FLAG_LAST_PRE_OPEN, _utc_now_iso())
-            return  # one event per tick
+            return
 
-        # ── Midday scan ──
         if _at_or_past_today(MIDDAY_TIME, last_midday):
             _run_midday(db, tg, log_obj)
             db.set_flag(FLAG_LAST_MIDDAY, _utc_now_iso())
             return
 
-        # ── Close-of-day scan ──
         if _at_or_past_today(CLOSE_TIME, last_close):
             _run_close(db, tg, log_obj)
             db.set_flag(FLAG_LAST_CLOSE, _utc_now_iso())
             return
 
-        # ── Outcome update (daily, after close) ──
         if _at_or_past_today(OUTCOME_TIME, last_outcome):
             _run_outcome_update(db, log_obj)
             db.set_flag(FLAG_LAST_OUTCOME, _utc_now_iso())
             return
 
-        # ── Intraday high-conviction polling ──
         if _in_intraday_window() and _should_intraday_poll(last_intraday):
             _run_intraday_high_conviction(db, tg, log_obj)
             db.set_flag(FLAG_LAST_INTRADAY, _utc_now_iso())
@@ -175,14 +214,11 @@ def _run_pre_open(db, tg, log_obj):
         tg.send(msg)
         return
 
-    # Persist
     asx_analyser.save_signals(db, signals, "pre_open")
 
-    # Build symbol list for midday diff
     syms_today = ",".join(sorted({s.symbol for s in signals}))
     db.set_flag(FLAG_PRE_OPEN_SYMS, syms_today)
 
-    # Telegram (convert dataclass to dict for the formatter)
     sig_dicts = [_signal_as_dict(s) for s in signals]
     msg = asx_telegram.build_pre_open_message(sig_dicts)
     tg.send(msg)
@@ -219,13 +255,11 @@ def _run_close(db, tg, log_obj):
         log_obj.warning(f"ASX modules not available: {e}")
         return
 
-    # First, run an outcome update so today's hit/stop are reflected
     try:
         asx_analyser.update_signal_outcomes(db, log_obj)
     except Exception as e:
         log_obj.warning(f"close-time outcome update: {e}")
 
-    # Then read today's signals from DB to build the recap
     today_aest = _aest_now().date()
     midnight_aest = datetime.combine(today_aest, datetime.min.time(), tzinfo=AEST)
     midnight_utc = midnight_aest.astimezone(timezone.utc).isoformat()
@@ -260,12 +294,6 @@ def _run_outcome_update(db, log_obj):
 
 
 def _run_intraday_high_conviction(db, tg, log_obj):
-    """
-    Light-touch intraday scan looking for high-conviction setups (conf >=
-    0.80 AND volume_ratio >= 3.0). Sends an immediate alert per qualifying
-    symbol, but dedupes against signals already fired today for that symbol
-    so we don't spam.
-    """
     log_obj.info("ASX: intraday high-conviction poll")
     try:
         from bot import asx_analyser, asx_telegram
@@ -281,7 +309,6 @@ def _run_intraday_high_conviction(db, tg, log_obj):
     if not hc_signals:
         return
 
-    # Dedupe: don't fire on a symbol we already alerted today
     today_aest = _aest_now().date()
     midnight_aest = datetime.combine(today_aest, datetime.min.time(), tzinfo=AEST)
     midnight_utc = midnight_aest.astimezone(timezone.utc).isoformat()
@@ -300,7 +327,6 @@ def _run_intraday_high_conviction(db, tg, log_obj):
     if not new_hc:
         return
 
-    # Save and alert
     asx_analyser.save_signals(db, new_hc, "high_conviction")
     for s in new_hc:
         msg = asx_telegram.build_high_conviction_message(_signal_as_dict(s))
@@ -311,7 +337,6 @@ def _run_intraday_high_conviction(db, tg, log_obj):
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 def _signal_as_dict(s) -> dict:
-    """Convert an AsxSignal dataclass to a dict for the Telegram formatter."""
     if isinstance(s, dict):
         return s
     return {
