@@ -1,16 +1,26 @@
-# RIVX_VERSION: v2.5-rich-summary-2026-04-30
+# RIVX_VERSION: v2.6-rich-summary-2026-04-30
 """
 Rich daily summary for RivX.
 
-Replaces the thin run_daily_summary() in bot.py and adds a new
-send_rich_summary() method to telegram_notify.py.
+v2.6 changes:
+  - Bot activity section rewritten in plain English: groups decisions by
+    scan event (8 AM crypto, 4 PM crypto, 11 PM stock, 3 AM stock),
+    explains what each scan was looking at, what the bot decided, and
+    what actually happened. Cross-references claude_decisions.executed
+    against the positions table to verify every "executed=True" actually
+    became an open or closed position. Decisions where executed=True but
+    no position exists get flagged as "execution failed".
 
-Reads from `positions` table directly (the `trades` table is currently
-not being populated on closes — separate bug). Filters out phantom
-cleanups (exit_price == entry_price AND pnl_pct == 0).
+  - Headline portfolio number now computes its own total from
+    cash + open market value + lifetime realised P&L, instead of trusting
+    the broken get_portfolio_value() helper. Same calculation as the
+    dashboard so the two never disagree.
 
-Designed for someone reading on mobile while away from desk: maximum
-useful data, scannable structure, no fluff.
+  - Phantom cleanups (manually-marked-closed positions where entry==exit
+    and pnl==0) are filtered out of all P&L math.
+
+Reads from `positions` directly because `trades` table isn't populated
+on close (separate bug, not addressed here).
 """
 
 from __future__ import annotations
@@ -18,7 +28,7 @@ from datetime import datetime, timezone, timedelta
 from bot import strategy
 
 
-# ── Time helpers (duplicated from bot.py to keep this self-contained) ───
+# ── Time helpers (self-contained) ───────────────────────────────────────
 
 AEST = timezone(timedelta(hours=10))
 
@@ -44,34 +54,24 @@ def _us_market_state() -> str:
 
 
 def _next_scan_label() -> str:
-    """
-    Look at the schedule and return the next upcoming scan event in human form.
-    Schedule:
-      - Crypto scans: 8:00, 16:00 AEST every day
-      - Stock scans: 23:00, 03:00 AEST weekdays (Mon-Fri AEST)
-      - Daily summaries: 8:00, 20:00 AEST every day
-    """
+    """Next upcoming scan/summary event in human form."""
     now = _aest_now()
     candidates = []
 
-    # Crypto scans (daily)
     for hh, mm in [(8, 0), (16, 0)]:
         target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
         if target <= now:
             target += timedelta(days=1)
         candidates.append((target, "crypto scan"))
 
-    # Stock scans (weekdays only — Mon-Fri AEST)
     for hh, mm in [(23, 0), (3, 0)]:
         target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
         if target <= now:
             target += timedelta(days=1)
-        # Skip weekends — bump forward
         while target.weekday() >= 5:
             target += timedelta(days=1)
         candidates.append((target, "stock scan"))
 
-    # Summaries
     for hh, mm in [(8, 0), (20, 0)]:
         target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
         if target <= now:
@@ -105,8 +105,17 @@ def _bucket_of(position: dict) -> str:
     return strategy.Bucket.SWING_CRYPTO
 
 
+def _bucket_label(bucket: str) -> str:
+    """Human-readable bucket name."""
+    return {
+        strategy.Bucket.SWING_CRYPTO:    "swing crypto",
+        strategy.Bucket.MOMENTUM_CRYPTO: "momentum crypto",
+        strategy.Bucket.SWING_STOCK:     "US stocks",
+    }.get(bucket, bucket)
+
+
 def _hold_duration(opened_iso: str, closed_iso: str | None = None) -> str:
-    """Returns human-readable duration like '2d 4h' or '6h 30m'."""
+    """Human-readable duration like '2d 4h' or '6h 30m'."""
     try:
         opened = datetime.fromisoformat((opened_iso or "").replace("Z", "+00:00"))
         end = (datetime.fromisoformat((closed_iso or "").replace("Z", "+00:00"))
@@ -126,30 +135,166 @@ def _hold_duration(opened_iso: str, closed_iso: str | None = None) -> str:
 
 
 def _signed_dollar(amount: float) -> str:
-    """+$12.34 or -$12.34"""
     if amount >= 0:
         return f"+${amount:.2f}"
     return f"-${abs(amount):.2f}"
 
 
 def _signed_pct(pct: float) -> str:
-    """+2.34% or -2.34%"""
     if pct >= 0:
         return f"+{pct:.2f}%"
     return f"{pct:.2f}%"
 
 
-# ── The replacement run_daily_summary ────────────────────────────────────
+def _scan_window(decided_at_iso: str) -> str:
+    """
+    Map a decision timestamp to its scan window label.
+    Crypto scans fire at 8 AM and 4 PM AEST. Stock scans at 11 PM and 3 AM AEST.
+    Decisions made within ~30 min of those times belong to that scan.
+    """
+    try:
+        dt = datetime.fromisoformat(decided_at_iso.replace("Z", "+00:00")).astimezone(AEST)
+    except Exception:
+        return "unknown scan"
+
+    h = dt.hour
+    if 7 <= h <= 9:
+        return "8 AM crypto scan"
+    if 15 <= h <= 17:
+        return "4 PM crypto scan"
+    if 22 <= h or h == 23:
+        return "11 PM stock scan"
+    if 2 <= h <= 4:
+        return "3 AM stock scan"
+    return f"{dt.strftime('%H:%M')} ad-hoc"
+
+
+def _explain_signal(decision: dict, position_for_symbol: dict | None) -> str:
+    """
+    Translate a decision row into plain English.
+    Uses the `reason` field (which Claude wrote) but cleans it up,
+    and adds the executed/failed outcome inline.
+    """
+    sym = decision.get("symbol", "?")
+    action = (decision.get("action") or "").lower()
+    bucket = decision.get("bucket") or ""
+    conf = decision.get("confidence")
+    raw_reason = (decision.get("reason") or "").strip()
+    executed = bool(decision.get("executed"))
+
+    # Clean up the reason: strip trailing ellipses, redundant prefixes
+    reason_clean = raw_reason
+    for prefix in ["Clean breakout setup: ", "Clean ", "Setup: "]:
+        if reason_clean.startswith(prefix):
+            reason_clean = reason_clean[len(prefix):]
+    reason_clean = reason_clean.rstrip(".…")
+
+    # Truncate the reason if it's a long one
+    if len(reason_clean) > 130:
+        reason_clean = reason_clean[:127].rstrip() + "…"
+
+    conf_str = f" ({float(conf)*100:.0f}% conf)" if conf is not None else ""
+
+    if action == "buy" and executed:
+        # Verify a position actually exists
+        if position_for_symbol:
+            if position_for_symbol.get("status") == "open":
+                return f"BOUGHT <b>{sym}</b>{conf_str} — {reason_clean} → position now open"
+            else:
+                pnl_pct = float(position_for_symbol.get("pnl_pct") or 0) * 100
+                return (f"BOUGHT <b>{sym}</b>{conf_str} — {reason_clean} → "
+                        f"already closed at {_signed_pct(pnl_pct)}")
+        else:
+            # executed=True but no position — orphan from earlier bug
+            return (f"BOUGHT <b>{sym}</b>{conf_str} — {reason_clean} → "
+                    f"<i>no matching position found (data anomaly)</i>")
+
+    if action == "execution_failed":
+        return f"<b>{sym}</b> BUY ATTEMPTED BUT FAILED — {reason_clean}"
+
+    if action == "rejected_by_safety":
+        return f"<b>{sym}</b> blocked by safety filter — {reason_clean}"
+
+    if action == "skip":
+        return f"Skipped <b>{sym}</b>{conf_str} — {reason_clean}"
+
+    return f"<b>{sym}</b> {action}{conf_str} — {reason_clean}"
+
+
+# ── Headline portfolio calculation (defensive) ───────────────────────────
+
+def _compute_portfolio_headline(db) -> dict:
+    """
+    Compute the headline numbers ourselves so we don't trust a possibly-
+    broken get_portfolio_value(). Returns same shape:
+      total_aud, day_pnl, total_pnl, realised_lifetime, deployed_aud,
+      market_value, cash_aud
+    """
+    STARTING = strategy.STARTING_CAPITAL_AUD
+    try:
+        open_positions = db._get("positions", {"status": "eq.open"}) or []
+    except Exception:
+        open_positions = []
+    try:
+        closed_positions = db._get("positions", {"status": "eq.closed"}) or []
+    except Exception:
+        closed_positions = []
+
+    deployed_entry = 0.0
+    market_value   = 0.0
+    for p in open_positions:
+        entry = float(p.get("aud_amount") or 0)
+        deployed_entry += entry
+
+        qty           = float(p.get("qty") or 0)
+        current_price = float(p.get("current_price") or 0)
+        market        = (p.get("market") or "").lower()
+        pnl_pct       = float(p.get("pnl_pct") or 0)
+
+        if qty > 0 and current_price > 0 and market != "alpaca":
+            mv = qty * current_price
+        else:
+            mv = entry * (1 + pnl_pct) if entry > 0 else 0
+        market_value += mv
+
+    realised_lifetime = 0.0
+    for c in closed_positions:
+        try:
+            aud = float(c.get("aud_amount") or 0)
+            pct = float(c.get("pnl_pct") or 0)
+            entry_p = float(c.get("entry_price") or 0)
+            exit_p  = float(c.get("exit_price") or 0)
+            if abs(entry_p - exit_p) < 0.0001 and abs(pct) < 0.0001:
+                continue  # phantom cleanup
+            realised_lifetime += aud * pct
+        except (TypeError, ValueError):
+            continue
+
+    cash = max(0, STARTING + realised_lifetime - deployed_entry)
+    total = market_value + cash
+
+    try:
+        snaps = db._get("snapshots",
+                        {"order": "created_at.desc", "limit": "1"}) or []
+        prev_total = float(snaps[0].get("total_aud", STARTING)) if snaps else STARTING
+    except Exception:
+        prev_total = STARTING
+
+    return {
+        "total_aud":         round(total, 2),
+        "day_pnl":           round(total - prev_total, 2),
+        "total_pnl":         round(total - STARTING, 2),
+        "realised_lifetime": round(realised_lifetime, 2),
+        "deployed_aud":      round(deployed_entry, 2),
+        "market_value":      round(market_value, 2),
+        "cash_aud":          round(cash, 2),
+    }
+
+
+# ── Main entry point ────────────────────────────────────────────────────
 
 def run_rich_daily_summary(db, tg, log):
-    """
-    Pull everything needed for a comprehensive summary, format it, send it.
-
-    Args:
-        db: SupabaseLogger instance
-        tg: TelegramNotifier instance
-        log: logger
-    """
+    """Build and send a comprehensive daily summary to Telegram."""
     try:
         now_aest = _aest_now()
         midnight_aest = now_aest.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -158,11 +303,10 @@ def run_rich_daily_summary(db, tg, log):
 
         # ── Pull data ───────────────────────────────────────────────────
 
-        portfolio = db.get_portfolio_value() or {}
         positions = db.get_positions() or {}
+        portfolio = _compute_portfolio_headline(db)
 
-        # Closed today — read from `positions` table directly because `trades`
-        # isn't populated on close (separate bug). Filter phantom cleanups.
+        # All closed-today positions (for the "closed today" section)
         try:
             closed_today = db._get("positions", {
                 "status": "eq.closed",
@@ -170,31 +314,43 @@ def run_rich_daily_summary(db, tg, log):
                 "order": "closed_at.desc",
             }) or []
         except Exception as e:
-            log.warning(f"summary: closed positions read failed: {e}")
+            log.warning(f"summary: closed-today read failed: {e}")
             closed_today = []
 
-        # Filter out phantom cleanups (exit==entry AND pnl==0)
         real_closes = []
         for c in closed_today:
             try:
-                entry = float(c.get("entry_price") or 0)
-                exit_p = float(c.get("exit_price") or 0)
-                pnl = float(c.get("pnl_pct") or 0)
-                if abs(entry - exit_p) < 0.0001 and abs(pnl) < 0.0001:
+                entry_p = float(c.get("entry_price") or 0)
+                exit_p  = float(c.get("exit_price") or 0)
+                pct     = float(c.get("pnl_pct") or 0)
+                if abs(entry_p - exit_p) < 0.0001 and abs(pct) < 0.0001:
                     continue  # phantom
                 real_closes.append(c)
             except Exception:
                 real_closes.append(c)
 
-        # Claude decisions today
+        # All decisions from today
         try:
             decisions_today = db._get("claude_decisions", {
                 "decided_at": f"gte.{midnight_iso}",
-                "order": "decided_at.desc",
+                "order": "decided_at.asc",
             }) or []
         except Exception as e:
             log.warning(f"summary: decisions read failed: {e}")
             decisions_today = []
+
+        # Build a lookup of all positions (open + closed) by symbol so we can
+        # cross-reference each "executed" decision with reality.
+        try:
+            all_positions_today = db._get("positions", {
+                "created_at": f"gte.{midnight_iso}",
+            }) or []
+        except Exception:
+            all_positions_today = []
+
+        positions_by_symbol = {}
+        for p in all_positions_today:
+            positions_by_symbol[(p.get("symbol") or "").upper()] = p
 
         # Today's API cost
         try:
@@ -208,14 +364,13 @@ def run_rich_daily_summary(db, tg, log):
         # ── Calculate numbers ───────────────────────────────────────────
 
         STARTING = float(strategy.STARTING_CAPITAL_AUD)
-        total = float(portfolio.get("total_aud") or STARTING)
-        cash = float(portfolio.get("cash_aud") or 0)
-        deployed = float(portfolio.get("deployed_aud") or 0)
-        day_pnl = float(portfolio.get("day_pnl") or 0)
-        all_pnl = float(portfolio.get("total_pnl") or 0)
-        all_pct = (all_pnl / STARTING) * 100 if STARTING else 0
+        total       = float(portfolio.get("total_aud") or STARTING)
+        cash        = float(portfolio.get("cash_aud") or 0)
+        deployed    = float(portfolio.get("deployed_aud") or 0)
+        all_pnl     = float(portfolio.get("total_pnl") or 0)
+        realised_lt = float(portfolio.get("realised_lifetime") or 0)
+        all_pct     = (all_pnl / STARTING) * 100 if STARTING else 0
 
-        # Realised today (from real closes)
         realised_today = 0.0
         for c in real_closes:
             try:
@@ -225,7 +380,6 @@ def run_rich_daily_summary(db, tg, log):
             except Exception:
                 pass
 
-        # Unrealised on open positions
         unrealised = 0.0
         for sym, p in positions.items():
             try:
@@ -238,38 +392,39 @@ def run_rich_daily_summary(db, tg, log):
         # ── Group open positions by bucket ──────────────────────────────
 
         groups = {
-            strategy.Bucket.SWING_CRYPTO: {},
+            strategy.Bucket.SWING_CRYPTO:    {},
             strategy.Bucket.MOMENTUM_CRYPTO: {},
-            strategy.Bucket.SWING_STOCK: {},
+            strategy.Bucket.SWING_STOCK:     {},
         }
         for sym, p in positions.items():
             groups[_bucket_of(p)][sym] = p
 
-        # ── Decision breakdown ──────────────────────────────────────────
+        # ── Group decisions by scan window ──────────────────────────────
 
-        buys_executed = []
-        skips = []
-        safety_blocks = []
+        scan_groups = {}     # window_label -> list of decision dicts
+        scan_summaries = {}  # window_label -> dict with bucket, candidates_qualified
         for d in decisions_today:
-            action = (d.get("action") or "").lower()
-            sym = d.get("symbol") or "?"
-            bucket = d.get("bucket") or "?"
-            reason = (d.get("reason") or "").strip()
-            conf = d.get("confidence")
-            executed = bool(d.get("executed"))
+            window = _scan_window(d.get("decided_at") or "")
+            if d.get("symbol") == "_scan" and d.get("action") == "scan_summary":
+                # This is a scan-event marker row
+                scan_summaries[window] = {
+                    "bucket": d.get("bucket"),
+                    "reason": d.get("reason") or "",
+                    "decided_at": d.get("decided_at"),
+                }
+                continue
+            scan_groups.setdefault(window, []).append(d)
 
-            if action == "buy" and executed:
-                buys_executed.append({
-                    "sym": sym, "bucket": bucket, "reason": reason, "conf": conf,
-                })
-            elif action == "rejected_by_safety":
-                safety_blocks.append({
-                    "sym": sym, "bucket": bucket, "reason": reason, "conf": conf,
-                })
-            elif action == "skip":
-                skips.append({
-                    "sym": sym, "bucket": bucket, "reason": reason, "conf": conf,
-                })
+        # Order scans chronologically
+        all_windows = sorted(
+            set(list(scan_groups.keys()) + list(scan_summaries.keys())),
+            key=lambda w: ({
+                "8 AM crypto scan": 1,
+                "4 PM crypto scan": 2,
+                "11 PM stock scan": 3,
+                "3 AM stock scan": 4,
+            }.get(w, 99), w),
+        )
 
         # ── Format the message ──────────────────────────────────────────
 
@@ -277,7 +432,7 @@ def run_rich_daily_summary(db, tg, log):
 
         # Header
         market_state = _us_market_state()
-        head_emoji = "📈" if (day_pnl + realised_today) >= 0 else "📉"
+        head_emoji = "📈" if (realised_today + unrealised) >= 0 else "📉"
         lines.append(
             f"{head_emoji} <b>RivX summary</b> · "
             f"{now_aest.strftime('%a %d %b, %H:%M')} AEST · "
@@ -285,8 +440,8 @@ def run_rich_daily_summary(db, tg, log):
         )
         lines.append("")
 
-        # Portfolio block
-        lines.append("<b>📊 PORTFOLIO</b>")
+        # Portfolio
+        lines.append("📊 <b>PORTFOLIO</b>")
         lines.append(f"Total: <b>${total:,.2f} AUD</b>")
         lines.append(
             f"All-time: {_signed_dollar(all_pnl)} ({_signed_pct(all_pct)})"
@@ -295,11 +450,15 @@ def run_rich_daily_summary(db, tg, log):
             f"Today: {_signed_dollar(realised_today)} realised · "
             f"{_signed_dollar(unrealised)} unrealised on open"
         )
+        if abs(realised_lt - realised_today) > 0.01:
+            lines.append(
+                f"Lifetime realised: {_signed_dollar(realised_lt)}"
+            )
         lines.append("")
 
         # Closed today
         if real_closes:
-            lines.append(f"<b>✅ CLOSED TODAY ({len(real_closes)})</b>")
+            lines.append(f"✅ <b>CLOSED TODAY ({len(real_closes)})</b>")
             for c in real_closes:
                 sym = c.get("symbol") or "?"
                 aud = float(c.get("aud_amount") or 0)
@@ -319,7 +478,7 @@ def run_rich_daily_summary(db, tg, log):
             lines.append(f"  <b>Net realised: {_signed_dollar(net)}</b>")
             lines.append("")
         else:
-            lines.append("<b>✅ CLOSED TODAY</b>: none")
+            lines.append("✅ <b>CLOSED TODAY</b>: none")
             lines.append("")
 
         # Open positions
@@ -328,7 +487,7 @@ def run_rich_daily_summary(db, tg, log):
         n_mo = len(groups[strategy.Bucket.MOMENTUM_CRYPTO])
         n_st = len(groups[strategy.Bucket.SWING_STOCK])
         lines.append(
-            f"<b>📋 OPEN ({n_open})</b> · "
+            f"📋 <b>OPEN ({n_open})</b> · "
             f"{n_sw} swing crypto · {n_mo} momentum · {n_st} stocks"
         )
         if not positions:
@@ -353,11 +512,10 @@ def run_rich_daily_summary(db, tg, log):
                     pct_disp = pct * 100
                     age = _hold_duration(p.get("created_at"))
                     emoji = "🟢" if pct >= 0 else "🔴"
-                    # Distance to stop/target depends on bucket
                     extra = ""
                     if key == strategy.Bucket.SWING_CRYPTO:
-                        stop_dist = pct_disp - (-8.0)  # -8% stop
-                        tgt_dist = 15.0 - pct_disp     # +15% target
+                        stop_dist = pct_disp - (-8.0)
+                        tgt_dist = 15.0 - pct_disp
                         extra = f" · stop {stop_dist:.1f}% away · tgt {tgt_dist:.1f}% to go"
                     elif key == strategy.Bucket.MOMENTUM_CRYPTO:
                         stop_dist = pct_disp - (-10.0)
@@ -383,7 +541,7 @@ def run_rich_daily_summary(db, tg, log):
                      for p in groups[strategy.Bucket.MOMENTUM_CRYPTO].values())
         st_dep = sum(float(p.get("aud_amount") or 0)
                      for p in groups[strategy.Bucket.SWING_STOCK].values())
-        lines.append("<b>💰 CASH & DEPLOYMENT</b>")
+        lines.append("💰 <b>CASH &amp; DEPLOYMENT</b>")
         lines.append(
             f"  Cash: ${cash:,.0f} · Deployed: ${deployed:,.0f} of "
             f"${SW_B + MO_B + ST_B:,.0f} max"
@@ -402,50 +560,44 @@ def run_rich_daily_summary(db, tg, log):
         )
         lines.append("")
 
-        # Activity today
-        lines.append("<b>🤖 BOT ACTIVITY TODAY</b>")
-        lines.append(
-            f"  Decisions: {len(decisions_today)} "
-            f"({len(buys_executed)} buys, {len(skips)} skips, "
-            f"{len(safety_blocks)} safety blocks)"
-        )
+        # ── Bot activity (plain English, grouped by scan) ───────────────
+        lines.append("🤖 <b>SCANS &amp; DECISIONS TODAY</b>")
 
-        if buys_executed:
-            lines.append("  <i>Buys executed:</i>")
-            for b in buys_executed:
-                conf_str = (f" · conf {float(b['conf'])*100:.0f}%"
-                            if b['conf'] is not None else "")
-                reason = b['reason'][:80] + ("…" if len(b['reason']) > 80 else "")
-                lines.append(
-                    f"    📥 <b>{b['sym']}</b> [{b['bucket']}]{conf_str}\n"
-                    f"       {reason}"
-                )
-
-        if safety_blocks:
-            lines.append("  <i>Safety blocks:</i>")
-            for s in safety_blocks:
-                reason = s['reason'][:80] + ("…" if len(s['reason']) > 80 else "")
-                lines.append(f"    🛑 <b>{s['sym']}</b>: {reason}")
-
-        if skips:
-            lines.append("  <i>Skipped (top 5):</i>")
-            for s in skips[:5]:
-                conf_str = (f" ({float(s['conf'])*100:.0f}%)"
-                            if s['conf'] is not None else "")
-                reason = s['reason'][:60] + ("…" if len(s['reason']) > 60 else "")
-                lines.append(
-                    f"    ⏭ <b>{s['sym']}</b>{conf_str}: {reason}"
-                )
-            if len(skips) > 5:
-                lines.append(f"    …and {len(skips) - 5} more")
-
-        if not decisions_today:
+        if not all_windows:
             lines.append("  No scans completed yet today")
+        else:
+            for window in all_windows:
+                lines.append("")
+                lines.append(f"  <b>{window}</b>")
+
+                # Show scan-marker info first if we have it
+                marker = scan_summaries.get(window)
+                if marker:
+                    bucket = marker.get("bucket") or ""
+                    bucket_lbl = _bucket_label(bucket) if bucket else ""
+                    reason = marker.get("reason") or ""
+                    if bucket_lbl:
+                        lines.append(f"    Looked for {bucket_lbl} setups · {reason}")
+                    else:
+                        lines.append(f"    {reason}")
+
+                # Show actual decisions
+                window_decisions = scan_groups.get(window, [])
+                if not window_decisions:
+                    if marker:
+                        lines.append("    No qualified setups → no decisions made")
+                    continue
+
+                for d in window_decisions:
+                    sym = (d.get("symbol") or "").upper()
+                    pos_for_sym = positions_by_symbol.get(sym)
+                    explanation = _explain_signal(d, pos_for_sym)
+                    lines.append(f"    • {explanation}")
 
         lines.append("")
 
         # Cost & next scan
-        lines.append("<b>⏱ NEXT & COST</b>")
+        lines.append("⏱ <b>NEXT &amp; COST</b>")
         lines.append(f"  API spend today: ${api_cost:.3f} of $2.00 cap")
         lines.append(f"  Next event: {_next_scan_label()}")
         lines.append("")
@@ -464,7 +616,6 @@ def run_rich_daily_summary(db, tg, log):
         import traceback
         log.error(f"rich summary failed: {e}")
         log.error(traceback.format_exc())
-        # Fall back to a minimal message so user still gets something
         try:
             tg.send(f"⚠️ Daily summary error: {e}")
         except Exception:
