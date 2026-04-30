@@ -1,1114 +1,2676 @@
-# RIVX_VERSION: v2.6-executed-flag-fix-2026-04-30
-"""
-RivX bot.py — main loop orchestrator (v2 strategy).
+<!DOCTYPE html>
+<!-- RIVX_VERSION: v2.5-dashboard-math-fix-2026-04-29 -->
+<!--
+  v2.5 changes from v2.3:
+    1. Portfolio + P&L cards now use gross mark-to-market (cash + market_value),
+       matching Telegram and the bot's snapshot. Hypothetical sell fees no
+       longer subtracted from the headline. They show as small grey text
+       underneath ("if liquidated now: $X after $Y in fees").
+    2. Position cards lead with the P&L delta (big green/red), worth-now
+       moves to a smaller second line. The dashboard now answers "am I
+       winning or losing" at a glance instead of forcing the user to do
+       mental subtraction.
+    3. Bucket headers show net delta-from-deployed in the same green/red.
+    4. Strategy bucket constants in the BUCKETS object are unchanged from
+       v2.3 — they match strategy.py.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RivX</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f6f8;color:#1a1a2e;min-height:100vh;font-size:14px;}
 
-v2.6 fix: claude_decisions.executed was being set to True BEFORE
-execute_buy() ran. If the buy then failed (price feed disagreement,
-Alpaca rejection, exchange error), the decision row stayed marked as
-"executed=True" forever — so SHIB tonight showed as a successful buy
-in the daily summary even though the trade actually failed.
+/* Login */
+#login-screen{display:flex;align-items:center;justify-content:center;min-height:100vh;}
+.login-wrap{width:400px;}
+.login-header{text-align:center;margin-bottom:28px;}
+.login-logo{font-size:48px;font-weight:700;color:#0d1f38;letter-spacing:-2px;}
+.login-sub{font-size:10px;color:#9aa0a6;letter-spacing:0.25em;text-transform:uppercase;margin-top:6px;}
+.login-box{background:#0d1f38;border-radius:14px;padding:28px;}
+.login-box input{width:100%;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:12px 14px;color:white;font-size:14px;margin-bottom:10px;outline:none;font-family:monospace;}
+.login-btn{width:100%;background:white;color:#0d1f38;border:none;border-radius:8px;padding:12px;font-size:13px;font-weight:700;cursor:pointer;letter-spacing:0.1em;}
+.login-error{color:#f87171;font-size:12px;text-align:center;margin-top:10px;display:none;}
 
-Now the flow is:
-  1. Write the decision row first with executed=False, capture the id.
-  2. Call execute_buy() and check the result.
-  3. If success: PATCH the row to executed=True.
-  4. If failure: row stays at executed=False; the failure message is
-     stored in the `reason` field by appending "EXECUTION FAILED: ..."
+/* Dashboard */
+#dashboard{display:none;}
+.topbar{background:#0d1f38;padding:0 20px;display:flex;align-items:center;justify-content:space-between;height:52px;position:sticky;top:0;z-index:100;}
+.topbar-left{display:flex;align-items:center;gap:10px;}
+.topbar-logo{font-size:18px;font-weight:600;color:white;}
+.topbar-badge{font-size:10px;padding:3px 9px;border-radius:12px;background:rgba(255,255,255,0.08);color:#94a3b8;letter-spacing:0.08em;}
+.topbar-live{display:flex;align-items:center;gap:5px;font-size:10px;color:#4ade80;font-weight:600;letter-spacing:0.1em;}
+.topbar-live .dot{width:6px;height:6px;border-radius:50%;background:#4ade80;animation:pulse 2s infinite;}
+@keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.3;}}
+.nav{display:flex;gap:2px;}
+.nav-btn{font-size:12px;padding:6px 14px;border-radius:6px;border:none;background:none;color:#94a3b8;cursor:pointer;}
+.nav-btn.active{background:rgba(255,255,255,0.1);color:white;}
+.topbar-right{display:flex;align-items:center;gap:10px;}
+.topbar-time{font-size:11px;color:#6b8196;}
+.topbar-btn{font-size:11px;padding:5px 11px;border:1px solid rgba(255,255,255,0.1);border-radius:6px;background:none;color:#94a3b8;cursor:pointer;}
+.topbar-btn-kill{font-weight:600;}
+.topbar-btn-kill.kill-active{background:#7f1d1d;border-color:#dc2626;color:#fef2f2;}
+.topbar-btn-kill:not(.kill-active){background:rgba(26,115,64,0.15);border-color:#1a7340;color:#86efac;}
 
-This means rich_summary.py can now trust executed=True as ground truth.
+.force-sell-btn{font-size:11px;padding:6px 12px;border:1px solid #fecaca;border-radius:6px;background:#fef2f2;color:#c0392b;cursor:pointer;font-weight:600;letter-spacing:0.02em;}
+.force-sell-btn:hover{background:#fee2e2;border-color:#fca5a5;}
 
-v2.5 prior: run_daily_summary delegates to bot.rich_summary for a
-comprehensive Telegram report.
+.main{padding:20px;max-width:1320px;margin:0 auto;}
+.page{display:none;}
+.page.active{display:block;}
 
-v2.4 prior: stock entry prices were stored as USD-per-share (or $0
-placeholder that never got healed), causing the dashboard to show fake
--19% losses on AMD/AVGO/AAPL. Fix: read the actual fill from Alpaca after
-every buy, convert to AUD/share, store that.
-"""
+/* Cards */
+.card{background:white;border:1px solid #e8eaed;border-radius:10px;padding:18px;margin-bottom:14px;}
+.card-title{font-size:10px;color:#9aa0a6;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:14px;font-weight:500;}
+.card-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;}
 
-from __future__ import annotations
+/* Stat grid */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px;}
+.stat{background:white;border:1px solid #e8eaed;border-radius:10px;padding:14px 16px;}
+.stat-label{font-size:10px;color:#9aa0a6;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:6px;}
+.stat-value{font-size:22px;font-weight:600;color:#1a1a2e;letter-spacing:-0.5px;}
+.stat-value.up{color:#1a7340;} .stat-value.down{color:#c0392b;}
+.stat-sub{font-size:11px;color:#9aa0a6;margin-top:2px;}
 
-import os
-import sys
-import time
-import logging
-import traceback
-from datetime import datetime, timezone, timedelta
+/* Strategy summary panel */
+.strat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;}
+.strat-card{background:#fafbfc;border:1px solid #e8eaed;border-radius:8px;padding:14px;}
+.strat-card.swing-crypto{border-left:4px solid #f59e0b;}
+.strat-card.momentum-crypto{border-left:4px solid #ef4444;}
+.strat-card.swing-stock{border-left:4px solid #0d1f38;}
+.strat-name{font-size:13px;font-weight:700;color:#1a1a2e;margin-bottom:2px;}
+.strat-budget{font-size:18px;font-weight:600;color:#0d1f38;letter-spacing:-0.5px;}
+.strat-deployed{font-size:11px;color:#9aa0a6;margin-bottom:10px;}
+.strat-progress{height:5px;background:#eef0f2;border-radius:3px;overflow:hidden;margin-bottom:10px;}
+.strat-progress-fill{height:100%;background:#0d1f38;transition:width 0.3s;}
+.strat-progress-fill.swing-crypto{background:#f59e0b;}
+.strat-progress-fill.momentum-crypto{background:#ef4444;}
+.strat-progress-fill.swing-stock{background:#0d1f38;}
+.strat-rules{display:grid;grid-template-columns:auto auto;gap:4px 10px;font-size:11px;line-height:1.4;}
+.strat-k{color:#9aa0a6;}
+.strat-v{color:#1a1a2e;font-variant-numeric:tabular-nums;}
+.strat-divider{margin:8px 0;height:1px;background:#eef0f2;}
+.strat-section-label{font-size:9px;font-weight:600;color:#9aa0a6;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:4px;}
+.strat-slots{display:flex;gap:4px;margin-top:8px;}
+.strat-slot{flex:1;height:6px;background:#eef0f2;border-radius:2px;}
+.strat-slot.filled{background:#0d1f38;}
+.strat-slot.filled.swing-crypto{background:#f59e0b;}
+.strat-slot.filled.momentum-crypto{background:#ef4444;}
+.strat-slot.filled.swing-stock{background:#0d1f38;}
+.strat-meta{font-size:10px;color:#9aa0a6;margin-top:6px;}
 
-# Force stdout/stderr unbuffered so Render captures crashes
-try:
-    sys.stdout.reconfigure(line_buffering=True)
-    sys.stderr.reconfigure(line_buffering=True)
-except Exception:
-    pass
+/* Allocation */
+.alloc{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px;}
+.alloc-item{background:#f5f6f8;border-radius:8px;padding:10px 12px;}
+.alloc-label{font-size:10px;color:#9aa0a6;letter-spacing:0.05em;text-transform:uppercase;}
+.alloc-val{font-size:15px;font-weight:600;color:#0d1f38;margin-top:2px;}
+.alloc-pct{font-size:10px;color:#9aa0a6;margin-top:1px;}
+.alloc-bar{display:flex;height:6px;border-radius:3px;overflow:hidden;background:#eeeef0;}
+.alloc-bar-fill{height:100%;transition:width 0.3s;}
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-)
-log = logging.getLogger("rivx")
+/* Positions — REDESIGNED so the P&L delta is the hero, not the position value */
+.pos-grid{display:flex;flex-direction:column;gap:18px;}
+.pos-group-header{margin-bottom:0;}
+.pos-group-titlebar{display:flex;justify-content:space-between;align-items:flex-end;padding:0 0 8px 0;border-bottom:1px solid #e8eaed;margin-bottom:10px;}
+.pos-group-label{font-size:13px;font-weight:600;color:#1a1a2e;letter-spacing:-0.01em;}
+.pos-group-count{font-weight:400;color:#9aa0a6;font-size:11px;margin-left:4px;}
+.pos-group-sub{font-size:10px;color:#9aa0a6;margin-top:2px;letter-spacing:0.02em;}
+.pos-group-totals{text-align:right;}
+/* bucket header now leads with the delta, not the value */
+.pos-group-pnl-big{font-size:18px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-0.5px;line-height:1.1;}
+.pos-group-pnl-big.up{color:#1a7340;}
+.pos-group-pnl-big.down{color:#c0392b;}
+.pos-group-pnl-big.flat{color:#9aa0a6;}
+.pos-group-val-small{font-size:11px;color:#9aa0a6;font-variant-numeric:tabular-nums;margin-top:2px;}
+.pos-group-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px;}
+.pos-card{background:#fafbfc;border:1px solid #e8eaed;border-radius:8px;padding:14px 14px 12px;cursor:pointer;transition:all 0.15s;}
+.pos-card:hover{border-color:#0d1f38;}
+.pos-card.active{border-color:#0d1f38;box-shadow:0 0 0 1px #0d1f38;}
+.pos-card-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;}
+.pos-sym{font-size:14px;font-weight:700;color:#1a1a2e;letter-spacing:0.02em;}
+.pos-bucket-tag{font-size:9px;font-weight:600;padding:2px 6px;border-radius:3px;background:#f5f6f8;color:#6b7280;letter-spacing:0.05em;text-transform:uppercase;margin-left:6px;}
+.pos-bucket-tag.swing-crypto{background:#fef3c7;color:#92400e;}
+.pos-bucket-tag.momentum-crypto{background:#fee2e2;color:#991b1b;}
+.pos-bucket-tag.swing-stock{background:#dbeafe;color:#1e3a8a;}
+.pos-pct-badge{font-size:11px;font-weight:600;padding:2px 9px;border-radius:10px;}
+.pos-pct-badge.up{background:#e8f5e9;color:#1a7340;}
+.pos-pct-badge.down{background:#fdecea;color:#c0392b;}
+.pos-pct-badge.flat{background:#f5f6f8;color:#6b7280;}
 
-from bot.config import (
-    PAPER_MODE, ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_DATA_URL,
-    TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, ANTHROPIC_API_KEY,
-)
-from bot import prices
-from bot import strategy
-from bot import safety
-from bot import scanner
-from bot import brain
-from bot.supabase_logger import SupabaseLogger
-from bot.telegram_notify import TelegramNotifier
-from bot.alpaca_trader import AlpacaTrader
-from bot.coinspot_trader import CoinSpotTrader
+/* THE BIG GREEN/RED DELTA — this is now the headline of every position card */
+.pos-delta-big{font-size:28px;font-weight:700;letter-spacing:-1px;line-height:1.05;font-variant-numeric:tabular-nums;margin-bottom:2px;}
+.pos-delta-big.up{color:#1a7340;}
+.pos-delta-big.down{color:#c0392b;}
+.pos-delta-big.flat{color:#1a1a2e;}
+.pos-delta-sub{font-size:11px;color:#6b7280;margin-bottom:10px;line-height:1.5;}
+.pos-divider{height:1px;background:#eef0f2;margin:10px 0 8px;}
+.pos-row{display:flex;justify-content:space-between;font-size:11px;line-height:1.7;}
+.pos-row-k{color:#9aa0a6;}
+.pos-row-v{color:#1a1a2e;font-variant-numeric:tabular-nums;}
+.pos-row-v.up{color:#1a7340;}
+.pos-row-v.down{color:#c0392b;}
+.pos-foot{font-size:10px;color:#9aa0a6;margin-top:8px;padding-top:6px;border-top:1px solid #eef0f2;}
 
+/* Holding detail */
+.hd-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px;}
+.hd-stat{background:#f5f6f8;border-radius:8px;padding:10px 12px;}
+.hd-stat-label{font-size:9px;color:#9aa0a6;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:3px;}
+.hd-stat-val{font-size:15px;font-weight:600;color:#1a1a2e;}
+.hd-stat-val.up{color:#1a7340;} .hd-stat-val.down{color:#c0392b;}
+.hd-stat-sub{font-size:10px;color:#9aa0a6;margin-top:1px;}
+.hd-reasoning{background:#f5f6f8;border-left:3px solid #0d1f38;padding:10px 12px;border-radius:6px;margin-top:10px;font-size:12px;color:#555;line-height:1.6;}
+.hd-reasoning-label{font-size:9px;color:#9aa0a6;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:4px;}
+@media(max-width:720px){.hd-grid{grid-template-columns:1fr 1fr;}.strat-grid{grid-template-columns:1fr;}}
 
-# ── Loop cadence ──────────────────────────────────────────────────────────
+/* Chart */
+.chart-wrap{position:relative;height:220px;}
+.chart-note{font-size:10px;color:#c4c7cc;text-align:center;margin-top:8px;}
+.timeframes{display:flex;gap:2px;background:#f5f6f8;border:1px solid #e8eaed;border-radius:8px;padding:3px;}
+.tf-btn{font-size:11px;padding:4px 10px;border-radius:5px;border:none;background:none;color:#9aa0a6;cursor:pointer;}
+.tf-btn.active{background:white;color:#1a1a2e;box-shadow:0 1px 3px rgba(0,0,0,0.08);}
 
-MAIN_TICK_SECONDS         = 30
-SNAPSHOT_INTERVAL_SEC     = 300
-SWING_CRYPTO_TIMES_AEST   = ["08:00"]
-MOMENTUM_TIMES_AEST       = ["08:00", "16:00"]
-SWING_STOCK_TIMES_AEST    = ["23:00", "03:00"]
-DAILY_SUMMARY_TIMES_AEST  = ["08:00", "20:00"]
-HEARTBEAT_FLAG            = "last_heartbeat"
+/* Trades */
+.trade{display:flex;gap:10px;padding:8px 0;border-bottom:1px solid #f0f0f0;}
+.trade:last-child{border-bottom:none;}
+.trade-icon{width:36px;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0;}
+.trade-icon.buy{background:#e8f5e9;color:#1a7340;}
+.trade-icon.sell{background:#fdecea;color:#c0392b;}
+.trade-body{flex:1;min-width:0;}
+.trade-title{font-size:13px;font-weight:500;}
+.trade-detail{font-size:11px;color:#9aa0a6;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.trade-time{font-size:10px;color:#c4c7cc;flex-shrink:0;padding-top:3px;}
 
+/* Q&A */
+.qa-box{background:#f5f6f8;border:1px solid #e8eaed;border-radius:10px;padding:12px;margin-bottom:12px;}
+.qa-row{display:flex;gap:8px;}
+.qa-input{flex:1;padding:10px 12px;border:1px solid #e8eaed;border-radius:8px;font-size:13px;outline:none;background:white;font-family:inherit;}
+.qa-submit{padding:10px 16px;background:#0d1f38;color:white;border:none;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;}
+.qa-submit:disabled{opacity:0.5;}
+.qa-hint{font-size:10px;color:#9aa0a6;margin-top:6px;}
+.qa-item{padding:0;border-bottom:1px solid #f0f0f0;}
+.qa-item:last-child{border-bottom:none;}
+.qa-item summary{cursor:pointer;list-style:none;padding:10px 0;outline:none;}
+.qa-item summary::-webkit-details-marker{display:none;}
+.qa-item summary::before{content:'▸';display:inline-block;color:#9aa0a6;font-size:10px;margin-right:6px;transition:transform 0.15s;}
+.qa-item[open] summary::before{transform:rotate(90deg);}
+.qa-item summary:hover{background:rgba(0,0,0,0.02);}
+.qa-item:not([open]) .qa-q-text{color:#555;font-weight:500;}
+.qa-q{font-size:12px;font-weight:600;display:flex;justify-content:space-between;gap:8px;align-items:baseline;}
+.qa-q-text{flex:1;min-width:0;}
+.qa-time{font-size:10px;color:#c4c7cc;font-weight:normal;flex-shrink:0;}
+.qa-a{font-size:12px;color:#555;line-height:1.6;background:white;border-left:3px solid #0d1f38;padding:10px 12px;margin:4px 0 12px 0;}
+.qa-a.pending{color:#9aa0a6;font-style:italic;border-left-color:#f59e0b;}
+.qa-a p{margin:0 0 8px 0;}
+.qa-a p:last-child{margin-bottom:0;}
+.qa-a strong{color:#1a1a2e;font-weight:600;}
+.qa-a ul{margin:6px 0;padding-left:20px;}
+.qa-a li{margin-bottom:3px;}
+.qa-a em{color:#9aa0a6;font-style:italic;}
 
-# ── Time helpers ──────────────────────────────────────────────────────────
+/* Intelligence split */
+.intel-split{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+@media(max-width:900px){.intel-split{grid-template-columns:1fr;}}
+.intel-col-title{font-size:12px;font-weight:600;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid #e8eaed;}
 
-AEST = timezone(timedelta(hours=10))
+/* Cost widget */
+.cost-ring{display:flex;align-items:center;gap:12px;}
+.cost-val{font-size:20px;font-weight:600;}
+.cost-val.warn{color:#f59e0b;} .cost-val.danger{color:#c0392b;} .cost-val.ok{color:#1a7340;}
+.cost-bar{flex:1;height:6px;background:#eeeef0;border-radius:3px;overflow:hidden;}
+.cost-bar-fill{height:100%;transition:width 0.3s;}
 
-def aest_now() -> datetime:
-    return datetime.now(AEST)
+.empty{text-align:center;padding:24px;font-size:12px;color:#c4c7cc;}
+.footer{text-align:center;padding:14px;font-size:10px;color:#c4c7cc;letter-spacing:0.12em;}
 
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+/* Today's story / status / failures */
+.story-card{background:linear-gradient(135deg,#0d1f38 0%,#1a2f4a 100%);color:white;padding:18px;border-radius:10px;margin-bottom:14px;}
+.story-title{font-size:10px;color:rgba(255,255,255,0.5);letter-spacing:0.1em;text-transform:uppercase;margin-bottom:8px;}
+.story-text{font-size:14px;line-height:1.6;}
+.story-stat{display:inline-block;font-size:13px;color:rgba(255,255,255,0.85);margin-right:14px;}
+.story-stat strong{color:white;font-weight:600;}
+.status-row{display:flex;gap:12px;font-size:12px;color:#555;padding:8px 0;border-bottom:1px solid #f0f0f0;}
+.status-row:last-child{border-bottom:none;}
+.status-time{font-family:monospace;color:#9aa0a6;font-size:11px;flex-shrink:0;width:60px;}
+.status-icon{font-size:14px;flex-shrink:0;width:20px;text-align:center;}
+.status-text{flex:1;}
+.fail-row{display:flex;gap:8px;padding:8px 0;border-bottom:1px solid #f0f0f0;font-size:12px;align-items:center;}
+.fail-row:last-child{border-bottom:none;}
+.fail-badge{font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;letter-spacing:0.05em;flex-shrink:0;}
+.fail-badge.fail-err{background:#fdecea;color:#c0392b;}
+.fail-badge.fail-skip{background:#fef3c7;color:#854d0e;}
+.fail-sym{font-weight:600;color:#1a1a2e;width:55px;flex-shrink:0;}
+.fail-reason{color:#9aa0a6;flex:1;}
+.fail-time{color:#c4c7cc;font-size:11px;flex-shrink:0;}
 
-def at_or_past_time_today(target_hhmm: str, last_run_iso: str | None) -> bool:
-    now = aest_now()
-    target_h, target_m = map(int, target_hhmm.split(":"))
-    target_today = now.replace(hour=target_h, minute=target_m, second=0, microsecond=0)
-    if now < target_today:
-        return False
-    if not last_run_iso:
-        return True
-    try:
-        last = datetime.fromisoformat(last_run_iso.replace("Z", "+00:00"))
-        last_aest = last.astimezone(AEST)
-        return last_aest < target_today
-    except Exception:
-        return True
+/* Period toggle (Day/Week/Month/All) */
+.period-toggle{display:flex;gap:1px;background:#f5f6f8;border-radius:5px;padding:2px;}
+.period-btn{font-size:9px;padding:2px 6px;border-radius:3px;border:none;background:none;color:#9aa0a6;cursor:pointer;font-weight:600;letter-spacing:0.02em;}
+.period-btn.active{background:white;color:#0d1f38;box-shadow:0 1px 2px rgba(0,0,0,0.06);}
+.period-btn:hover:not(.active){color:#1a1a2e;}
 
+/* Trade history table */
+.history-table{width:100%;border-collapse:collapse;font-size:11px;font-variant-numeric:tabular-nums;}
+.history-table thead{background:#f5f6f8;}
+.history-table th{text-align:left;padding:8px 10px;font-size:9px;color:#9aa0a6;letter-spacing:0.08em;text-transform:uppercase;font-weight:600;border-bottom:1px solid #e8eaed;white-space:nowrap;}
+.history-table th.num{text-align:right;}
+.history-table td{padding:9px 10px;border-bottom:1px solid #f0f0f0;color:#1a1a2e;white-space:nowrap;}
+.history-table td.num{text-align:right;font-variant-numeric:tabular-nums;}
+.history-table td.up{color:#1a7340;font-weight:600;}
+.history-table td.down{color:#c0392b;font-weight:600;}
+.history-table td.flat{color:#6b7280;}
+.history-table td.muted{color:#9aa0a6;}
+.history-table tr:hover td{background:#fafbfc;}
+.history-table .sym-cell{font-weight:700;color:#0d1f38;}
+.history-table .pill{display:inline-block;font-size:9px;font-weight:600;padding:1px 5px;border-radius:3px;letter-spacing:0.04em;text-transform:uppercase;margin-left:4px;}
+.history-table .pill.crypto{background:#fef3c7;color:#92400e;}
+.history-table .pill.stock{background:#dbeafe;color:#1e3a8a;}
+.history-empty{text-align:center;padding:30px;font-size:12px;color:#9aa0a6;}
+.export-btn{font-size:10px;padding:5px 10px;border:1px solid #0d1f38;border-radius:5px;background:white;color:#0d1f38;cursor:pointer;font-weight:600;letter-spacing:0.04em;}
+.export-btn:hover{background:#0d1f38;color:white;}
+.export-btn:disabled{opacity:0.4;cursor:not-allowed;}
+.export-row{display:flex;gap:6px;align-items:center;}
+@media(max-width:720px){
+  .history-table{font-size:10px;}
+  .history-table th,.history-table td{padding:6px 5px;}
+}
+.dp-section{background:#fafbfc;border:1px solid #e8eaed;border-radius:8px;padding:12px 14px;margin-top:12px;}
+.dp-section-title{font-size:10px;color:#9aa0a6;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:10px;font-weight:600;}
+.dp-pnl-row{display:grid;grid-template-columns:1fr auto;gap:6px 14px;font-size:12px;align-items:baseline;}
+.dp-pnl-k{color:#555;}
+.dp-pnl-v{text-align:right;font-variant-numeric:tabular-nums;color:#1a1a2e;}
+.dp-pnl-v.fee{color:#c0392b;}
+.dp-pnl-v.up{color:#1a7340;font-weight:600;}
+.dp-pnl-v.down{color:#c0392b;font-weight:600;}
+.dp-pnl-net{border-top:1px solid #e8eaed;padding-top:8px;margin-top:6px;font-weight:600;font-size:13px;}
 
-def is_us_trading_weekday_aest() -> bool:
-    now_aest = aest_now()
-    et_now = now_aest - timedelta(hours=14)
-    return et_now.weekday() < 5
+/* Risk levels */
+.risk-row{display:grid;grid-template-columns:auto 1fr auto;gap:8px 14px;align-items:center;font-size:12px;padding:8px 0;border-bottom:1px solid #eef0f2;}
+.risk-row:last-child{border-bottom:none;}
+.risk-icon{font-size:14px;width:20px;text-align:center;}
+.risk-text-label{font-weight:600;color:#1a1a2e;}
+.risk-text-detail{color:#9aa0a6;font-size:11px;margin-top:1px;line-height:1.4;}
+.risk-status{font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;white-space:nowrap;font-variant-numeric:tabular-nums;}
+.risk-status.ok{background:#e8f5e9;color:#1a7340;}
+.risk-status.warn{background:#fef3c7;color:#854d0e;}
+.risk-status.danger{background:#fdecea;color:#c0392b;}
+.risk-status.up{background:#e8f5e9;color:#1a7340;}
+.risk-status.down{background:#fdecea;color:#c0392b;}
 
+/* Per-symbol trade history */
+.sym-trade{display:grid;grid-template-columns:auto 1fr auto;gap:8px 12px;font-size:12px;padding:8px 0;border-bottom:1px solid #eef0f2;}
+.sym-trade:last-child{border-bottom:none;}
+.sym-trade-action{font-size:10px;font-weight:700;padding:3px 8px;border-radius:5px;letter-spacing:0.05em;align-self:start;}
+.sym-trade-action.buy{background:#e8f5e9;color:#1a7340;}
+.sym-trade-action.sell{background:#fdecea;color:#c0392b;}
+.sym-trade-body{min-width:0;}
+.sym-trade-line1{font-weight:500;color:#1a1a2e;}
+.sym-trade-line2{font-size:11px;color:#9aa0a6;margin-top:2px;line-height:1.4;}
+.sym-trade-time{font-size:10px;color:#c4c7cc;text-align:right;align-self:start;font-variant-numeric:tabular-nums;}
 
-def is_us_market_open_aest() -> bool:
-    """
-    True iff the US equity market is currently open (M-F, 09:30-16:00 ET).
-    """
-    try:
-        from zoneinfo import ZoneInfo
-        now_et = datetime.now(ZoneInfo("America/New_York"))
-    except Exception:
-        now_aest = aest_now()
-        et_offset = 14 if 3 <= now_aest.month <= 10 else 15
-        now_et = (now_aest - timedelta(hours=et_offset)).replace(tzinfo=None)
+/* Closed positions */
+.closed-list{display:flex;flex-direction:column;gap:10px;}
+.closed-card{background:#fafbfc;border:1px solid #e8eaed;border-radius:8px;padding:14px;}
+.closed-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px;}
+.closed-sym{font-size:15px;font-weight:700;color:#1a1a2e;}
+.closed-net-badge{font-size:12px;font-weight:600;padding:3px 10px;border-radius:12px;}
+.closed-net-badge.up{background:#e8f5e9;color:#1a7340;}
+.closed-net-badge.down{background:#fdecea;color:#c0392b;}
+.closed-net-badge.flat{background:#f5f6f8;color:#6b7280;}
+.closed-meta{font-size:11px;color:#9aa0a6;margin-bottom:12px;}
+.closed-flow{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:10px;padding:10px 12px;background:white;border:1px solid #e8eaed;border-radius:6px;margin-bottom:10px;}
+.closed-flow-side{font-size:11px;}
+.closed-flow-label{font-size:9px;color:#9aa0a6;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:4px;font-weight:600;}
+.closed-flow-label.buy{color:#1a7340;}
+.closed-flow-label.sell{color:#c0392b;}
+.closed-flow-date{font-size:11px;color:#555;}
+.closed-flow-amt{font-size:14px;font-weight:600;color:#1a1a2e;margin-top:3px;}
+.closed-flow-price{font-size:11px;color:#9aa0a6;margin-top:1px;}
+.closed-arrow{font-size:18px;color:#c4c7cc;text-align:center;}
+.closed-pnl-table{display:grid;grid-template-columns:1fr auto;gap:5px 16px;font-size:12px;padding:10px 12px;background:white;border:1px solid #e8eaed;border-radius:6px;}
+.closed-pnl-k{color:#555;}
+.closed-pnl-v{text-align:right;font-variant-numeric:tabular-nums;color:#1a1a2e;}
+.closed-pnl-v.fee{color:#c0392b;}
+.closed-pnl-v.up{color:#1a7340;font-weight:600;}
+.closed-pnl-v.down{color:#c0392b;font-weight:600;}
+.closed-pnl-net-row{border-top:1px solid #e8eaed;padding-top:6px;margin-top:2px;font-weight:600;font-size:13px;}
 
-    if now_et.weekday() >= 5:
-        return False
-    minutes = now_et.hour * 60 + now_et.minute
-    return (9 * 60 + 30) <= minutes < (16 * 60)
+@media(max-width:480px){
+  .closed-flow{grid-template-columns:1fr;}
+  .closed-arrow{transform:rotate(90deg);}
+}
+@media(max-width:720px){
+  .stats,.alloc{grid-template-columns:1fr 1fr;}
+  .main{padding:12px;}
+}
+</style>
+</head>
+<body>
 
+<div id="login-screen">
+  <div class="login-wrap">
+    <div class="login-header">
+      <div class="login-logo">RivX</div>
+      <div class="login-sub">Autonomous Trading · v2</div>
+    </div>
+    <div class="login-box">
+      <input type="password" id="pw" placeholder="Passphrase" onkeydown="if(event.key==='Enter')login()"/>
+      <button class="login-btn" onclick="login()">ENTER</button>
+    </div>
+    <div class="login-error" id="login-error">Incorrect passphrase</div>
+  </div>
+</div>
 
-# ── Anthropic client lazy-load ────────────────────────────────────────────
+<div id="dashboard">
+  <div class="topbar">
+    <div class="topbar-left">
+      <span class="topbar-logo">RivX</span>
+      <span class="topbar-badge">PAPER · v2</span>
+      <span class="topbar-live"><span class="dot"></span>LIVE</span>
+    </div>
+    <div class="nav">
+      <button class="nav-btn active" onclick="showPage('overview',this)">Overview</button>
+      <button class="nav-btn" onclick="showPage('strategy',this)">Strategy</button>
+      <button class="nav-btn" onclick="showPage('positions',this)">Positions</button>
+      <button class="nav-btn" onclick="showPage('intelligence',this)">Intelligence</button>
+      <button class="nav-btn" onclick="showPage('cost',this)">Cost</button>
+      <button class="nav-btn" onclick="showPage('asx',this)" title="Australian equities watchlist">🇦🇺 RivX-ASX</button>
+    </div>
+    <div class="topbar-right">
+      <span class="topbar-time" id="last-updated">Loading...</span>
+      <button class="topbar-btn topbar-btn-kill" id="kill-switch-btn" onclick="toggleKillSwitch()">Trading: ON</button>
+      <button class="topbar-btn" onclick="loadAll()">Refresh</button>
+      <button class="topbar-btn" onclick="logout()">Sign out</button>
+    </div>
+  </div>
 
-_anthropic_client = None
+  <div class="main">
 
-def get_anthropic_client():
-    global _anthropic_client
-    if _anthropic_client is None:
-        try:
-            import anthropic
-            _anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        except Exception as e:
-            log.error(f"Anthropic client init failed: {e}")
-            return None
-    return _anthropic_client
+    <!-- OVERVIEW -->
+    <div id="page-overview" class="page active">
 
+      <div class="story-card">
+        <div class="story-title">Today's story</div>
+        <div class="story-text" id="story-text">Loading...</div>
+      </div>
 
-# ── Slot accounting ───────────────────────────────────────────────────────
+      <div class="card">
+        <div class="card-title">Live status</div>
+        <div id="live-status"><div class="empty">Loading...</div></div>
+      </div>
 
-def compute_slot_state(positions: dict) -> dict:
-    state = {
-        strategy.Bucket.SWING_CRYPTO:    0,
-        strategy.Bucket.MOMENTUM_CRYPTO: 0,
-        strategy.Bucket.SWING_STOCK:     0,
+      <div class="card" id="failed-card" style="display:none;">
+        <div class="card-row" style="margin-bottom:8px;">
+          <div class="card-title" style="margin-bottom:0;">Failed buys &amp; skipped setups</div>
+          <div style="font-size:10px;color:#9aa0a6;" id="failed-count"></div>
+        </div>
+        <div id="failed-list"></div>
+      </div>
+
+      <div class="stats">
+        <div class="stat"><div class="stat-label">Portfolio</div><div class="stat-value" id="s-port">$10,000.00</div><div class="stat-sub" id="s-port-sub">AUD total</div></div>
+        <div class="stat"><div class="stat-label">P&L</div><div class="stat-value" id="s-pnl">+$0.00</div><div class="stat-sub" id="s-pnl-sub">since start</div></div>
+        <div class="stat">
+          <div class="stat-label" style="display:flex;justify-content:space-between;align-items:center;gap:6px;">
+            <span>Realised P&L</span>
+            <div class="period-toggle" id="realised-period-toggle">
+              <button class="period-btn" data-period="day" onclick="setRealisedPeriod('day')">Day</button>
+              <button class="period-btn" data-period="week" onclick="setRealisedPeriod('week')">Week</button>
+              <button class="period-btn" data-period="month" onclick="setRealisedPeriod('month')">Month</button>
+              <button class="period-btn active" data-period="all" onclick="setRealisedPeriod('all')">All</button>
+            </div>
+          </div>
+          <div class="stat-value" id="s-realised">$0.00</div>
+          <div class="stat-sub" id="s-realised-sub">no closed positions</div>
+        </div>
+        <div class="stat"><div class="stat-label">Today's cost</div><div class="stat-value" id="s-cost">$0.00</div><div class="stat-sub">Claude API</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-row" style="margin-bottom:14px;">
+          <div>
+            <div class="card-title" style="margin-bottom:2px;">Strategy buckets</div>
+            <div style="font-size:11px;color:#9aa0a6;">$10K total · $9.5K deployable · $500 ops floor</div>
+          </div>
+          <button class="topbar-btn" style="border-color:#e8eaed;color:#0d1f38;" onclick="showPage('strategy',document.querySelectorAll('.nav-btn')[1])">View rules</button>
+        </div>
+        <div class="strat-grid" id="bucket-strip"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-row" style="margin-bottom:10px;">
+          <div class="card-title" style="margin-bottom:0;">Allocation</div>
+          <div style="font-size:10px;color:#c4c7cc;" id="alloc-sub">live prices</div>
+        </div>
+        <div class="alloc">
+          <div class="alloc-item"><div class="alloc-label">Cash</div><div class="alloc-val" id="a-cash">$10,000</div><div class="alloc-pct" id="a-cash-pct">100%</div></div>
+          <div class="alloc-item"><div class="alloc-label">Swing crypto</div><div class="alloc-val" id="a-sw">$0</div><div class="alloc-pct" id="a-sw-pct">0%</div></div>
+          <div class="alloc-item"><div class="alloc-label">Momentum crypto</div><div class="alloc-val" id="a-mo">$0</div><div class="alloc-pct" id="a-mo-pct">0%</div></div>
+          <div class="alloc-item"><div class="alloc-label">US Stocks</div><div class="alloc-val" id="a-st">$0</div><div class="alloc-pct" id="a-st-pct">0%</div></div>
+        </div>
+        <div class="alloc-bar">
+          <div class="alloc-bar-fill" id="bar-cash" style="background:#9aa0a6;"></div>
+          <div class="alloc-bar-fill" id="bar-sw" style="background:#f59e0b;"></div>
+          <div class="alloc-bar-fill" id="bar-mo" style="background:#ef4444;"></div>
+          <div class="alloc-bar-fill" id="bar-st" style="background:#0d1f38;"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-row" style="margin-bottom:14px;">
+          <div>
+            <div class="card-title" style="margin-bottom:4px;" id="chart-title">Portfolio value — last 24 hours</div>
+            <div style="font-size:11px;color:#9aa0a6;" id="chart-sub">Updated every 5 min</div>
+          </div>
+          <div class="timeframes">
+            <button class="tf-btn" onclick="setTf(this,'1H')">1H</button>
+            <button class="tf-btn active" onclick="setTf(this,'24H')">24H</button>
+            <button class="tf-btn" onclick="setTf(this,'1W')">1W</button>
+            <button class="tf-btn" onclick="setTf(this,'1M')">1M</button>
+            <button class="tf-btn" onclick="setTf(this,'ALL')">All</button>
+          </div>
+        </div>
+        <div class="chart-wrap"><canvas id="perfChart"></canvas></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Recent trades</div>
+        <div id="recent-trades"><div class="empty">No trades yet</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-row" style="margin-bottom:8px;">
+          <div class="card-title" style="margin-bottom:0;">Fees &amp; methodology</div>
+          <div style="font-size:10px;color:#c4c7cc;">how we count things</div>
+        </div>
+        <div style="font-size:12px;color:#555;line-height:1.7;">
+          All values shown in AUD. Stocks priced in USD by Alpaca, converted at the live AUD/USD rate from the European Central Bank via Frankfurter. Crypto prices come from CoinSpot — the price you see is what you'd actually pay or receive.
+          <br><br>
+          <strong>Portfolio</strong> = cash + (qty × current price) for every open position. Same number Telegram shows in the daily summary.
+          <strong>P&amp;L</strong> = portfolio − $10,000 starting capital. Open and closed combined.
+          <strong>Net if liquidated</strong> = portfolio minus what you'd pay in sell-side fees if you closed everything right now. Shown in small text — informational, not the headline.
+          <br><br>
+          <strong>CoinSpot fees</strong>: 1% per side via Instant Buy/Sell = 2% round-trip. Plus 1–2% spread baked into quotes.
+          <strong>Alpaca fees</strong>: $0 commission on buys, ~0.05% SEC/TAF on sells. AUD↔USD via Wise ≈ 0.5% per direction.
+          <br><br>
+          <strong>Paper mode</strong>: no actual fees charged. Fee figures are forecasts of real-money outcome.
+        </div>
+      </div>
+    </div>
+
+    <!-- STRATEGY -->
+    <div id="page-strategy" class="page">
+      <div class="card">
+        <div class="card-title">Capital structure</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-bottom:14px;">
+          <div class="alloc-item">
+            <div class="alloc-label">Total capital</div>
+            <div class="alloc-val">$10,000</div>
+            <div class="alloc-pct">paper AUD</div>
+          </div>
+          <div class="alloc-item">
+            <div class="alloc-label">Deployable</div>
+            <div class="alloc-val">$9,500</div>
+            <div class="alloc-pct">across 3 buckets</div>
+          </div>
+          <div class="alloc-item">
+            <div class="alloc-label">Ops floor</div>
+            <div class="alloc-val">$500</div>
+            <div class="alloc-pct">always cash</div>
+          </div>
+          <div class="alloc-item">
+            <div class="alloc-label">Daily buy cap</div>
+            <div class="alloc-val">6</div>
+            <div class="alloc-pct">UTC day reset</div>
+          </div>
+        </div>
+        <div style="font-size:12px;color:#555;line-height:1.7;">
+          Paper trading. Three buckets, each with its own entry rules, exit rules, and slot count. Claude is consulted at scan time but is never the trading authority — if Claude fails, no trade. Strict separation: scanner finds candidates, strategy defines rules, brain (Claude) filters, safety enforces, executor places trades.
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Bucket rules</div>
+        <div class="strat-grid" id="strategy-grid"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Safety circuit breakers</div>
+        <div class="risk-row"><span class="risk-icon">📉</span>
+          <div class="risk-text"><div class="risk-text-label">Drawdown halt</div>
+            <div class="risk-text-detail">Halts new buys if portfolio drops 5% from peak. Existing positions still managed.</div></div>
+          <span class="risk-status ok" id="risk-drawdown">monitoring</span>
+        </div>
+        <div class="risk-row"><span class="risk-icon">🛑</span>
+          <div class="risk-text"><div class="risk-text-label">Single-trade max-loss</div>
+            <div class="risk-text-detail">Blocks any sell that would realise &gt;15% loss without explicit override.</div></div>
+          <span class="risk-status ok">15% threshold</span>
+        </div>
+        <div class="risk-row"><span class="risk-icon">⏱</span>
+          <div class="risk-text"><div class="risk-text-label">Daily buy cap</div>
+            <div class="risk-text-detail">Maximum 6 buys per UTC day. Resets at UTC midnight.</div></div>
+          <span class="risk-status ok" id="risk-buys-today">0 / 6 today</span>
+        </div>
+        <div class="risk-row"><span class="risk-icon">📊</span>
+          <div class="risk-text"><div class="risk-text-label">Consecutive losses</div>
+            <div class="risk-text-detail">4 losing closes in a row halts the strategy for review.</div></div>
+          <span class="risk-status ok" id="risk-consec">0 streak</span>
+        </div>
+        <div class="risk-row"><span class="risk-icon">💗</span>
+          <div class="risk-text"><div class="risk-text-label">Heartbeat watchdog</div>
+            <div class="risk-text-detail">Bot writes timestamp every loop. Detects silent crashes.</div></div>
+          <span class="risk-status ok" id="risk-heartbeat">alive</span>
+        </div>
+        <div class="risk-row"><span class="risk-icon">⚖</span>
+          <div class="risk-text"><div class="risk-text-label">Price validation</div>
+            <div class="risk-text-detail">Crypto prices cross-checked between Binance and CoinSpot. &gt;5% disagreement blocks the trade.</div></div>
+          <span class="risk-status ok">5% tolerance</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Schedule (AEST)</div>
+        <div style="font-size:13px;color:#555;line-height:2;">
+          <strong>Every 30 sec</strong> — heartbeat, kill switch, manual orders<br>
+          <strong>Every 5 min</strong> — mark-to-market, exit-rule check<br>
+          <strong>8:00 AM</strong> — daily summary + swing crypto scan + momentum crypto scan<br>
+          <strong>4:00 PM</strong> — momentum crypto scan<br>
+          <strong>8:00 PM</strong> — daily summary<br>
+          <strong>11:00 PM (weekdays)</strong> — stock scan, 30 min before NYSE open<br>
+          <strong>3:00 AM (weekdays)</strong> — stock scan, mid-session
+        </div>
+      </div>
+    </div>
+
+    <!-- POSITIONS -->
+    <div id="page-positions" class="page">
+      <div class="card">
+        <div class="card-title">My holdings — grouped by bucket</div>
+        <div class="pos-grid" id="positions-grid"><div class="empty" style="grid-column:1/-1;">No open positions</div></div>
+      </div>
+
+      <div class="card" id="holding-detail-card" style="display:none;">
+        <div class="card-row" style="margin-bottom:14px;">
+          <div>
+            <div class="card-title" style="margin-bottom:2px;" id="holding-title">Detail</div>
+            <div style="font-size:11px;color:#9aa0a6;" id="holding-sub">Live data</div>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
+            <div id="holding-price" style="text-align:right;"></div>
+            <button class="force-sell-btn" id="holding-force-sell" onclick="forceSellSelected()">Force sell now</button>
+          </div>
+        </div>
+        <div id="holding-metrics"></div>
+      </div>
+
+      <div class="card" id="closed-positions-card" style="display:none;">
+        <div class="card-row" style="margin-bottom:10px;">
+          <div>
+            <div class="card-title" style="margin-bottom:2px;">Closed positions — full trade history</div>
+            <div style="font-size:10px;color:#9aa0a6;" id="closed-count">0 closed trades</div>
+          </div>
+          <div class="export-row">
+            <button class="export-btn" id="export-csv-btn" onclick="exportTradeHistory('csv')">Export CSV</button>
+            <button class="export-btn" id="export-json-btn" onclick="exportTradeHistory('json')">Export JSON</button>
+          </div>
+        </div>
+        <div style="overflow-x:auto;">
+          <table class="history-table" id="history-table">
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Bought</th>
+                <th class="num">Buy price</th>
+                <th class="num">Qty</th>
+                <th class="num">Buy cost</th>
+                <th class="num">Buy fees</th>
+                <th class="num">Total in</th>
+                <th>Sold</th>
+                <th class="num">Sell price</th>
+                <th class="num">Proceeds</th>
+                <th class="num">Sell fees</th>
+                <th class="num">Net out</th>
+                <th class="num">Realised $</th>
+                <th class="num">Realised %</th>
+                <th>Held</th>
+              </tr>
+            </thead>
+            <tbody id="history-tbody"></tbody>
+          </table>
+        </div>
+        <div class="history-empty" id="history-empty" style="display:none;">No closed trades yet</div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">All trades</div>
+        <div id="all-trades"><div class="empty">No trades yet</div></div>
+      </div>
+    </div>
+
+    <!-- INTELLIGENCE -->
+    <div id="page-intelligence" class="page">
+      <div class="card">
+        <div class="card-title">Ask RivX</div>
+        <div class="qa-box">
+          <div class="qa-row">
+            <input class="qa-input" id="qa-input" placeholder="Ask anything — e.g. 'why are you holding XRP?'" onkeydown="if(event.key==='Enter')askQuestion()"/>
+            <button class="qa-submit" id="qa-submit" onclick="askQuestion()">Ask</button>
+          </div>
+          <div class="qa-hint">Answer appears in 30-60 seconds · uses ~$0.012 per question</div>
+        </div>
+        <div id="qa-thread"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Latest market view</div>
+        <div id="market-view" style="font-size:13px;color:#555;line-height:1.6;padding:12px;background:#f5f6f8;border-radius:8px;border-left:3px solid #0d1f38;">Loading latest reasoning...</div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Claude decisions — last 20</div>
+        <div style="font-size:11px;color:#9aa0a6;margin-bottom:10px;">From the v2 attribution log. Every decision Claude makes is recorded with confidence + outcome (when closed).</div>
+        <div id="decisions"><div class="empty">Loading...</div></div>
+      </div>
+    </div>
+
+    <!-- COST -->
+    <div id="page-cost" class="page">
+      <div class="card">
+        <div class="card-title">Today's Claude spend</div>
+        <div class="cost-ring" style="margin-bottom:14px;">
+          <div class="cost-val" id="cost-today">$0.00</div>
+          <div class="cost-bar"><div class="cost-bar-fill" id="cost-bar-fill" style="background:#1a7340;width:0%;"></div></div>
+          <div style="font-size:11px;color:#9aa0a6;" id="cost-ceiling">$2.00 daily cap</div>
+        </div>
+        <div style="font-size:11px;color:#9aa0a6;" id="cost-details">Loading...</div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Last 7 days</div>
+        <div class="chart-wrap" style="height:180px;"><canvas id="costChart"></canvas></div>
+        <div style="margin-top:10px;font-size:11px;color:#9aa0a6;" id="cost-summary"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">How Claude is used</div>
+        <div style="font-size:12px;color:#555;line-height:1.7;">
+          <strong>Buy decisions</strong> — at every scheduled scan (8 AM, 4 PM, 11 PM, 3 AM), Claude reviews up to 8 mechanically-qualified candidates and decides which to buy. Uses Claude Opus 4.7. Costs ~5-15 cents per scan.<br>
+          <strong>Q&A</strong> — your dashboard questions. About 1.2 cents per question.<br>
+          <strong>What Claude does NOT do</strong>: place stops, manage exits, or override safety. Those run mechanically without calling the API.<br><br>
+          <strong>Hard cap</strong>: $2 USD per day. If hit, the bot stops calling Claude for the rest of the day. Positions still get managed mechanically. Typical month: $20-40 USD.
+        </div>
+      </div>
+    </div>
+
+    <!-- RivX-ASX -->
+    <div id="page-asx" class="page">
+      <div class="story-card">
+        <div class="story-title">🇦🇺 RivX-ASX · Australian equities watchlist</div>
+        <div class="story-text" style="font-size:13px;color:#555;">
+          Read-only analysis of ASX 200 stocks. Pre-open scan 09:30, midday 12:30, close 16:30 AEST.
+          High-conviction setups alert you immediately during market hours. Trade these in CommSec —
+          RivX never spends real or paper funds on these signals.
+        </div>
+      </div>
+
+      <div class="stats" id="asx-stats">
+        <div class="stat"><div class="stat-label">Today's signals</div><div class="stat-value" id="asx-stat-today">—</div><div class="stat-sub" id="asx-stat-today-sub">pre-open + intraday</div></div>
+        <div class="stat"><div class="stat-label">Active watchlist</div><div class="stat-value" id="asx-stat-watch">—</div><div class="stat-sub">currently qualifying</div></div>
+        <div class="stat"><div class="stat-label">30-day hit rate</div><div class="stat-value" id="asx-stat-hit">—</div><div class="stat-sub" id="asx-stat-hit-sub">target / stop / open</div></div>
+        <div class="stat"><div class="stat-label">High-conviction</div><div class="stat-value" id="asx-stat-hc">—</div><div class="stat-sub">today</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-row" style="margin-bottom:8px;">
+          <div class="card-title" style="margin-bottom:0;">Today's signals</div>
+          <div style="display:flex;gap:6px;">
+            <button class="period-btn active" data-asxfilter="all" onclick="setAsxFilter('all')">All</button>
+            <button class="period-btn" data-asxfilter="pullback" onclick="setAsxFilter('pullback')">Pullback</button>
+            <button class="period-btn" data-asxfilter="breakout" onclick="setAsxFilter('breakout')">Breakout</button>
+            <button class="period-btn" data-asxfilter="oversold_bounce" onclick="setAsxFilter('oversold_bounce')">Oversold</button>
+          </div>
+        </div>
+        <div id="asx-today-list"><div class="empty">Loading...</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Last 30 days · Performance</div>
+        <table class="history-table" id="asx-history-table">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Setup</th>
+              <th class="num">Conf</th>
+              <th class="num">Entry</th>
+              <th class="num">Stop</th>
+              <th class="num">Target</th>
+              <th>Outcome</th>
+              <th class="num">Return</th>
+              <th>Fired</th>
+            </tr>
+          </thead>
+          <tbody id="asx-history-body">
+            <tr><td colspan="9" class="muted" style="text-align:center;padding:20px;">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Setup types — what each one means</div>
+        <div style="font-size:12px;color:#555;line-height:1.7;">
+          <strong>Pullback</strong> — Quality stock in an uptrend that's dipped 3-8% from its recent high. Buy the dip with a tight stop, target the prior high. Highest hit rate of the three.<br>
+          <strong>Breakout</strong> — Stock breaks above its 20-day high on volume 2x+ the average and holds above the breakout level. Aussie market has thin volume, so we filter aggressively to avoid fake breakouts.<br>
+          <strong>Oversold bounce</strong> — RSI under 30 with a bullish reversal candle, but only if the stock is still above its 200-day MA (we're not catching falling knives in clear downtrends). Speculative — confidence capped at 70%.<br><br>
+          Levels are guidance, not advice. R:R shown is reward divided by risk based on suggested stop and target.
+        </div>
+      </div>
+    </div>
+
+  </div>
+  <div class="footer">NYSE · NASDAQ · CRYPTO · ASX · AUD · BRISBANE · v2.7</div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+// ─── Config ────────────────────────────────────────────────────────────────
+const SUPABASE_URL = 'https://fsbnhrfipzmulbypheyl.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_k12zd-TEPlpGJDC5DkxsUA_w8-fN3p5';
+const PASSWORD = 'RivX@Boat2026!';
+const FX_URL = 'https://api.frankfurter.app/latest?from=USD&to=AUD';
+const PAPRIKA_URL = 'https://api.coinpaprika.com/v1/tickers?limit=300';
+const DAILY_BUDGET_USD = 2.00;
+
+// ─── v2 Strategy constants — must match bot/strategy.py ────────────────────
+const STARTING_AUD = 10000;
+const OPS_FLOOR    = 500;
+
+const BUCKETS = {
+  swing_crypto: {
+    key: 'swing_crypto',
+    label: 'Swing crypto',
+    short: 'Swing',
+    color: '#f59e0b',
+    cssKey: 'swing-crypto',
+    budget: 4000,
+    slots: 5,
+    perBuy: 800,
+    universe: 'Top 30 by market cap',
+    entry: {
+      'Pullback from 7d high': '5–15%',
+      'Trend filter': 'Above 50d MA',
+      'Falling-knife guard': 'RSI > 30 OR not still dropping',
+      'Volatility guard': 'Daily range &lt; 3× ATR',
+    },
+    exit: {
+      'Stop loss': '−8%',
+      'Target': '+15% (take half)',
+      'Trailing stop': '5% giveback after target',
+      'Review': '30 days',
+    },
+    cadence: 'Once daily, 8:00 AM AEST',
+  },
+  momentum_crypto: {
+    key: 'momentum_crypto',
+    label: 'Momentum crypto',
+    short: 'Momentum',
+    color: '#ef4444',
+    cssKey: 'momentum-crypto',
+    budget: 2000,
+    slots: 4,
+    perBuy: 500,
+    universe: 'Rank 30–200 (mid-caps)',
+    entry: {
+      'Breakout': 'Broke 7d high TODAY',
+      'Volume confirmation': '≥ 2× 7d average',
+      'Falling-knife guard': 'RSI > 30 OR not still dropping',
+      'Volatility guard': 'Daily range &lt; 3× ATR',
+    },
+    exit: {
+      'Stop loss': '−10%',
+      'Target': '+30% (full exit)',
+      'Trailing stop': 'none',
+      'Hard exit': '7 days',
+    },
+    cadence: 'Twice daily, 8:00 AM + 4:00 PM AEST',
+  },
+  swing_stock: {
+    key: 'swing_stock',
+    label: 'Swing stocks',
+    short: 'Stocks',
+    color: '#0d1f38',
+    cssKey: 'swing-stock',
+    budget: 3500,
+    slots: 3,
+    perBuy: 1167,
+    universe: 'Quality list: NVDA, AAPL, MSFT, META, GOOGL, AMZN, AMD, AVGO, TSM, TSLA, NFLX, ADBE, CRM, SPY, QQQ, IWM',
+    entry: {
+      'Pullback from 7d high': '3–8%',
+      'Trend filter': 'Above 50d MA',
+      'Universe': 'From quality list only',
+    },
+    exit: {
+      'Stop loss': '−5%',
+      'Target': '+12% (take half)',
+      'Trailing stop': '4% giveback after target',
+      'Review': '30 days',
+    },
+    cadence: '11:00 PM + 3:00 AM AEST (weekdays)',
+  },
+};
+const BUCKET_ORDER = ['swing_crypto', 'momentum_crypto', 'swing_stock'];
+
+let USD_TO_AUD = 1.57;
+
+let perfChart=null, costChart=null;
+let currentTf='24H', selectedHolding=null;
+let realisedPeriod='all';
+let allSnapshots=[], allTrades=[], allPositions=[], allClosed=[],
+    allChecks=[], allDecisions=[], allQuestions=[], tokenUsage=[],
+    botFlags={}, livePrices={};
+
+function login(){
+  if(document.getElementById('pw').value===PASSWORD){
+    sessionStorage.setItem('rivx_auth','1');
+    showDash();
+  } else document.getElementById('login-error').style.display='block';
+}
+function logout(){ sessionStorage.removeItem('rivx_auth'); location.reload(); }
+
+let killSwitchState = 'off';
+
+function updateKillSwitchButton(){
+  const btn = document.getElementById('kill-switch-btn');
+  if(!btn) return;
+  if(killSwitchState === 'on'){
+    btn.textContent = 'Trading: PAUSED';
+    btn.classList.add('kill-active');
+  } else {
+    btn.textContent = 'Trading: ON';
+    btn.classList.remove('kill-active');
+  }
+}
+
+async function toggleKillSwitch(){
+  const newState = killSwitchState === 'on' ? 'off' : 'on';
+  const verb = newState === 'on' ? 'PAUSE all automated trading' : 'RESUME automated trading';
+  if(!confirm(`${verb}?\n\n` +
+              (newState === 'on'
+                ? 'Bot stops opening positions and stops auto-exits. Snapshots and force-sell still work.'
+                : 'Bot resumes normal trading on next cycle.'))){
+    return;
+  }
+  try {
+    const existing = await sb('bot_flags', {key:'eq.kill_switch'});
+    let ok;
+    if(existing && existing.length){
+      ok = await sb('bot_flags', {key:'eq.kill_switch'}, 'PATCH',
+                    {value: newState, updated_at: new Date().toISOString()});
+    } else {
+      ok = await sb('bot_flags', {}, 'POST',
+                    {key: 'kill_switch', value: newState, updated_at: new Date().toISOString()});
     }
-    for sym, p in (positions or {}).items():
-        b = (p.get("bucket") or "").strip()
-        if b in state:
-            state[b] += 1
-        elif (p.get("market") or "").lower() == "alpaca":
-            state[strategy.Bucket.SWING_STOCK] += 1
-        else:
-            state[strategy.Bucket.SWING_CRYPTO] += 1
-    return state
-
-
-def compute_cash_aud(positions: dict) -> float:
-    deployed = sum(float(p.get("aud_amount") or 0) for p in (positions or {}).values())
-    return max(0.0, strategy.STARTING_CAPITAL_AUD - deployed)
-
-
-# ── Heartbeat ─────────────────────────────────────────────────────────────
-
-def write_heartbeat(db: SupabaseLogger):
-    try:
-        db.set_flag(HEARTBEAT_FLAG, safety.now_utc_iso())
-    except Exception as e:
-        log.warning(f"heartbeat write failed: {e}")
-
-
-def check_prior_heartbeat(db: SupabaseLogger, tg: TelegramNotifier):
-    try:
-        last = db.get_flag(HEARTBEAT_FLAG)
-        stale, mins = safety.is_heartbeat_stale(last)
-        if stale and mins < 60 * 24:
-            tg.send(f"⚠️ RivX restart: previous instance heartbeat was {mins} min old. "
-                    f"Possible silent crash. Check Render logs.")
-            log.warning(f"Detected stale prior heartbeat: {mins} min")
-    except Exception as e:
-        log.debug(f"prior heartbeat check failed: {e}")
-
-
-# ── Snapshot (mark to market, save daily totals) ─────────────────────────
-
-def run_snapshot(db: SupabaseLogger, alpaca: AlpacaTrader):
-    try:
-        positions = db.get_positions() or {}
-
-        if positions:
-            crypto_syms = [s for s, p in positions.items()
-                           if (p.get("market") or "").lower() != "alpaca"]
-            for sym in crypto_syms:
-                quote = prices.get_crypto_price(sym)
-                if not quote:
-                    log.warning(f"snapshot: no price for {sym}, skipping")
-                    continue
-                mark_aud = quote.cs_aud if quote.cs_aud > 0 else (quote.usd * quote.fx_rate)
-                if mark_aud <= 0:
-                    continue
-                try:
-                    pos = positions.get(sym, {})
-                    entry = float(pos.get("entry_price") or 0)
-                    if entry <= 0:
-                        if quote.validated and quote.cs_aud > 0:
-                            db.update_position_from_alpaca(
-                                symbol=sym, current_price=quote.cs_aud,
-                                qty=pos.get("qty"), pnl_pct=0.0,
-                            )
-                            db._patch("positions",
-                                      {"entry_price": quote.cs_aud},
-                                      "symbol", sym)
-                            log.info(f"snapshot: backfilled {sym} entry to ${quote.cs_aud:.4f}")
-                        continue
-                    pnl_pct = (mark_aud - entry) / entry
-                    db.update_position_from_alpaca(
-                        symbol=sym, current_price=mark_aud,
-                        qty=pos.get("qty"), pnl_pct=pnl_pct,
-                    )
-                except Exception as e:
-                    log.warning(f"snapshot crypto {sym}: {e}")
-
-            stock_syms = [s for s, p in positions.items()
-                          if (p.get("market") or "").lower() == "alpaca"]
-            if stock_syms and alpaca:
-                try:
-                    _sync_alpaca_stocks(db, alpaca, stock_syms)
-                except Exception as e:
-                    log.warning(f"snapshot alpaca sync: {e}")
-
-        portfolio = db.get_portfolio_value() or {}
-        total = float(portfolio.get("total_aud", strategy.STARTING_CAPITAL_AUD))
-        peak = float(db.get_flag("portfolio_peak") or strategy.STARTING_CAPITAL_AUD)
-        new_peak = safety.update_peak(total, peak)
-        if new_peak > peak:
-            db.set_flag("portfolio_peak", str(new_peak))
-
-        try:
-            db.save_snapshot(
-                total_aud=total,
-                day_pnl=portfolio.get("day_pnl", 0),
-                total_pnl=portfolio.get("total_pnl", 0),
-            )
-            log.info(f"snapshot saved: total=${total:.2f}, "
-                     f"{len(positions)} positions, peak=${peak:.2f}")
-        except Exception as e:
-            log.warning(f"snapshot save FAILED: {e}")
-
-    except Exception as e:
-        log.error(f"run_snapshot crashed: {e}")
-        log.error(traceback.format_exc())
-
-
-def _sync_alpaca_stocks(db, alpaca, symbols):
-    """
-    Pull current_price + pnl + avg_entry from Alpaca for held stocks.
-    """
-    import requests
-    headers = {
-        "APCA-API-KEY-ID": ALPACA_API_KEY,
-        "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
+    if(ok){
+      killSwitchState = newState;
+      updateKillSwitchButton();
+    } else {
+      alert('Could not update kill switch — check Supabase permissions on bot_flags');
     }
-    for sym in symbols:
-        try:
-            r = requests.get(
-                f"https://paper-api.alpaca.markets/v2/positions/{sym}",
-                headers=headers, timeout=8,
-            )
-            if r.status_code != 200:
-                continue
-            data = r.json()
-            current_price_usd = float(data.get("current_price") or 0)
-            qty = float(data.get("qty") or 0)
-            pnl_pct = float(data.get("unrealized_plpc") or 0)
-            avg_entry_usd = float(data.get("avg_entry_price") or 0)
-
-            db.update_position_from_alpaca(
-                symbol=sym,
-                current_price=current_price_usd,
-                qty=qty,
-                pnl_pct=pnl_pct,
-                avg_entry_price=avg_entry_usd,
-            )
-        except Exception as e:
-            log.debug(f"alpaca sync {sym}: {e}")
-
-
-# ── Trade execution ──────────────────────────────────────────────────────
-
-def execute_buy(
-    *, symbol: str, bucket: str, db, alpaca, coinspot,
-) -> tuple[bool, str]:
-    """
-    v2.4: stock branch reads actual Alpaca fill price and stores
-    AUD/share entry up front. No more entry_price=0 placeholder.
-    """
-    is_stock = bucket == strategy.Bucket.SWING_STOCK
-    size_aud = strategy.position_size_for(bucket)
-
-    if is_stock:
-        try:
-            order = alpaca.buy(symbol, size_aud)
-            if not order:
-                return False, "alpaca returned None"
-
-            fill_usd, qty = _resolve_alpaca_fill(alpaca, order)
-
-            if fill_usd <= 0 or qty <= 0:
-                log.warning(f"BUY {symbol}: order accepted but not yet filled "
-                            f"(id={order.get('id')}) — saving entry=0, will heal")
-                db.save_position(
-                    symbol=symbol, entry_price=0, aud_amount=size_aud,
-                    market="alpaca",
-                )
-                db._patch("positions", {"bucket": bucket, "qty": 0},
-                          "symbol", symbol)
-                return True, "ok (fill pending)"
-
-            db.save_position(
-                symbol=symbol,
-                entry_price=fill_usd,
-                aud_amount=size_aud,
-                market="alpaca",
-            )
-            db._patch("positions",
-                      {"bucket": bucket, "qty": qty},
-                      "symbol", symbol)
-            log.info(f"BUY {symbol}: {qty:.4f} sh @ ${fill_usd:.2f} USD "
-                     f"· ${size_aud:.0f} AUD total")
-            return True, "ok"
-        except Exception as e:
-            log.error(f"alpaca buy {symbol}: {e}")
-            return False, f"alpaca error: {e}"
-
-    quote = prices.get_crypto_price(symbol)
-    if not quote:
-        return False, "no price quote available"
-    if not quote.validated:
-        return False, (f"price not validated: Binance ${quote.usd:.4f} USD vs "
-                       f"CoinSpot ${quote.cs_aud:.4f} AUD, disagree {quote.disagreement_pct:.1f}%")
-
-    try:
-        res = coinspot.buy(symbol, size_aud)
-        if not res:
-            return False, "coinspot returned None"
-        entry_price = float(res.get("price") or quote.aud)
-        if entry_price <= 0:
-            entry_price = quote.aud
-        db.save_position(
-            symbol=symbol,
-            entry_price=entry_price,
-            aud_amount=size_aud,
-            market="coinspot",
-        )
-        db._patch("positions", {"bucket": bucket}, "symbol", symbol)
-        log.info(f"BUY {symbol}: ${size_aud:.0f} AUD @ ${entry_price:.4f} via coinspot ({bucket})")
-        return True, "ok"
-    except Exception as e:
-        return False, f"coinspot error: {e}"
-
-
-def _resolve_alpaca_fill(alpaca, order: dict) -> tuple[float, float]:
-    """Returns (filled_avg_price_usd, filled_qty)."""
-    fill_price = float(order.get("filled_avg_price") or 0)
-    qty = float(order.get("filled_qty") or 0)
-    if fill_price > 0 and qty > 0:
-        return fill_price, qty
-
-    order_id = order.get("id")
-    if not order_id:
-        return 0.0, 0.0
-
-    for attempt in range(5):
-        time.sleep(1.0)
-        try:
-            updated = alpaca._get(f"/v2/orders/{order_id}")
-            if not updated:
-                continue
-            fill_price = float(updated.get("filled_avg_price") or 0)
-            qty = float(updated.get("filled_qty") or 0)
-            status = updated.get("status", "")
-            if fill_price > 0 and qty > 0:
-                return fill_price, qty
-            if status in ("rejected", "canceled", "expired"):
-                log.warning(f"order {order_id} ended without fill: {status}")
-                return 0.0, 0.0
-        except Exception as e:
-            log.debug(f"order poll {attempt}: {e}")
-    return 0.0, 0.0
-
-
-def execute_sell(
-    *, symbol: str, position: dict, db, alpaca, coinspot,
-    is_forced: bool = False, reason: str = "exit rule",
-) -> tuple[bool, str]:
-    """Close a position."""
-    market = (position.get("market") or "").lower()
-    is_stock = market == "alpaca"
-
-    if is_stock:
-        try:
-            live = alpaca.get_position(symbol)
-        except Exception as e:
-            return False, f"{symbol}: alpaca position fetch failed: {e}"
-        if not live:
-            return False, f"{symbol}: alpaca reports no live position (already closed?)"
-
-        try:
-            avg_entry_usd = float(live.get("avg_entry_price") or 0)
-            current_usd   = float(live.get("current_price") or 0)
-            pnl_pct_alp   = float(live.get("unrealized_plpc") or 0)
-        except (TypeError, ValueError) as e:
-            return False, f"{symbol}: malformed alpaca data: {e}"
-
-        if avg_entry_usd <= 0 or current_usd <= 0:
-            return False, (f"{symbol}: alpaca returned zero/missing prices "
-                           f"(entry={avg_entry_usd}, current={current_usd}) — refusing sell")
-
-        if not is_forced:
-            v = safety.check_can_sell(
-                symbol=symbol,
-                entry_aud=avg_entry_usd,
-                exit_aud=current_usd,
-                is_forced=False,
-            )
-            if not v.allowed:
-                return False, f"safety blocked: {v.reason}"
-
-        try:
-            res = alpaca.sell(symbol)
-        except Exception as e:
-            return False, f"alpaca sell error: {e}"
-        if not res:
-            return False, "alpaca sell returned None"
-
-        exit_price_usd = current_usd
-        pnl_pct        = pnl_pct_alp
-        db.close_position(symbol=symbol, exit_price=exit_price_usd, pnl_pct=pnl_pct)
-
-        prior = int(db.get_flag("consec_losses") or 0)
-        new_count = safety.update_consecutive_losses(prior, last_trade_was_loss=(pnl_pct < 0))
-        db.set_flag("consec_losses", str(new_count))
-
-        log.info(f"SELL {symbol}: ${exit_price_usd:.4f} USD ({pnl_pct*100:+.2f}%) — {reason}")
-
-        try:
-            recent = db._get("claude_decisions", {
-                "symbol": f"eq.{symbol}",
-                "executed": "eq.true",
-                "closed_at": "is.null",
-                "order": "decided_at.desc",
-                "limit": "1",
-            })
-            if recent:
-                row_id = recent[0].get("id")
-                if row_id:
-                    db._patch("claude_decisions", {
-                        "closed_at": safety.now_utc_iso(),
-                        "realized_pnl_pct": pnl_pct,
-                        "exit_reason": reason[:200] if reason else "",
-                    }, "id", str(row_id))
-        except Exception as e:
-            log.debug(f"claude_decisions outcome update {symbol}: {e}")
-
-        return True, f"sold @ ${exit_price_usd:.4f} USD ({pnl_pct*100:+.2f}%)"
-
-    # ── Crypto branch ──
-    entry_aud = float(position.get("entry_price") or 0)
-    quote = prices.get_crypto_price(symbol)
-    if not quote or quote.aud <= 0:
-        if not is_forced:
-            return False, "no validated price for crypto sell"
-        current_aud = 0.0
-    else:
-        current_aud = quote.aud
-
-    if entry_aud > 0 and current_aud > 0:
-        v = safety.check_can_sell(
-            symbol=symbol, entry_aud=entry_aud, exit_aud=current_aud,
-            is_forced=is_forced,
-        )
-        if not v.allowed:
-            return False, f"safety blocked: {v.reason}"
-
-    try:
-        res = coinspot.sell(symbol)
-    except Exception as e:
-        return False, f"coinspot sell error: {e}"
-    if not res:
-        return False, "coinspot returned None"
-
-    exit_price = float(res.get("price") or current_aud or 0)
-    pnl_pct = (exit_price - entry_aud) / entry_aud if entry_aud > 0 else 0
-    db.close_position(symbol=symbol, exit_price=exit_price, pnl_pct=pnl_pct)
-
-    prior = int(db.get_flag("consec_losses") or 0)
-    new_count = safety.update_consecutive_losses(prior, last_trade_was_loss=(pnl_pct < 0))
-    db.set_flag("consec_losses", str(new_count))
-
-    log.info(f"SELL {symbol}: ${exit_price:.4f} AUD ({pnl_pct*100:+.2f}%) — {reason}")
-
-    try:
-        recent = db._get("claude_decisions", {
-            "symbol": f"eq.{symbol}",
-            "executed": "eq.true",
-            "closed_at": "is.null",
-            "order": "decided_at.desc",
-            "limit": "1",
-        })
-        if recent:
-            row_id = recent[0].get("id")
-            if row_id:
-                db._patch("claude_decisions", {
-                    "closed_at": safety.now_utc_iso(),
-                    "realized_pnl_pct": pnl_pct,
-                    "exit_reason": reason[:200] if reason else "",
-                }, "id", str(row_id))
-    except Exception as e:
-        log.debug(f"claude_decisions outcome update {symbol}: {e}")
-
-    return True, f"sold @ ${exit_price:.4f} AUD ({pnl_pct*100:+.2f}%)"
-
-
-# ── Position management ─────────────────────────────────────────────────
-
-def manage_open_positions(db, alpaca, coinspot, tg: TelegramNotifier):
-    positions = db.get_positions()
-    if not positions:
-        return
-
-    stock_market_open = is_us_market_open_aest()
-
-    for sym, pos in positions.items():
-        try:
-            bucket = (pos.get("bucket") or "").strip()
-
-            if bucket == strategy.Bucket.SWING_STOCK and not stock_market_open:
-                continue
-
-            entry = float(pos.get("entry_price") or 0)
-            if entry <= 0:
-                continue
-
-            pnl_pct = float(pos.get("pnl_pct") or 0)
-            peak = float(pos.get("peak_pnl_pct") or pnl_pct)
-            age_days = _position_age_days(pos)
-
-            if bucket == strategy.Bucket.SWING_CRYPTO:
-                d = strategy.decide_exit_swing_crypto(
-                    pnl_pct=pnl_pct, peak_pnl_pct=peak, age_days=age_days,
-                )
-            elif bucket == strategy.Bucket.MOMENTUM_CRYPTO:
-                d = strategy.decide_exit_momentum(pnl_pct=pnl_pct, age_days=age_days)
-            elif bucket == strategy.Bucket.SWING_STOCK:
-                d = strategy.decide_exit_swing_stock(
-                    pnl_pct=pnl_pct, peak_pnl_pct=peak, age_days=age_days,
-                )
-            else:
-                continue
-
-            if hasattr(d, "new_peak_pnl_pct") and d.new_peak_pnl_pct > peak:
-                try:
-                    db._patch("positions",
-                              {"peak_pnl_pct": d.new_peak_pnl_pct},
-                              "symbol", sym)
-                except Exception:
-                    pass
-
-            if d.should_exit:
-                ok, msg = execute_sell(
-                    symbol=sym, position=pos, db=db, alpaca=alpaca, coinspot=coinspot,
-                    is_forced=False, reason=d.reason,
-                )
-                if ok:
-                    tg.send(f"📤 SELL {sym}: {d.reason}\n{msg}")
-                else:
-                    log.warning(f"sell {sym} failed: {msg}")
-                    tg.send(f"⚠️ SELL {sym} FAILED: {msg}")
-        except Exception as e:
-            log.warning(f"manage {sym}: {e}")
-
-
-def _position_age_days(pos: dict) -> float:
-    try:
-        opened = pos.get("opened_at") or pos.get("created_at")
-        if not opened:
-            return 0.0
-        dt = datetime.fromisoformat(opened.replace("Z", "+00:00"))
-        return (utc_now() - dt).total_seconds() / 86400.0
-    except Exception:
-        return 0.0
-
-
-# ── Scan + decide cycle ──────────────────────────────────────────────────
-
-def run_buy_cycle(
-    *, mode: str, db, alpaca, coinspot, tg: TelegramNotifier,
-):
-    """
-    v2.6: writes claude_decisions rows with executed=False FIRST, captures
-    the row id, then patches executed=True only after execute_buy returns
-    success. This way executed=True is ground truth for "trade actually
-    completed", not just "Claude said buy and safety filter passed."
-    """
-    log.info(f"buy cycle: {mode}")
-    try:
-        if mode == "swing_stock":
-            candidates = scanner.scan_stocks()
-        elif mode == "all":
-            scan_result = scanner.scan_all()
-            candidates = (scan_result["swing_crypto"]
-                          + scan_result["momentum_crypto"]
-                          + scan_result["swing_stock"])
-        else:
-            crypto = scanner.scan_crypto()
-            candidates = [c for c in crypto if c["bucket"] == mode]
-
-        # Always log the scan event, even if no candidates — so the daily
-        # summary can say "8 AM scan ran, 0 candidates found" instead of
-        # silently producing nothing.
-        try:
-            db._post("claude_decisions", {
-                "symbol": "_scan",
-                "bucket": mode,
-                "action": "scan_summary",
-                "confidence": 0,
-                "reason": f"scan complete: {len(candidates)} candidates qualified",
-                "executed": False,
-            })
-        except Exception:
-            pass
-
-        if not candidates:
-            log.info(f"buy cycle {mode}: no candidates")
-            return
-
-        positions = db.get_positions()
-        slot_state = compute_slot_state(positions)
-        cash = compute_cash_aud(positions)
-        peak = float(db.get_flag("portfolio_peak") or strategy.STARTING_CAPITAL_AUD)
-        portfolio = db.get_portfolio_value()
-        total = float(portfolio.get("total_aud", strategy.STARTING_CAPITAL_AUD))
-        consec = int(db.get_flag("consec_losses") or 0)
-        kill = (db.get_flag("kill_switch") or "").lower() in ("on", "1", "true")
-        buys_today = int(db.get_flag(f"buys_today_{utc_now().strftime('%Y%m%d')}") or 0)
-
-        verdict = safety.check_can_buy(
-            current_total_aud=total, peak_total_aud=peak,
-            buys_today=buys_today, consecutive_losses=consec,
-            manual_kill=kill,
-        )
-        if not verdict.allowed:
-            log.info(f"buy cycle {mode}: blocked — {verdict.reason}")
-            return
-
-        spent_str = db.get_flag(f"claude_spend_{utc_now().strftime('%Y%m%d')}") or "0"
-        try:
-            spent = float(spent_str)
-        except ValueError:
-            spent = 0.0
-
-        client = get_anthropic_client()
-        result = brain.decide_buys(
-            candidates=candidates,
-            positions=positions,
-            slot_state=slot_state,
-            cash_aud=cash,
-            anthropic_client=client,
-            daily_spent_usd=spent,
-        )
-
-        new_spent = spent + result.estimated_cost_usd
-        db.set_flag(f"claude_spend_{utc_now().strftime('%Y%m%d')}", f"{new_spent:.4f}")
-
-        if result.error:
-            tg.send(f"⚠️ Brain error: {result.error}")
-            return
-        if not result.decisions:
-            log.info(f"buy cycle {mode}: Claude returned no decisions ({result.summary})")
-            return
-
-        allowed, rejected = brain.filter_decisions_by_safety(
-            result.decisions, cash_aud=cash, slot_state=slot_state,
-        )
-        for d, reason in rejected:
-            log.info(f"safety filter rejected {d.symbol}: {reason}")
-
-        # ── v2.6: write decision rows FIRST with executed=False, capture
-        # ids so we can update them after execute_buy returns. ─────────
-        allowed_syms = {d.symbol for d in allowed}
-        rejected_syms_with_reason = {d.symbol: r for d, r in rejected}
-
-        decision_row_ids = {}  # symbol -> claude_decisions.id
-
-        for d in result.decisions:
-            try:
-                if d.action == "buy" and d.symbol in allowed_syms:
-                    final_action = "buy"
-                elif d.action == "buy" and d.symbol in rejected_syms_with_reason:
-                    final_action = "rejected_by_safety"
-                else:
-                    final_action = "skip"
-
-                # Build reason string. For safety-rejected, append why.
-                reason_text = (d.reason or "")[:300]
-                if final_action == "rejected_by_safety":
-                    rej_reason = rejected_syms_with_reason.get(d.symbol, "")
-                    reason_text = f"{reason_text} | SAFETY: {rej_reason}"[:300]
-
-                row = db._post("claude_decisions", {
-                    "symbol": d.symbol,
-                    "bucket": d.bucket,
-                    "action": final_action,
-                    "confidence": d.confidence,
-                    "reason": reason_text,
-                    "executed": False,    # v2.6: always start False, patch after exec
-                })
-                if row and final_action == "buy":
-                    decision_row_ids[d.symbol] = row.get("id")
-            except Exception as e:
-                log.debug(f"claude_decisions log {d.symbol}: {e}")
-
-        # ── Now execute buys and update rows based on actual outcome ─────
-        for d in allowed:
-            if d.action != "buy":
-                continue
-            ok, msg = execute_buy(
-                symbol=d.symbol, bucket=d.bucket,
-                db=db, alpaca=alpaca, coinspot=coinspot,
-            )
-
-            row_id = decision_row_ids.get(d.symbol)
-            if ok:
-                # Patch row to executed=True
-                if row_id:
-                    try:
-                        db._patch("claude_decisions",
-                                  {"executed": True},
-                                  "id", str(row_id))
-                    except Exception as e:
-                        log.debug(f"failed to mark {d.symbol} executed=True: {e}")
-                key = f"buys_today_{utc_now().strftime('%Y%m%d')}"
-                cur = int(db.get_flag(key) or 0)
-                db.set_flag(key, str(cur + 1))
-                tg.send(f"📥 BUY {d.symbol} ({d.bucket}): conf {d.confidence:.0%}\n{d.reason}")
-            else:
-                # Patch row reason to include execution failure detail.
-                # executed stays False (its initial value).
-                if row_id:
-                    try:
-                        full_reason = f"{(d.reason or '')[:200]} | EXECUTION FAILED: {msg}"[:300]
-                        db._patch("claude_decisions",
-                                  {"reason": full_reason,
-                                   "action": "execution_failed"},
-                                  "id", str(row_id))
-                    except Exception as e:
-                        log.debug(f"failed to mark {d.symbol} execution_failed: {e}")
-                tg.send(f"⚠️ BUY {d.symbol} blocked: {msg}")
-
-    except Exception as e:
-        log.error(f"buy cycle {mode} crashed: {e}")
-        log.debug(traceback.format_exc())
-        tg.send(f"⚠️ buy cycle error ({mode}): {e}")
-
-
-# ── Daily summary push ───────────────────────────────────────────────────
-
-def run_daily_summary(db, tg: TelegramNotifier):
-    """v2.5+: delegates to bot.rich_summary for a comprehensive report."""
-    from bot.rich_summary import run_rich_daily_summary
-    run_rich_daily_summary(db, tg, log)
-
-
-# ── Manual orders ────────────────────────────────────────────────────────
-
-def run_manual_orders(db, alpaca, coinspot, tg: TelegramNotifier):
-    try:
-        orders = db._get("manual_orders", {"status": "eq.pending",
-                                            "order": "requested_at.asc",
-                                            "limit": "10"})
-    except Exception as e:
-        if int(time.time()) % 60 == 0:
-            log.debug(f"manual_orders read: {e}")
-        return
-
-    for order in (orders or []):
-        oid = order.get("id")
-        sym = order.get("symbol", "").upper()
-        action = (order.get("action") or "").lower()
-
-        try:
-            if action == "sell":
-                positions = db.get_positions()
-                pos = positions.get(sym)
-                if not pos:
-                    db._patch("manual_orders",
-                              {"status": "error", "error": f"no open position {sym}"},
-                              "id", str(oid))
-                    continue
-                ok, msg = execute_sell(
-                    symbol=sym, position=pos, db=db, alpaca=alpaca, coinspot=coinspot,
-                    is_forced=True, reason="manual order",
-                )
-                db._patch("manual_orders",
-                          {"status": "done" if ok else "error",
-                           "executed_at": safety.now_utc_iso(),
-                           "error": "" if ok else msg},
-                          "id", str(oid))
-                if ok:
-                    tg.send(f"✅ Manual SELL {sym} done: {msg}")
-                else:
-                    tg.send(f"❌ Manual SELL {sym} failed: {msg}")
-            else:
-                db._patch("manual_orders",
-                          {"status": "error", "error": f"action {action} not supported here"},
-                          "id", str(oid))
-        except Exception as e:
-            log.warning(f"manual order {oid}: {e}")
-
-
-# ── Q&A ──────────────────────────────────────────────────────────────────
-
-QA_MODEL = "claude-sonnet-4-6"
-QA_MAX_TOKENS = 600
-QA_POLL_LIMIT = 3
-
-QA_SYSTEM_PROMPT = """You are RivX, a paper-trading bot answering questions from your owner.
-
-You trade three buckets with $10K total starting capital:
-- Swing crypto ($4000 budget, 5 slots, $800/buy): buy on 5-15% pullbacks from 7d high in top 30 by market cap, above 50d MA
-- Momentum crypto ($2000, 4 slots, $500/buy): buy when something breaks its 7d high TODAY with 2x average volume, rank 30-200
-- Swing stocks ($3500, 3 slots, $1167/buy): 3-8% pullbacks above 50d MA, quality list (NVDA AAPL MSFT META GOOGL AMZN AMD AVGO TSM TSLA NFLX ADBE CRM SPY QQQ IWM)
-- $500 always-cash ops floor
-
-Auto-exits per bucket:
-- Swing crypto: -8% stop / +15% target (take half) / 5% trail / 30d review
-- Momentum: -10% stop / +30% target (full exit) / 7d hard exit
-- Swing stocks: -5% stop / +12% target (take half) / 4% trail / 30d review
-
-Schedule:
-- Crypto scans 8 AM + 4 PM AEST
-- Stock scans 11 PM + 3 AM AEST (US weekdays)
-- Snapshots every 5 min, heartbeat every 30 sec
-
-When answering:
-- Be direct, conversational, no fluff
-- Reference actual current data when relevant
-- If you don't know something, say so
-- Use markdown sparingly for clarity (bold for emphasis, lists when actually a list)
-- Keep answers under 250 words unless the question demands detail
-- If asked why no trades fired, the most common reason is "0 candidates met the entry rules" — patience is a feature, not a bug
-"""
-
-
-def process_pending_questions(db):
-    try:
-        pending = db._get("user_questions",
-                          {"status": "eq.pending",
-                           "order": "asked_at.asc",
-                           "limit": str(QA_POLL_LIMIT)})
-    except Exception as e:
-        if int(time.time()) % 60 == 0:
-            log.debug(f"Q&A poll: {e}")
-        return
-
-    if not pending:
-        return
-
-    client = get_anthropic_client()
-    if client is None:
-        log.warning("Q&A: anthropic client unavailable — skipping")
-        return
-
-    try:
-        positions = db.get_positions() or {}
-        portfolio = db.get_portfolio_value() or {}
-        recent = db.get_recent_trades(limit=15) or []
-    except Exception as e:
-        log.error(f"Q&A context build: {e}")
-        return
-
-    context_msg = _build_qa_context(positions, portfolio, recent, db)
-
-    for q in pending:
-        qid = q.get("id")
-        question_text = (q.get("question") or "").strip()
-        if not question_text:
-            db._patch("user_questions",
-                      {"status": "error", "answer": "(empty question)"},
-                      "id", str(qid))
-            continue
-
-        log.info(f"Q&A: answering q{qid}: {question_text[:60]!r}")
-        try:
-            answer = _call_claude_for_qa(client, context_msg, question_text)
-        except Exception as e:
-            log.error(f"Q&A Claude call failed for q{qid}: {e}")
-            db._patch("user_questions",
-                      {"status": "error",
-                       "answer": f"Sorry — Claude call failed: {e}"},
-                      "id", str(qid))
-            continue
-
-        ok = db._patch("user_questions",
-                       {"status": "complete",
-                        "answer": answer,
-                        "answered_at": safety.now_utc_iso()},
-                       "id", str(qid))
-        if ok:
-            log.info(f"Q&A: q{qid} answered ({len(answer)} chars)")
-        else:
-            log.warning(f"Q&A: PATCH user_questions failed for q{qid}")
-
-
-def _build_qa_context(positions: dict, portfolio: dict, recent: list, db) -> str:
-    parts = []
-
-    total = float(portfolio.get("total_aud") or 0)
-    cash = float(portfolio.get("cash_aud") or 0)
-    deployed = float(portfolio.get("deployed_aud") or 0)
-    total_pnl = float(portfolio.get("total_pnl") or 0)
-    parts.append(
-        f"PORTFOLIO: ${total:,.2f} AUD total · ${cash:,.0f} cash · "
-        f"${deployed:,.0f} deployed · P&L {total_pnl:+,.2f}"
-    )
-
-    if positions:
-        parts.append(f"\nOPEN POSITIONS ({len(positions)}):")
-        for sym, p in positions.items():
-            bucket = p.get("bucket") or "(legacy)"
-            aud = float(p.get("aud_amount") or 0)
-            pnl_pct = float(p.get("pnl_pct") or 0) * 100
-            market = p.get("market") or "?"
-            created = (p.get("created_at") or "")[:10]
-            parts.append(
-                f"  - {sym} [{bucket}] ${aud:.0f} on {market} · "
-                f"{pnl_pct:+.2f}% P&L · opened {created}"
-            )
-    else:
-        parts.append("\nOPEN POSITIONS: none — entirely in cash")
-
-    if recent:
-        n = min(len(recent), 10)
-        parts.append(f"\nRECENT TRADES (last {n}):")
-        for t in recent[:10]:
-            sym = t.get("symbol") or "?"
-            action = (t.get("action") or "?").upper()
-            aud = float(t.get("aud_amount") or 0)
-            pnl = t.get("pnl_pct")
-            pnl_str = f" P&L {float(pnl)*100:+.1f}%" if pnl is not None else ""
-            details = (t.get("details") or "")[:90]
-            ts = (t.get("created_at") or "")[:16]
-            parts.append(f"  - {ts} {action} {sym} ${aud:.0f}{pnl_str} · {details}")
-    else:
-        parts.append("\nRECENT TRADES: none yet")
-
-    try:
-        decisions = db._get("claude_decisions",
-                            {"order": "decided_at.desc", "limit": "5"}) or []
-        if decisions:
-            parts.append("\nLAST 5 CLAUDE DECISIONS:")
-            for d in decisions:
-                sym = d.get("symbol") or "?"
-                action = (d.get("action") or "?").upper()
-                conf = d.get("confidence")
-                conf_str = f" ({float(conf)*100:.0f}%)" if conf is not None else ""
-                reason = (d.get("reason") or "")[:120]
-                ts = (d.get("decided_at") or "")[:16]
-                parts.append(f"  - {ts} {action} {sym}{conf_str}: {reason}")
-    except Exception:
-        pass
-
-    aest = timezone(timedelta(hours=10))
-    now_aest = datetime.now(aest)
-    parts.append(f"\nCURRENT TIME: {now_aest.strftime('%A %Y-%m-%d %H:%M')} AEST")
-
-    return "\n".join(parts)
-
-
-def _call_claude_for_qa(client, context: str, question: str) -> str:
-    user_msg = f"{context}\n\n---\n\nQUESTION FROM USER: {question}"
-
-    resp = client.messages.create(
-        model=QA_MODEL,
-        max_tokens=QA_MAX_TOKENS,
-        system=QA_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_msg}],
-    )
-
-    if resp.content and len(resp.content) > 0:
-        first = resp.content[0]
-        if hasattr(first, "text"):
-            return first.text.strip()
-    return "(no answer generated)"
-
-
-# ── Main loop ────────────────────────────────────────────────────────────
-
-def main():
-    try:
-        log.info(f"RivX v2.6 starting — {'PAPER' if PAPER_MODE else 'LIVE'} mode")
-        log.info(f"Strategy: $4K swing crypto / $2K momentum crypto / $3.5K stocks / $500 ops floor")
-        log.info(f"Schedule: crypto 8 AM + 4 PM AEST | stocks 11 PM + 3 AM AEST (weekdays) | summaries 8 AM + 8 PM AEST")
-        sys.stdout.flush()
-
-        db = SupabaseLogger()
-        log.info("SupabaseLogger ready")
-        tg = TelegramNotifier()
-        log.info("TelegramNotifier ready")
-        alpaca = AlpacaTrader()
-        log.info("AlpacaTrader ready")
-        coinspot = CoinSpotTrader()
-        log.info("CoinSpotTrader ready")
-
-        check_prior_heartbeat(db, tg)
-
-        today = aest_now().date().isoformat()
-        if db.get_flag("last_startup") != today:
-            db.set_flag("last_startup", today)
-            tg.send(f"🟢 RivX v2.6 online. {'PAPER' if PAPER_MODE else 'LIVE'} mode. "
-                    f"Portfolio + executed-flag fixes deployed.")
-
-        log.info("setup complete — entering main loop")
-        sys.stdout.flush()
-    except Exception as e:
-        tb = traceback.format_exc()
-        sys.stderr.write(f"\n!!! SETUP CRASH !!!\n{tb}\n")
-        sys.stderr.flush()
-        try:
-            if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
-                import requests
-                requests.post(
-                    f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                    json={"chat_id": TELEGRAM_CHAT_ID,
-                          "text": f"⚠️ RivX SETUP CRASH:\n{type(e).__name__}: {str(e)[:300]}"},
-                    timeout=5,
-                )
-        except Exception:
-            pass
-        time.sleep(10)
-        raise
-
-    last_snapshot = 0.0
-    last_swing_crypto_run = db.get_flag("last_swing_crypto_run")
-    last_momentum_runs = {t: db.get_flag(f"last_momentum_{t}") for t in MOMENTUM_TIMES_AEST}
-    last_stock_runs = {t: db.get_flag(f"last_stock_{t}") for t in SWING_STOCK_TIMES_AEST}
-    last_summary_runs = {t: db.get_flag(f"last_summary_{t}") for t in DAILY_SUMMARY_TIMES_AEST}
-
-    while True:
-        try:
-            now_ts = time.time()
-
-            write_heartbeat(db)
-
-            try:
-                tg.check_kill_switch(db)
-            except Exception as e:
-                log.debug(f"telegram poll: {e}")
-            run_manual_orders(db, alpaca, coinspot, tg)
-            process_pending_questions(db)
-
-            if now_ts - last_snapshot >= SNAPSHOT_INTERVAL_SEC:
-                run_snapshot(db, alpaca)
-                manage_open_positions(db, alpaca, coinspot, tg)
-                last_snapshot = now_ts
-
-            for t in DAILY_SUMMARY_TIMES_AEST:
-                if at_or_past_time_today(t, last_summary_runs.get(t)):
-                    run_daily_summary(db, tg)
-                    last_summary_runs[t] = safety.now_utc_iso()
-                    db.set_flag(f"last_summary_{t}", last_summary_runs[t])
-
-            kill = (db.get_flag("kill_switch") or "").lower() in ("on", "1", "true")
-            if not kill:
-                for t in SWING_CRYPTO_TIMES_AEST:
-                    if at_or_past_time_today(t, last_swing_crypto_run):
-                        run_buy_cycle(mode=strategy.Bucket.SWING_CRYPTO,
-                                      db=db, alpaca=alpaca, coinspot=coinspot, tg=tg)
-                        last_swing_crypto_run = safety.now_utc_iso()
-                        db.set_flag("last_swing_crypto_run", last_swing_crypto_run)
-
-                for t in MOMENTUM_TIMES_AEST:
-                    if at_or_past_time_today(t, last_momentum_runs.get(t)):
-                        run_buy_cycle(mode=strategy.Bucket.MOMENTUM_CRYPTO,
-                                      db=db, alpaca=alpaca, coinspot=coinspot, tg=tg)
-                        last_momentum_runs[t] = safety.now_utc_iso()
-                        db.set_flag(f"last_momentum_{t}", last_momentum_runs[t])
-
-                if is_us_trading_weekday_aest():
-                    for t in SWING_STOCK_TIMES_AEST:
-                        if at_or_past_time_today(t, last_stock_runs.get(t)):
-                            run_buy_cycle(mode=strategy.Bucket.SWING_STOCK,
-                                          db=db, alpaca=alpaca, coinspot=coinspot, tg=tg)
-                            last_stock_runs[t] = safety.now_utc_iso()
-                            db.set_flag(f"last_stock_{t}", last_stock_runs[t])
-
-            time.sleep(MAIN_TICK_SECONDS)
-
-        except KeyboardInterrupt:
-            log.info("shutdown signal received")
-            tg.send("🛑 RivX shutting down (manual)")
-            break
-        except Exception as e:
-            log.error(f"main loop iteration error: {e}")
-            log.debug(traceback.format_exc())
-            time.sleep(60)
-
-
-if __name__ == "__main__":
-    main()
+  } catch(e){
+    alert('Kill switch toggle failed: ' + e.message);
+  }
+}
+
+async function forceSell(symbol, market){
+  if(!confirm(`Force-sell ${symbol}?\n\nBypasses auto-exit logic and closes the position on next cycle (~30 sec).`)){
+    return;
+  }
+  const body = {
+    symbol: symbol,
+    action: 'sell',
+    market: market || null,
+    requested_at: new Date().toISOString(),
+    status: 'pending',
+  };
+  const result = await sb('manual_orders', {}, 'POST', body);
+  if(result){
+    alert(`Force-sell queued for ${symbol}. Check Telegram or refresh in ~30 seconds.`);
+    setTimeout(loadAll, 5000);
+  } else {
+    alert(`Could not queue sell for ${symbol}. Did the migration run?`);
+  }
+}
+
+function forceSellSelected(){
+  if(!selectedHolding) return;
+  const pos = allPositions.find(p => p.symbol === selectedHolding);
+  if(!pos) return;
+  forceSell(pos.symbol, pos.market);
+}
+
+function showDash(){
+  document.getElementById('login-screen').style.display='none';
+  document.getElementById('dashboard').style.display='block';
+  loadAll();
+  setInterval(loadAll, 60000);
+}
+if(sessionStorage.getItem('rivx_auth')) showDash();
+
+function showPage(name, btn){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
+  document.getElementById('page-'+name).classList.add('active');
+  if(btn) btn.classList.add('active');
+  if(name==='cost') renderCostChart();
+  if(name==='strategy') renderStrategyPage();
+  if(name==='asx') loadAsxPage();
+}
+
+// ─── RivX-ASX page ────────────────────────────────────────────────────────
+let _asxFilter = 'all';
+let _asxToday = [];
+let _asxHistory = [];
+
+function setAsxFilter(f){
+  _asxFilter = f;
+  document.querySelectorAll('[data-asxfilter]').forEach(b=>{
+    b.classList.toggle('active', b.getAttribute('data-asxfilter')===f);
+  });
+  renderAsxToday();
+}
+
+async function loadAsxPage(){
+  // Get today's midnight in UTC for filtering "fired today"
+  const now = new Date();
+  const aestOffset = 10 * 60; // minutes
+  const localOffset = -now.getTimezoneOffset();
+  const aestNow = new Date(now.getTime() + (aestOffset - localOffset) * 60000);
+  const aestMidnight = new Date(aestNow);
+  aestMidnight.setHours(0,0,0,0);
+  const utcMidnight = new Date(aestMidnight.getTime() - aestOffset * 60000).toISOString();
+
+  // Pull today's signals
+  const today = await sb('asx_signals', {
+    'fired_at': 'gte.'+utcMidnight,
+    order: 'fired_at.desc',
+    limit: '200',
+  });
+  _asxToday = Array.isArray(today) ? today : [];
+
+  // Pull last 30 days for history table
+  const cutoff = new Date(now.getTime() - 30*24*60*60*1000).toISOString();
+  const hist = await sb('asx_signals', {
+    'fired_at': 'gte.'+cutoff,
+    order: 'fired_at.desc',
+    limit: '500',
+  });
+  _asxHistory = Array.isArray(hist) ? hist : [];
+
+  renderAsxStats();
+  renderAsxToday();
+  renderAsxHistory();
+}
+
+function renderAsxStats(){
+  document.getElementById('asx-stat-today').textContent = _asxToday.length;
+  const hc = _asxToday.filter(s=>s.high_conviction).length;
+  document.getElementById('asx-stat-hc').textContent = hc;
+
+  const watch = _asxToday.filter(s=>!s.outcome || s.outcome==='pending').length;
+  document.getElementById('asx-stat-watch').textContent = watch;
+
+  const resolved = _asxHistory.filter(s=>s.outcome==='hit_target' || s.outcome==='hit_stop');
+  if(resolved.length===0){
+    document.getElementById('asx-stat-hit').textContent = '—';
+    document.getElementById('asx-stat-hit-sub').textContent = 'no closed signals yet';
+  } else {
+    const hits = resolved.filter(s=>s.outcome==='hit_target').length;
+    const pct = (hits/resolved.length)*100;
+    document.getElementById('asx-stat-hit').textContent = pct.toFixed(0)+'%';
+    document.getElementById('asx-stat-hit-sub').textContent = hits+' of '+resolved.length+' hit target';
+  }
+}
+
+function renderAsxToday(){
+  const el = document.getElementById('asx-today-list');
+  let signals = _asxToday;
+  if(_asxFilter !== 'all'){
+    signals = signals.filter(s=>s.setup_type === _asxFilter);
+  }
+  if(signals.length === 0){
+    el.innerHTML = '<div class="empty">No signals'+(_asxFilter==='all'?' yet today.':' for this setup type today.')+'</div>';
+    return;
+  }
+  // Sort by confidence desc
+  signals.sort((a,b)=>(b.confidence||0)-(a.confidence||0));
+  let html = '';
+  for(const s of signals){
+    const setupColor = {
+      'pullback': '#1a7340',
+      'breakout': '#1e3a8a',
+      'oversold_bounce': '#92400e',
+    }[s.setup_type] || '#6b7280';
+    const setupLabel = {
+      'pullback': 'PULLBACK',
+      'breakout': 'BREAKOUT',
+      'oversold_bounce': 'OVERSOLD',
+    }[s.setup_type] || s.setup_type.toUpperCase();
+    const conf = Number(s.confidence || 0) * 100;
+    const price = Number(s.current_price || 0);
+    const stop = Number(s.stop_price || 0);
+    const target = Number(s.target_price || 0);
+    const el_low = Number(s.entry_zone_low || 0);
+    const el_high = Number(s.entry_zone_high || 0);
+    const risk = price - stop;
+    const reward = target - price;
+    const rr = risk > 0 ? (reward / risk) : 0;
+    const fired = s.fired_at ? new Date(s.fired_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '';
+    const outcome = s.outcome || 'pending';
+    const outcomeColor = {
+      'hit_target': '#1a7340',
+      'hit_stop': '#c0392b',
+      'pending': '#9aa0a6',
+    }[outcome] || '#9aa0a6';
+    const outcomeIcon = {
+      'hit_target': '✅',
+      'hit_stop': '❌',
+      'expired': '⏱️',
+      'pending': '⏳',
+    }[outcome] || '⏳';
+    const hcBadge = s.high_conviction ? '<span style="background:#fef3c7;color:#92400e;font-size:9px;padding:2px 6px;border-radius:3px;font-weight:700;margin-left:6px;">⚡ HIGH-CONV</span>' : '';
+
+    html += `
+      <div style="border:1px solid #e8eaed;border-radius:8px;padding:14px;margin-bottom:10px;background:#fff;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
+          <div>
+            <span style="font-size:18px;font-weight:700;color:#0d1f38;">${s.symbol}</span>
+            <span style="font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;margin-left:8px;background:${setupColor}22;color:${setupColor};">${setupLabel}</span>
+            ${hcBadge}
+          </div>
+          <div style="text-align:right;">
+            <div style="font-size:16px;font-weight:600;color:#1a1a2e;">$${price.toFixed(2)}</div>
+            <div style="font-size:10px;color:#9aa0a6;">fired ${fired}</div>
+          </div>
+        </div>
+        <div style="font-size:12px;color:#555;line-height:1.5;margin-bottom:8px;">${(s.reasoning||'').replace(/</g,'&lt;')}</div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;font-size:11px;">
+          <div><div style="color:#9aa0a6;font-size:9px;text-transform:uppercase;letter-spacing:0.05em;">Confidence</div><div style="font-weight:600;color:#1a1a2e;">${conf.toFixed(0)}%</div></div>
+          <div><div style="color:#9aa0a6;font-size:9px;text-transform:uppercase;letter-spacing:0.05em;">Entry zone</div><div style="font-weight:600;color:#1a1a2e;">$${el_low.toFixed(2)}–$${el_high.toFixed(2)}</div></div>
+          <div><div style="color:#9aa0a6;font-size:9px;text-transform:uppercase;letter-spacing:0.05em;">Stop</div><div style="font-weight:600;color:#c0392b;">$${stop.toFixed(2)}</div></div>
+          <div><div style="color:#9aa0a6;font-size:9px;text-transform:uppercase;letter-spacing:0.05em;">Target · R:R</div><div style="font-weight:600;color:#1a7340;">$${target.toFixed(2)} · ${rr.toFixed(1)}</div></div>
+        </div>
+        <div style="margin-top:10px;font-size:11px;color:${outcomeColor};">${outcomeIcon} <strong>${outcome.replace('_',' ')}</strong>${s.outcome_price ? ' @ $'+Number(s.outcome_price).toFixed(2) : ''}${s.return_pct != null ? ' · '+(Number(s.return_pct)*100).toFixed(2)+'%' : ''}</div>
+      </div>`;
+  }
+  el.innerHTML = html;
+}
+
+function renderAsxHistory(){
+  const tbody = document.getElementById('asx-history-body');
+  if(_asxHistory.length === 0){
+    tbody.innerHTML = '<tr><td colspan="9" class="muted" style="text-align:center;padding:20px;">No signals in the last 30 days yet.</td></tr>';
+    return;
+  }
+  let html = '';
+  for(const s of _asxHistory.slice(0, 100)){
+    const conf = Number(s.confidence || 0) * 100;
+    const fired = s.fired_at ? new Date(s.fired_at).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
+    const outcome = s.outcome || 'pending';
+    const outcomeClass = outcome === 'hit_target' ? 'up' : (outcome === 'hit_stop' ? 'down' : 'muted');
+    const ret = s.return_pct != null ? (Number(s.return_pct)*100) : null;
+    const retStr = ret != null ? (ret>=0?'+':'')+ret.toFixed(2)+'%' : '—';
+    const retClass = ret == null ? 'muted' : (ret >= 0 ? 'up' : 'down');
+    html += `<tr>
+      <td class="sym-cell">${s.symbol}</td>
+      <td>${(s.setup_type||'').replace('_',' ')}</td>
+      <td class="num">${conf.toFixed(0)}%</td>
+      <td class="num">$${Number(s.current_price||0).toFixed(2)}</td>
+      <td class="num">$${Number(s.stop_price||0).toFixed(2)}</td>
+      <td class="num">$${Number(s.target_price||0).toFixed(2)}</td>
+      <td class="${outcomeClass}">${outcome.replace('_',' ')}</td>
+      <td class="num ${retClass}">${retStr}</td>
+      <td class="muted">${fired}</td>
+    </tr>`;
+  }
+  tbody.innerHTML = html;
+}
+
+async function sb(table, params, method='GET', body=null){
+  try {
+    const url = new URL(SUPABASE_URL + '/rest/v1/' + table);
+    Object.entries(params||{}).forEach(([k,v])=>url.searchParams.set(k,v));
+    const opts = {method, headers:{
+      apikey:SUPABASE_KEY,
+      Authorization:'Bearer '+SUPABASE_KEY,
+      'Content-Type':'application/json',
+      Prefer:'return=representation'
+    }};
+    if(body) opts.body = JSON.stringify(body);
+    const r = await fetch(url, opts);
+    if(!r.ok) return null;
+    return await r.json();
+  } catch(e) { return null; }
+}
+
+async function loadFxRate(){
+  try {
+    const r = await fetch(FX_URL);
+    if(!r.ok) return;
+    const data = await r.json();
+    const rate = data && data.rates && data.rates.AUD;
+    if(rate && rate > 0.5 && rate < 3) USD_TO_AUD = rate;
+  } catch(e) {}
+}
+
+async function loadLivePrices(symbols){
+  if(!symbols.length) return {};
+  try {
+    const r = await fetch(PAPRIKA_URL);
+    if(!r.ok) return {};
+    const rows = await r.json();
+    if(!Array.isArray(rows)) return {};
+    const bySym = {};
+    for(const row of rows){
+      const s = (row.symbol || '').toUpperCase();
+      if(s && !bySym[s]) bySym[s] = row;
+    }
+    const out = {};
+    for(const sym of symbols){
+      const row = bySym[sym.toUpperCase()];
+      if(!row) continue;
+      const q = (row.quotes && row.quotes.USD) || {};
+      const usd = parseFloat(q.price || 0);
+      const chg = parseFloat(q.percent_change_24h || 0);
+      if(usd <= 0) continue;
+      out[sym.toUpperCase()] = {
+        usd: usd,
+        aud: usd * USD_TO_AUD,
+        aud_24h_change: chg,
+      };
+    }
+    return out;
+  } catch(e) { return {}; }
+}
+
+async function loadAll(){
+  document.getElementById('last-updated').textContent = 'Loading...';
+  const [snaps, positions, closed, trades, decisions, checks, questions, usage, flags] = await Promise.all([
+    sb('snapshots', {order:'created_at.desc', limit:'500'}),
+    sb('positions', {status:'eq.open'}),
+    sb('positions', {status:'eq.closed', order:'closed_at.desc', limit:'100'}),
+    sb('trades', {order:'created_at.desc', limit:'100'}),
+    sb('claude_decisions', {order:'decided_at.desc', limit:'50'}),
+    sb('crypto_checks', {order:'checked_at.desc', limit:'30'}),
+    sb('user_questions', {order:'asked_at.desc', limit:'30'}),
+    sb('token_usage', {order:'date.desc', limit:'30'}),
+    sb('bot_flags', {limit:'50'}),
+  ]);
+  allSnapshots = snaps || [];
+  allPositions = positions || [];
+  allClosed = closed || [];
+  allTrades = trades || [];
+  allDecisions = decisions || [];
+  allChecks = checks || [];
+  allQuestions = questions || [];
+  tokenUsage = usage || [];
+  botFlags = {};
+  for(const f of (flags || [])){
+    if(f && f.key) botFlags[f.key] = f.value;
+  }
+
+  killSwitchState = (botFlags.kill_switch === 'on') ? 'on' : 'off';
+
+  const syms = allPositions.map(p=>p.symbol);
+  await loadFxRate();
+  livePrices = await loadLivePrices(syms);
+
+  renderAll();
+  document.getElementById('last-updated').textContent =
+    'Updated ' + new Date().toLocaleTimeString('en-AU', {hour:'2-digit', minute:'2-digit'});
+}
+
+function renderAll(){
+  renderStats();
+  renderBucketStrip();
+  renderAllocation();
+  renderPositions();
+  renderClosedPositions();
+  renderTrades();
+  renderChart(currentTf);
+  renderIntelligence();
+  renderQA();
+  renderCostWidget();
+  renderStory();
+  renderLiveStatus();
+  renderFailures();
+  updateKillSwitchButton();
+  renderRiskStatus();
+}
+
+// ─── Position math helpers ─────────────────────────────────────────────────
+const FEES = {
+  alpaca: {
+    label: 'Alpaca (US stocks)',
+    buyPct: 0,
+    sellPct: 0.0005,
+    fxOneWayPct: 0.005,
+    notes: 'Alpaca: $0 commission on buys, ~0.05% SEC/TAF on sells. AUD↔USD via Wise ~0.5% per direction. Paper mode = $0 actual cost.',
+  },
+  coinspot: {
+    label: 'CoinSpot (crypto)',
+    buyPct: 0.01,
+    sellPct: 0.01,
+    fxOneWayPct: 0,
+    notes: 'CoinSpot Instant Buy/Sell is 1% per side = 2% round-trip. Plus 1-2% spread baked into quotes. Paper mode = $0 actual cost.',
+  },
+};
+
+function bucketOf(pos){
+  const b = (pos.bucket || '').trim();
+  if(BUCKETS[b]) return b;
+  if((pos.market || '').toLowerCase() === 'alpaca') return 'swing_stock';
+  return 'swing_crypto';
+}
+
+function isStock(pos){ return (pos.market || '').toLowerCase() === 'alpaca'; }
+function feeProfile(pos){ return isStock(pos) ? FEES.alpaca : FEES.coinspot; }
+
+function usMarketState(){
+  const now = new Date();
+  const et = new Date(now.toLocaleString('en-US', {timeZone: 'America/New_York'}));
+  const day = et.getDay();
+  if(day === 0 || day === 6) return 'closed';
+  const mins = et.getHours() * 60 + et.getMinutes();
+  if(mins >= 4*60 && mins < 9*60+30) return 'premarket';
+  if(mins >= 9*60+30 && mins < 16*60) return 'open';
+  if(mins >= 16*60 && mins < 20*60) return 'afterhours';
+  return 'closed';
+}
+
+function entryPriceAud(pos){
+  if(!isStock(pos)) return Number(pos.entry_price) || 0;
+  const usd = Number(pos.entry_price) || 0;
+  if(usd > 0) return usd * USD_TO_AUD;
+  const qty = Number(pos.qty) || 0;
+  const amt = Number(pos.aud_amount) || 0;
+  return (qty > 0 && amt > 0) ? amt / qty : 0;
+}
+
+function currentPriceAud(pos){
+  if(!isStock(pos)){
+    const stored = Number(pos.current_price) || 0;
+    if(stored > 0) return stored;
+    const lp = livePrices[pos.symbol.toUpperCase()];
+    if(lp && lp.aud > 0) return Number(lp.aud);
+    return entryPriceAud(pos) * (1 + (Number(pos.pnl_pct) || 0));
+  }
+  const usdPrice = Number(pos.current_price) || 0;
+  if(usdPrice > 0) return usdPrice * USD_TO_AUD;
+  return entryPriceAud(pos) * (1 + (Number(pos.pnl_pct) || 0));
+}
+
+function marketValueAud(pos){
+  const qty = Number(pos.qty) || 0;
+  const cur = currentPriceAud(pos);
+  if(qty > 0 && cur > 0) return qty * cur;
+  const amt = Number(pos.aud_amount) || 0;
+  return amt * (1 + (Number(pos.pnl_pct) || 0));
+}
+
+function entryCostAud(pos){
+  if(isStock(pos)){
+    const qty = Number(pos.qty) || 0;
+    const usd = Number(pos.entry_price) || 0;
+    if(qty > 0 && usd > 0) return qty * usd * USD_TO_AUD;
+  }
+  return Number(pos.aud_amount) || 0;
+}
+function grossPnlAud(pos){ return marketValueAud(pos) - entryCostAud(pos); }
+function grossPnlPct(pos){
+  const e = entryCostAud(pos);
+  return e > 0 ? grossPnlAud(pos) / e : 0;
+}
+
+function estimatedFeesAud(pos){
+  const f = feeProfile(pos);
+  const entry = entryCostAud(pos);
+  const value = marketValueAud(pos);
+  const breakdown = [];
+  if(f.buyPct > 0) breakdown.push({label:`Buy fee (${(f.buyPct*100).toFixed(2)}%)`, aud: entry*f.buyPct, when:'paid at entry'});
+  if(f.sellPct > 0) breakdown.push({label:`Sell fee (${(f.sellPct*100).toFixed(2)}%)`, aud: value*f.sellPct, when:'on close'});
+  if(f.fxOneWayPct > 0){
+    breakdown.push({label:`FX in (${(f.fxOneWayPct*100).toFixed(2)}%)`, aud: entry*f.fxOneWayPct, when:'paid at entry'});
+    breakdown.push({label:`FX out (${(f.fxOneWayPct*100).toFixed(2)}%)`, aud: value*f.fxOneWayPct, when:'on close'});
+  }
+  const total = breakdown.reduce((s,b) => s + b.aud, 0);
+  return {total, breakdown};
+}
+
+function netPnlAud(pos){ return grossPnlAud(pos) - estimatedFeesAud(pos).total; }
+function netPnlPct(pos){
+  const e = entryCostAud(pos);
+  return e > 0 ? netPnlAud(pos) / e : 0;
+}
+
+function closedGrossPaperAud(){
+  return allClosed.reduce((s,p) =>
+    s + (Number(p.aud_amount)||0) * (Number(p.pnl_pct)||0), 0);
+}
+function closedFeesEstAud(){
+  return allClosed.reduce((s,p) => {
+    const profile = (p.market||'').toLowerCase()==='alpaca' ? FEES.alpaca : FEES.coinspot;
+    const entry = Number(p.aud_amount) || 0;
+    const proceeds = entry * (1 + (Number(p.pnl_pct)||0));
+    const fee = entry*profile.buyPct + proceeds*profile.sellPct
+              + entry*profile.fxOneWayPct + proceeds*profile.fxOneWayPct;
+    return s + fee;
+  }, 0);
+}
+
+function fmtPrice(v){
+  if(!v || !isFinite(v)) return '—';
+  if(v >= 1000) return '$' + v.toLocaleString('en-AU', {maximumFractionDigits:0});
+  if(v >= 100) return '$' + v.toLocaleString('en-AU', {maximumFractionDigits:2});
+  if(v >= 1) return '$' + v.toFixed(2);
+  if(v >= 0.01) return '$' + v.toFixed(4);
+  return '$' + v.toFixed(6);
+}
+function fmtAud(v){ return '$' + (v||0).toLocaleString('en-AU', {minimumFractionDigits:2, maximumFractionDigits:2}); }
+function fmtSignedAud(v){ return (v>=0?'+':'-') + '$' + Math.abs(v||0).toFixed(2); }
+function fmtSignedPct(v){ return (v>=0?'+':'') + (v*100).toFixed(2) + '%'; }
+
+function escapeHtml(s){
+  if(!s) return '';
+  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function fmtRelativeFromIso(iso){
+  if(!iso) return '—';
+  const t = new Date(iso).getTime();
+  const m = Math.round((Date.now() - t) / 60000);
+  if(m < 60) return `${m}m ago`;
+  const h = Math.round(m/60);
+  if(h < 24) return `${h}h ago`;
+  const d = Math.round(h/24);
+  return `${d}d ago`;
+}
+
+function fmtDateTime(iso){
+  if(!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleDateString('en-AU',{day:'numeric', month:'short'}) + ' · ' +
+         d.toLocaleTimeString('en-AU',{hour:'2-digit', minute:'2-digit'});
+}
+
+function fmtHoldDuration(fromIso, toIso){
+  if(!fromIso || !toIso) return '—';
+  const ms = new Date(toIso).getTime() - new Date(fromIso).getTime();
+  if(ms < 0) return '—';
+  const mins = Math.round(ms / 60000);
+  if(mins < 60) return `${mins}m`;
+  const hours = Math.round(mins / 60);
+  if(hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  const remHours = hours % 24;
+  return remHours > 0 ? `${days}d ${remHours}h` : `${days}d`;
+}
+
+// ─── Bucket aggregation ────────────────────────────────────────────────────
+function bucketAggregates(){
+  const agg = {};
+  for(const k of BUCKET_ORDER){
+    agg[k] = {count:0, deployed:0, value:0, gross:0, fees:0, positions:[]};
+  }
+  for(const p of allPositions){
+    const b = bucketOf(p);
+    if(!agg[b]) agg[b] = {count:0, deployed:0, value:0, gross:0, fees:0, positions:[]};
+    agg[b].count += 1;
+    agg[b].deployed += entryCostAud(p);
+    agg[b].value += marketValueAud(p);
+    agg[b].gross += grossPnlAud(p);
+    agg[b].fees += estimatedFeesAud(p).total;
+    agg[b].positions.push(p);
+  }
+  return agg;
+}
+
+function totalDeployed(){
+  return allPositions.reduce((s,p) => s + entryCostAud(p), 0);
+}
+
+function cashAud(){
+  return Math.max(0, STARTING_AUD - totalDeployed() + closedGrossPaperAud());
+}
+
+// ─── THE SINGLE SOURCE OF TRUTH FOR PORTFOLIO VALUE ─────────────────────────
+// This must agree with Telegram's daily summary AND with snapshots written by
+// bot/supabase_logger.py:get_portfolio_value(). All three compute the same
+// thing the same way.
+//
+//   portfolio = cash + sum(market_value of every open position)
+//             = cash + sum(qty × current_price)
+//
+// No subtraction of hypothetical sell fees. Fees are a separate informational
+// number, shown smaller, labelled "if liquidated now".
+function portfolioTotalAud(){
+  let mv = 0;
+  for(const p of allPositions) mv += marketValueAud(p);
+  return cashAud() + mv;
+}
+
+function portfolioPnlAud(){
+  return portfolioTotalAud() - STARTING_AUD;
+}
+
+function portfolioPnlPct(){
+  return portfolioPnlAud() / STARTING_AUD;
+}
+
+// ─── Bucket strip on Overview ──────────────────────────────────────────────
+function renderBucketStrip(){
+  const el = document.getElementById('bucket-strip');
+  const agg = bucketAggregates();
+  el.innerHTML = BUCKET_ORDER.map(k => {
+    const b = BUCKETS[k];
+    const a = agg[k];
+    const deployedPct = b.budget > 0 ? Math.min(100, (a.deployed / b.budget) * 100) : 0;
+    const slotsHtml = Array.from({length: b.slots}, (_, i) =>
+      `<div class="strat-slot ${i < a.count ? 'filled '+b.cssKey : ''}"></div>`).join('');
+    return `<div class="strat-card ${b.cssKey}">
+      <div class="strat-name">${b.label}</div>
+      <div class="strat-budget">$${a.deployed.toFixed(0)} / $${b.budget}</div>
+      <div class="strat-deployed">${a.count}/${b.slots} slots · $${b.perBuy}/buy</div>
+      <div class="strat-progress"><div class="strat-progress-fill ${b.cssKey}" style="width:${deployedPct}%"></div></div>
+      <div class="strat-slots">${slotsHtml}</div>
+      <div class="strat-meta">${b.cadence}</div>
+    </div>`;
+  }).join('');
+}
+
+// ─── Strategy page (full rules) ────────────────────────────────────────────
+function renderStrategyPage(){
+  const el = document.getElementById('strategy-grid');
+  if(!el) return;
+  const agg = bucketAggregates();
+  el.innerHTML = BUCKET_ORDER.map(k => {
+    const b = BUCKETS[k];
+    const a = agg[k];
+    const entryRows = Object.entries(b.entry).map(([k,v]) =>
+      `<div class="strat-k">${k}</div><div class="strat-v">${v}</div>`).join('');
+    const exitRows = Object.entries(b.exit).map(([k,v]) =>
+      `<div class="strat-k">${k}</div><div class="strat-v">${v}</div>`).join('');
+    return `<div class="strat-card ${b.cssKey}">
+      <div class="strat-name">${b.label}</div>
+      <div class="strat-budget">$${b.budget}</div>
+      <div class="strat-deployed">${b.slots} slots × $${b.perBuy}/buy · ${a.count} held</div>
+      <div class="strat-section-label">Universe</div>
+      <div style="font-size:11px;color:#555;line-height:1.4;margin-bottom:10px;">${b.universe}</div>
+      <div class="strat-section-label">Entry rules</div>
+      <div class="strat-rules">${entryRows}</div>
+      <div class="strat-divider"></div>
+      <div class="strat-section-label">Exit rules</div>
+      <div class="strat-rules">${exitRows}</div>
+      <div class="strat-divider"></div>
+      <div class="strat-section-label">Cadence</div>
+      <div style="font-size:11px;color:#555;">${b.cadence}</div>
+    </div>`;
+  }).join('');
+}
+
+function renderRiskStatus(){
+  const peak = Number(botFlags.portfolio_peak) || STARTING_AUD;
+  const total = portfolioTotalAud();
+  const drop = peak > 0 ? (peak - total) / peak : 0;
+  const ddEl = document.getElementById('risk-drawdown');
+  if(ddEl){
+    if(drop >= 0.05){
+      ddEl.className = 'risk-status danger';
+      ddEl.textContent = `${(drop*100).toFixed(1)}% — HALTED`;
+    } else if(drop >= 0.03){
+      ddEl.className = 'risk-status warn';
+      ddEl.textContent = `${(drop*100).toFixed(1)}% from peak`;
+    } else {
+      ddEl.className = 'risk-status ok';
+      ddEl.textContent = drop > 0 ? `${(drop*100).toFixed(1)}% from peak` : 'at peak';
+    }
+  }
+
+  const today = new Date().toISOString().slice(0,10).replace(/-/g,'');
+  const buysToday = Number(botFlags['buys_today_'+today]) || 0;
+  const buysEl = document.getElementById('risk-buys-today');
+  if(buysEl){
+    buysEl.textContent = `${buysToday} / 6 today`;
+    buysEl.className = 'risk-status ' + (buysToday >= 6 ? 'danger' : buysToday >= 4 ? 'warn' : 'ok');
+  }
+
+  const consec = Number(botFlags.consec_losses) || 0;
+  const cEl = document.getElementById('risk-consec');
+  if(cEl){
+    cEl.textContent = `${consec} streak`;
+    cEl.className = 'risk-status ' + (consec >= 4 ? 'danger' : consec >= 3 ? 'warn' : 'ok');
+  }
+
+  const hb = botFlags.last_heartbeat;
+  const hbEl = document.getElementById('risk-heartbeat');
+  if(hbEl){
+    if(hb){
+      const ago = Math.round((Date.now() - new Date(hb).getTime()) / 60000);
+      if(ago > 10){ hbEl.className = 'risk-status danger'; hbEl.textContent = `${ago}m stale`; }
+      else { hbEl.className = 'risk-status ok'; hbEl.textContent = `${ago}m ago`; }
+    } else {
+      hbEl.className = 'risk-status warn';
+      hbEl.textContent = 'no signal';
+    }
+  }
+}
+
+// ─── Stats — FIXED. Uses portfolioTotalAud() / portfolioPnlAud() so the
+// headline numbers match Telegram and the snapshot card. Hypothetical sell
+// fees moved into the sub-line as informational text.
+// ───────────────────────────────────────────────────────────────────────────
+function renderStats(){
+  let openEstFees = 0, todayPnlAud = 0;
+
+  allPositions.forEach(p => {
+    openEstFees += estimatedFeesAud(p).total;
+
+    const amt = entryCostAud(p);
+    if(isStock(p)){
+      const ch = Number(p.change_today) || 0;
+      todayPnlAud += amt * ch;
+    } else {
+      const lp = livePrices[p.symbol.toUpperCase()];
+      const ch24 = lp && lp.aud_24h_change != null ? Number(lp.aud_24h_change)/100 : 0;
+      todayPnlAud += amt * ch24;
+    }
+  });
+
+  const total = portfolioTotalAud();
+  const pnl = portfolioPnlAud();
+  const closedFees = closedFeesEstAud();
+  const liquidationValue = total - openEstFees - closedFees;
+
+  // Portfolio card — gross mark-to-market, matches Telegram
+  document.getElementById('s-port').textContent = fmtAud(total);
+  document.getElementById('s-port-sub').textContent =
+    `${allPositions.length} open · if liquidated ${fmtAud(liquidationValue)} after fees`;
+
+  // P&L card — vs $10K starting capital, gross
+  const pnlEl = document.getElementById('s-pnl');
+  pnlEl.textContent = fmtSignedAud(pnl);
+  pnlEl.className = 'stat-value ' + (pnl>0.01?'up':pnl<-0.01?'down':'');
+  const todayStr = Math.abs(todayPnlAud) > 0.005 ? `${fmtSignedAud(todayPnlAud)} today · ` : '';
+  document.getElementById('s-pnl-sub').textContent = `${todayStr}${fmtSignedPct(portfolioPnlPct())} since start`;
+
+  // Realised
+  const realisedEl = document.getElementById('s-realised');
+  const realisedSub = document.getElementById('s-realised-sub');
+  if(allClosed.length === 0){
+    realisedEl.textContent = '$0.00';
+    realisedEl.className = 'stat-value';
+    realisedSub.textContent = 'no closed positions';
+  } else {
+    const periodTotals = realisedTotalsForPeriod(realisedPeriod);
+    realisedEl.textContent = fmtSignedAud(periodTotals.realisedAud);
+    realisedEl.className = 'stat-value ' + (periodTotals.realisedAud>0.01?'up':periodTotals.realisedAud<-0.01?'down':'');
+    const periodLabel = ({
+      day:   'today (Brisbane)',
+      week:  'last 7 days',
+      month: 'last 30 days',
+      all:   'all time',
+    })[realisedPeriod] || 'all time';
+    if(periodTotals.count === 0){
+      realisedSub.textContent = `0 closed in ${periodLabel}`;
+    } else {
+      realisedSub.textContent =
+        `${periodTotals.count} closed · ${periodLabel} · ${fmtSignedPct(periodTotals.realisedPct)}`;
+    }
+  }
+
+  const today = new Date().toISOString().slice(0,10);
+  const todayCost = (tokenUsage.find(u=>u.date===today) || {}).cost_usd || 0;
+  document.getElementById('s-cost').textContent = '$' + Number(todayCost).toFixed(2);
+}
+
+// ─── Allocation card ───────────────────────────────────────────────────────
+function renderAllocation(){
+  const agg = bucketAggregates();
+  const sw = agg.swing_crypto.value;
+  const mo = agg.momentum_crypto.value;
+  const st = agg.swing_stock.value;
+  const cash = cashAud();
+  const total = cash + sw + mo + st || STARTING_AUD;
+  const fmt = v => '$' + v.toLocaleString('en-AU', {minimumFractionDigits:0, maximumFractionDigits:0});
+  const pct = v => total>0 ? Math.round(v/total*100)+'%' : '0%';
+
+  document.getElementById('a-cash').textContent = fmt(cash);
+  document.getElementById('a-cash-pct').textContent = pct(cash);
+  document.getElementById('a-sw').textContent = fmt(sw);
+  document.getElementById('a-sw-pct').textContent = pct(sw);
+  document.getElementById('a-mo').textContent = fmt(mo);
+  document.getElementById('a-mo-pct').textContent = pct(mo);
+  document.getElementById('a-st').textContent = fmt(st);
+  document.getElementById('a-st-pct').textContent = pct(st);
+
+  document.getElementById('bar-cash').style.width = (cash/total*100)+'%';
+  document.getElementById('bar-sw').style.width   = (sw/total*100)+'%';
+  document.getElementById('bar-mo').style.width   = (mo/total*100)+'%';
+  document.getElementById('bar-st').style.width   = (st/total*100)+'%';
+}
+
+// ─── Positions — REDESIGNED to lead with the P&L delta ─────────────────────
+function renderPositions(){
+  const el = document.getElementById('positions-grid');
+  if(!allPositions.length){
+    el.innerHTML = '<div class="empty" style="grid-column:1/-1;">No open positions</div>';
+    document.getElementById('holding-detail-card').style.display = 'none';
+    return;
+  }
+
+  const agg = bucketAggregates();
+  const usState = usMarketState();
+  const usStateLabel = ({
+    open:       '· market open',
+    premarket:  '· pre-market',
+    afterhours: '· after-hours',
+    closed:     '· market closed',
+  })[usState] || '';
+
+  const renderCard = p => {
+    const grossAud  = grossPnlAud(p);
+    const grossPct  = grossPnlPct(p);
+    const fees      = estimatedFeesAud(p);
+    const netAud    = grossAud - fees.total;
+    const netPctVal = netPnlPct(p);
+    const cur       = currentPriceAud(p);
+    const entry     = entryPriceAud(p);
+    const valAud    = marketValueAud(p);
+    const entryCost = entryCostAud(p);
+    const qty       = Number(p.qty) || 0;
+    const bk        = bucketOf(p);
+    const bMeta     = BUCKETS[bk] || {label:'?', cssKey:'', short:'?'};
+
+    // The headline class is driven by the GROSS P&L sign — that's what users
+    // actually want to see ("am I winning or losing right now?"). Net-of-fees
+    // becomes the secondary detail.
+    const cls = grossAud > 0.01 ? 'up' : grossAud < -0.01 ? 'down' : 'flat';
+    const active = selectedHolding === p.symbol ? 'active' : '';
+
+    const sharesLine = qty > 0
+      ? `${qty.toFixed(qty<1?6:(qty<100?4:2))} ${isStock(p)?'shares':'units'} @ ${fmtPrice(cur)} AUD`
+      : '';
+    const entryLine = entry > 0
+      ? `entry ${fmtPrice(entry)} AUD/${isStock(p)?'sh':'unit'}`
+      : 'entry syncing';
+
+    return `<div class="pos-card ${active}" onclick="selectHolding('${p.symbol}')">
+      <div class="pos-card-top">
+        <span>
+          <span class="pos-sym">${p.symbol}</span>
+          <span class="pos-bucket-tag ${bMeta.cssKey}">${bMeta.short}</span>
+        </span>
+        <span class="pos-pct-badge ${cls}">${fmtSignedPct(grossPct)}</span>
+      </div>
+
+      <!-- HERO: the big green/red signed-dollar delta -->
+      <div class="pos-delta-big ${cls}">${fmtSignedAud(grossAud)}</div>
+      <div class="pos-delta-sub">${fmtAud(valAud)} now · from $${entryCost.toFixed(0)} deployed</div>
+
+      <div class="pos-divider"></div>
+      <div class="pos-row"><span class="pos-row-k">If sold now (after fees)</span><span class="pos-row-v ${netAud>0.01?'up':netAud<-0.01?'down':''}">${fmtSignedAud(netAud)} (${fmtSignedPct(netPctVal)})</span></div>
+      <div class="pos-row"><span class="pos-row-k">Est. round-trip fees</span><span class="pos-row-v">−${fmtAud(fees.total)}</span></div>
+      <div class="pos-foot">${sharesLine}${sharesLine?' · ':''}${entryLine} · ${p.market||'—'} · ${fmtRelativeFromIso(p.created_at)}</div>
+    </div>`;
+  };
+
+  // Group by bucket; bucket header now shows the delta as the headline
+  const html = BUCKET_ORDER.map(k => {
+    const items = agg[k].positions;
+    if(!items.length) return '';
+    const b = BUCKETS[k];
+    const groupValue   = items.reduce((s, p) => s + marketValueAud(p), 0);
+    const groupCapital = items.reduce((s, p) => s + entryCostAud(p), 0);
+    const groupGross   = items.reduce((s, p) => s + grossPnlAud(p), 0);
+    const groupGrossPct = groupCapital > 0 ? groupGross / groupCapital : 0;
+    const cls = groupGross > 0.01 ? 'up' : groupGross < -0.01 ? 'down' : 'flat';
+    const subtitle = `${k === 'swing_stock' ? 'Alpaca · USD-priced, AUD displayed' + usStateLabel : 'CoinSpot · 24/7 trading · live AUD prices'}` +
+                     ` · $${b.budget.toFixed(0)} budget · ${b.slots} slots`;
+
+    return `
+      <div class="pos-group-header">
+        <div class="pos-group-titlebar">
+          <div>
+            <div class="pos-group-label">${b.label} <span class="pos-group-count">(${items.length}/${b.slots})</span></div>
+            <div class="pos-group-sub">${subtitle}</div>
+          </div>
+          <div class="pos-group-totals">
+            <div class="pos-group-pnl-big ${cls}">${fmtSignedAud(groupGross)} <span style="font-size:12px;font-weight:500;">(${fmtSignedPct(groupGrossPct)})</span></div>
+            <div class="pos-group-val-small">${fmtAud(groupValue)} from $${groupCapital.toFixed(0)} deployed</div>
+          </div>
+        </div>
+      </div>
+      <div class="pos-group-grid">
+        ${items.map(renderCard).join('')}
+      </div>`;
+  }).join('');
+
+  el.innerHTML = html;
+
+  if(!selectedHolding || !allPositions.find(p=>p.symbol===selectedHolding)){
+    selectHolding(allPositions[0].symbol);
+  } else {
+    selectHolding(selectedHolding);
+  }
+}
+
+// ─── Realised P&L period filtering ─────────────────────────────────────────
+function periodCutoffMs(period){
+  const now = Date.now();
+  if(period === 'day'){
+    const utcNow = new Date(now);
+    const brisbaneOffsetMin = 10 * 60;
+    const brisbaneNow = new Date(utcNow.getTime() + brisbaneOffsetMin * 60000);
+    const brisbaneMidnight = new Date(Date.UTC(
+      brisbaneNow.getUTCFullYear(),
+      brisbaneNow.getUTCMonth(),
+      brisbaneNow.getUTCDate(),
+      0, 0, 0, 0
+    ));
+    return brisbaneMidnight.getTime() - brisbaneOffsetMin * 60000;
+  }
+  if(period === 'week')  return now - 7  * 24 * 60 * 60 * 1000;
+  if(period === 'month') return now - 30 * 24 * 60 * 60 * 1000;
+  return 0;
+}
+
+function setRealisedPeriod(period){
+  realisedPeriod = period;
+  document.querySelectorAll('#realised-period-toggle .period-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.period === period);
+  });
+  renderStats();
+}
+
+function tradeHistoryRows(){
+  return allClosed.map(p => {
+    const stock = (p.market || '').toLowerCase() === 'alpaca';
+    const profile = stock ? FEES.alpaca : FEES.coinspot;
+    const entryAud = Number(p.aud_amount) || 0;
+    const pnlPct = Number(p.pnl_pct) || 0;
+    const proceedsAud = entryAud * (1 + pnlPct);
+    const qty = Number(p.qty) || 0;
+
+    let entryPriceAudPerUnit, exitPriceAudPerUnit;
+    if(stock){
+      entryPriceAudPerUnit = qty > 0 ? entryAud / qty : 0;
+      exitPriceAudPerUnit  = qty > 0 ? proceedsAud / qty : 0;
+    } else {
+      entryPriceAudPerUnit = Number(p.entry_price) || 0;
+      exitPriceAudPerUnit  = Number(p.exit_price) || (entryPriceAudPerUnit * (1 + pnlPct));
+    }
+
+    const buyFee  = entryAud * profile.buyPct;
+    const sellFee = proceedsAud * profile.sellPct;
+    const fxIn    = entryAud * profile.fxOneWayPct;
+    const fxOut   = proceedsAud * profile.fxOneWayPct;
+
+    const buyFeesTotal  = buyFee + fxIn;
+    const sellFeesTotal = sellFee + fxOut;
+    const totalIn       = entryAud + buyFeesTotal;
+    const netOut        = proceedsAud - sellFeesTotal;
+    const realisedAud   = netOut - totalIn;
+    const realisedPct   = totalIn > 0 ? realisedAud / totalIn : 0;
+
+    return {
+      symbol: p.symbol,
+      market: stock ? 'Alpaca' : 'CoinSpot',
+      isStock: stock,
+      bucket: bucketOf(p),
+      bought_at: p.created_at,
+      closed_at: p.closed_at,
+      qty: qty,
+      buy_price_aud_per_unit: entryPriceAudPerUnit,
+      buy_cost_aud: entryAud,
+      buy_fees_aud: buyFeesTotal,
+      total_in_aud: totalIn,
+      sell_price_aud_per_unit: exitPriceAudPerUnit,
+      proceeds_aud: proceedsAud,
+      sell_fees_aud: sellFeesTotal,
+      net_out_aud: netOut,
+      realised_aud: realisedAud,
+      realised_pct: realisedPct,
+      gross_pnl_pct: pnlPct,
+    };
+  });
+}
+
+function realisedTotalsForPeriod(period){
+  const cutoff = periodCutoffMs(period);
+  const rows = tradeHistoryRows().filter(r => {
+    if(cutoff === 0) return true;
+    const t = r.closed_at ? new Date(r.closed_at).getTime() : 0;
+    return t >= cutoff;
+  });
+  let realisedAud = 0, totalIn = 0;
+  rows.forEach(r => {
+    realisedAud += r.realised_aud;
+    totalIn += r.total_in_aud;
+  });
+  const realisedPct = totalIn > 0 ? realisedAud / totalIn : 0;
+  return { count: rows.length, realisedAud, realisedPct };
+}
+
+function exportTradeHistory(format){
+  const rows = tradeHistoryRows();
+  if(!rows.length){
+    alert('No closed trades to export yet.');
+    return;
+  }
+  rows.sort((a,b) => new Date(b.closed_at || 0) - new Date(a.closed_at || 0));
+
+  let blob, filename;
+  if(format === 'json'){
+    blob = new Blob([JSON.stringify(rows, null, 2)], {type: 'application/json'});
+    filename = `rivx_trade_history_${new Date().toISOString().slice(0,10)}.json`;
+  } else {
+    const headers = [
+      'Symbol','Market','Bucket','Bought (UTC)','Closed (UTC)','Qty',
+      'Buy price AUD/unit','Buy cost AUD','Buy fees AUD','Total in AUD',
+      'Sell price AUD/unit','Proceeds AUD','Sell fees AUD','Net out AUD',
+      'Realised AUD','Realised %','Gross %',
+    ];
+    const csvRows = [headers.join(',')];
+    rows.forEach(r => {
+      csvRows.push([
+        r.symbol, r.market, r.bucket, r.bought_at || '', r.closed_at || '',
+        r.qty.toFixed(8),
+        r.buy_price_aud_per_unit.toFixed(6),
+        r.buy_cost_aud.toFixed(2),
+        r.buy_fees_aud.toFixed(2),
+        r.total_in_aud.toFixed(2),
+        r.sell_price_aud_per_unit.toFixed(6),
+        r.proceeds_aud.toFixed(2),
+        r.sell_fees_aud.toFixed(2),
+        r.net_out_aud.toFixed(2),
+        r.realised_aud.toFixed(2),
+        (r.realised_pct * 100).toFixed(4),
+        (r.gross_pnl_pct * 100).toFixed(4),
+      ].join(','));
+    });
+    blob = new Blob([csvRows.join('\n')], {type: 'text/csv;charset=utf-8;'});
+    filename = `rivx_trade_history_${new Date().toISOString().slice(0,10)}.csv`;
+  }
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function renderClosedPositions(){
+  const card = document.getElementById('closed-positions-card');
+  const tbody = document.getElementById('history-tbody');
+  const emptyEl = document.getElementById('history-empty');
+  const exportCsvBtn = document.getElementById('export-csv-btn');
+  const exportJsonBtn = document.getElementById('export-json-btn');
+
+  if(!allClosed.length){
+    card.style.display = 'none';
+    if(exportCsvBtn) exportCsvBtn.disabled = true;
+    if(exportJsonBtn) exportJsonBtn.disabled = true;
+    return;
+  }
+  card.style.display = 'block';
+  if(exportCsvBtn) exportCsvBtn.disabled = false;
+  if(exportJsonBtn) exportJsonBtn.disabled = false;
+
+  const rows = tradeHistoryRows();
+  rows.sort((a,b) => new Date(b.closed_at || 0) - new Date(a.closed_at || 0));
+
+  document.getElementById('closed-count').textContent =
+    `${rows.length} closed ${rows.length===1?'trade':'trades'} · all amounts AUD · paper-mode fees estimated`;
+
+  if(!rows.length){
+    tbody.innerHTML = '';
+    emptyEl.style.display = 'block';
+    return;
+  }
+  emptyEl.style.display = 'none';
+
+  const fmtNum = v => Number(v).toLocaleString('en-AU', {minimumFractionDigits:2, maximumFractionDigits:2});
+  const fmtPriceCell = v => {
+    if(!v || !isFinite(v)) return '—';
+    if(v >= 100) return Number(v).toLocaleString('en-AU', {maximumFractionDigits:2});
+    if(v >= 1) return Number(v).toFixed(2);
+    if(v >= 0.01) return Number(v).toFixed(4);
+    return Number(v).toFixed(6);
+  };
+  const fmtQty = v => {
+    if(!v) return '—';
+    if(v < 1) return Number(v).toFixed(6);
+    if(v < 100) return Number(v).toFixed(4);
+    return Number(v).toFixed(2);
+  };
+  const fmtShortDate = iso => {
+    if(!iso) return '—';
+    const d = new Date(iso);
+    return d.toLocaleDateString('en-AU',{day:'2-digit',month:'short'}) + ' ' +
+           d.toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit',hour12:false});
+  };
+
+  tbody.innerHTML = rows.map(r => {
+    const pillCls = r.isStock ? 'stock' : 'crypto';
+    const pillLabel = r.isStock ? 'STK' : 'CRY';
+    const realCls = r.realised_aud > 0.01 ? 'up' : r.realised_aud < -0.01 ? 'down' : 'flat';
+    const realisedSign = r.realised_aud >= 0 ? '+' : '−';
+    const pctSign = r.realised_pct >= 0 ? '+' : '';
+    return `<tr>
+      <td><span class="sym-cell">${escapeHtml(r.symbol)}</span><span class="pill ${pillCls}">${pillLabel}</span></td>
+      <td class="muted">${fmtShortDate(r.bought_at)}</td>
+      <td class="num">${fmtPriceCell(r.buy_price_aud_per_unit)}</td>
+      <td class="num">${fmtQty(r.qty)}</td>
+      <td class="num">${fmtNum(r.buy_cost_aud)}</td>
+      <td class="num muted">${fmtNum(r.buy_fees_aud)}</td>
+      <td class="num">${fmtNum(r.total_in_aud)}</td>
+      <td class="muted">${fmtShortDate(r.closed_at)}</td>
+      <td class="num">${fmtPriceCell(r.sell_price_aud_per_unit)}</td>
+      <td class="num">${fmtNum(r.proceeds_aud)}</td>
+      <td class="num muted">${fmtNum(r.sell_fees_aud)}</td>
+      <td class="num">${fmtNum(r.net_out_aud)}</td>
+      <td class="num ${realCls}">${realisedSign}${fmtNum(Math.abs(r.realised_aud))}</td>
+      <td class="num ${realCls}">${pctSign}${(r.realised_pct*100).toFixed(2)}%</td>
+      <td class="muted">${fmtHoldDuration(r.bought_at, r.closed_at)}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function selectHolding(sym){
+  selectedHolding = sym;
+  document.querySelectorAll('.pos-card').forEach(c=>c.classList.remove('active'));
+  const pos = allPositions.find(p=>p.symbol===sym);
+  if(!pos){ document.getElementById('holding-detail-card').style.display = 'none'; return; }
+
+  document.getElementById('holding-detail-card').style.display = 'block';
+
+  const stock     = isStock(pos);
+  const entry     = entryPriceAud(pos);
+  const cur       = currentPriceAud(pos);
+  const valAud    = marketValueAud(pos);
+  const entryCost = entryCostAud(pos);
+  const grossAud  = grossPnlAud(pos);
+  const grossPct  = grossPnlPct(pos);
+  const fees      = estimatedFeesAud(pos);
+  const netAud    = grossAud - fees.total;
+  const netPct    = netPnlPct(pos);
+  const qty       = Number(pos.qty) || 0;
+  const profile   = feeProfile(pos);
+  const bk        = bucketOf(pos);
+  const bMeta     = BUCKETS[bk] || {label:'?'};
+
+  const marketLabel = stock ? 'US stock · Alpaca' : 'Crypto · CoinSpot';
+  document.getElementById('holding-title').textContent = sym + ' detail';
+  document.getElementById('holding-sub').textContent =
+    `${bMeta.label} · ${marketLabel} · bought ${fmtRelativeFromIso(pos.created_at)}`;
+
+  // Detail header lead with the BIG signed P&L delta, same convention as
+  // the cards. Value goes underneath.
+  const cls = grossAud > 0.01 ? 'up' : grossAud < -0.01 ? 'down' : 'flat';
+  const valueColor = cls === 'up' ? '#1a7340' : cls === 'down' ? '#c0392b' : '#1a1a2e';
+
+  const priceEl = document.getElementById('holding-price');
+  if(cur > 0){
+    priceEl.innerHTML = `<div style="font-size:28px;font-weight:700;color:${valueColor};letter-spacing:-1px;line-height:1.05;">${fmtSignedAud(grossAud)} <span style="font-size:14px;font-weight:500;">(${fmtSignedPct(grossPct)})</span></div>
+      <div style="font-size:11px;color:#9aa0a6;margin-top:4px;">${fmtAud(valAud)} now · from $${entryCost.toFixed(0)} deployed · ${fmtSignedAud(netAud)} after fees</div>`;
+  } else {
+    priceEl.innerHTML = `<div style="font-size:13px;color:#c4c7cc;">price syncing…</div>`;
+  }
+
+  let todayLine = '';
+  if(stock && pos.change_today != null){
+    todayLine = `${fmtSignedPct(Number(pos.change_today))} today (USD)`;
+  } else if(!stock){
+    const lp = livePrices[pos.symbol.toUpperCase()];
+    if(lp && lp.aud_24h_change != null){
+      todayLine = `${fmtSignedPct(Number(lp.aud_24h_change)/100)} 24h`;
+    }
+  }
+
+  const sourceNote = stock ? 'AUD · live' : 'AUD · CoinSpot live';
+
+  const statsHtml = `
+    <div class="hd-grid">
+      <div class="hd-stat">
+        <div class="hd-stat-label">Entry price</div>
+        <div class="hd-stat-val">${entry>0 ? fmtPrice(entry) : '—'}</div>
+        <div class="hd-stat-sub">AUD per ${stock?'share':'unit'}${qty>0?' · '+qty.toFixed(qty<1?6:(qty<100?4:2))+' held':''}</div>
+      </div>
+      <div class="hd-stat">
+        <div class="hd-stat-label">Current price</div>
+        <div class="hd-stat-val">${cur>0 ? fmtPrice(cur) : '—'}</div>
+        <div class="hd-stat-sub">${cur>0 ? sourceNote : 'syncing'}${todayLine?' · '+todayLine:''}</div>
+      </div>
+      <div class="hd-stat">
+        <div class="hd-stat-label">Capital deployed</div>
+        <div class="hd-stat-val">${fmtAud(entryCost)}</div>
+        <div class="hd-stat-sub">AUD spent at entry</div>
+      </div>
+      <div class="hd-stat">
+        <div class="hd-stat-label">Position age</div>
+        <div class="hd-stat-val">${fmtRelativeFromIso(pos.created_at).replace(' ago','')}</div>
+        <div class="hd-stat-sub">since ${fmtDateTime(pos.created_at)}</div>
+      </div>
+    </div>`;
+
+  const grossCls = grossAud > 0.01 ? 'up' : grossAud < -0.01 ? 'down' : '';
+  const netCls   = netAud > 0.01 ? 'up' : netAud < -0.01 ? 'down' : '';
+  const feeRows = fees.breakdown.map(b =>
+    `<div class="dp-pnl-k" style="padding-left:14px;font-size:11px;">${b.label} <span style="color:#c4c7cc;">· ${b.when}</span></div><div class="dp-pnl-v fee" style="font-size:11px;">−${fmtAud(b.aud)}</div>`
+  ).join('') || '<div class="dp-pnl-k" style="padding-left:14px;font-size:11px;color:#9aa0a6;">No fees in this venue</div><div></div>';
+
+  const pnlHtml = `
+    <div class="dp-section">
+      <div class="dp-section-title">P&L breakdown</div>
+      <div class="dp-pnl-row">
+        <div class="dp-pnl-k">Gross P&L (market move only)</div>
+        <div class="dp-pnl-v ${grossCls}">${fmtSignedAud(grossAud)} (${fmtSignedPct(grossPct)})</div>
+        <div class="dp-pnl-k" style="font-size:11px;color:#9aa0a6;margin-top:2px;">Estimated round-trip fees:</div>
+        <div class="dp-pnl-v fee" style="font-size:11px;margin-top:2px;">−${fmtAud(fees.total)}</div>
+        ${feeRows}
+        <div class="dp-pnl-k dp-pnl-net">Net P&L if sold now</div>
+        <div class="dp-pnl-v ${netCls} dp-pnl-net">${fmtSignedAud(netAud)} (${fmtSignedPct(netPct)})</div>
+      </div>
+    </div>`;
+
+  const riskHtml = renderRiskLevelsForBucket(pos, bk);
+
+  const trades = allTrades.filter(t => t.symbol === sym).slice(0, 20);
+  const closedForSym = allClosed.filter(p => p.symbol === sym);
+  const tradeRows = renderSymbolTradeHistory(trades, closedForSym);
+
+  const decision = allDecisions.find(d => d.symbol === sym && d.action === 'buy');
+  const buyTrade = trades.find(t => t.action === 'BUY');
+  const reason = decision ? decision.reason : (buyTrade ? buyTrade.details : null);
+  const conf = decision ? decision.confidence : null;
+  const reasoningHtml = reason
+    ? `<div class="dp-section">
+        <div class="dp-section-title">Why we bought${conf!=null?` · Claude conf ${(conf*100).toFixed(0)}%`:''}</div>
+        <div style="font-size:13px;color:#1a1a2e;line-height:1.6;">${escapeHtml(reason)}</div>
+      </div>`
+    : '';
+
+  const methodologyHtml = `
+    <div style="margin-top:12px;padding:10px 12px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;font-size:11px;color:#854d0e;line-height:1.5;">
+      <strong>${profile.label}</strong> — ${profile.notes}
+    </div>`;
+
+  document.getElementById('holding-metrics').innerHTML =
+    statsHtml + pnlHtml + riskHtml + tradeRows + reasoningHtml + methodologyHtml;
+}
+
+function renderRiskLevelsForBucket(pos, bucketKey){
+  const pnlPct = Number(pos.pnl_pct) || 0;
+  const peakPct = Number(pos.peak_pnl_pct) || pnlPct;
+  const ageDays = pos.created_at
+    ? (Date.now() - new Date(pos.created_at).getTime()) / 86400000
+    : 0;
+  const rows = [];
+  let stop, target, trailGiveback, reviewDays, hardExitDays;
+
+  if(bucketKey === 'swing_crypto'){
+    stop = -0.08; target = 0.15; trailGiveback = 0.05; reviewDays = 30;
+  } else if(bucketKey === 'momentum_crypto'){
+    stop = -0.10; target = 0.30; hardExitDays = 7;
+  } else {
+    stop = -0.05; target = 0.12; trailGiveback = 0.04; reviewDays = 30;
+  }
+
+  const stopDist = pnlPct - stop;
+  let stopStatus, stopText;
+  if(pnlPct <= stop){ stopStatus='danger'; stopText='WOULD TRIGGER'; }
+  else if(stopDist < 0.01){ stopStatus='warn'; stopText=`only ${(stopDist*100).toFixed(2)}% above`; }
+  else { stopStatus='ok'; stopText=`${(stopDist*100).toFixed(2)}% above`; }
+  rows.push({
+    icon: '🛑', label: 'Stop loss',
+    detail: `Trigger: P&L drops to ${(stop*100).toFixed(1)}% (current ${(pnlPct*100).toFixed(2)}%)`,
+    status: stopText, statusCls: stopStatus,
+  });
+
+  const takeDist = target - pnlPct;
+  let takeStatus, takeText;
+  if(pnlPct >= target){ takeStatus='ok'; takeText='WOULD TRIGGER'; }
+  else if(takeDist < 0.01){ takeStatus='warn'; takeText=`${(takeDist*100).toFixed(2)}% to go`; }
+  else { takeStatus='ok'; takeText=`${(takeDist*100).toFixed(2)}% to go`; }
+  rows.push({
+    icon: '🎯', label: 'Target',
+    detail: `Trigger at +${(target*100).toFixed(1)}% (current ${(pnlPct*100).toFixed(2)}%)`,
+    status: takeText, statusCls: takeStatus,
+  });
+
+  if(trailGiveback != null){
+    const trailArmed = peakPct >= target;
+    const trailFloor = peakPct - trailGiveback;
+    let trailStatus, trailText;
+    if(trailArmed && pnlPct < trailFloor){ trailStatus='danger'; trailText='WOULD TRIGGER'; }
+    else if(trailArmed){ trailStatus='warn'; trailText=`armed · floor ${(trailFloor*100).toFixed(1)}%`; }
+    else { trailStatus='ok'; trailText=`arms at +${(target*100).toFixed(1)}%`; }
+    rows.push({
+      icon: '📈', label: 'Trailing stop',
+      detail: `Once peak ≥ +${(target*100).toFixed(1)}%, exits if drops ${(trailGiveback*100).toFixed(1)}% below peak · current peak ${(peakPct*100).toFixed(2)}%`,
+      status: trailText, statusCls: trailStatus,
+    });
+  }
+
+  if(hardExitDays != null){
+    const remaining = hardExitDays - ageDays;
+    let timeStatus, timeText;
+    if(remaining <= 0){ timeStatus='danger'; timeText='WOULD TRIGGER'; }
+    else if(remaining < 1){ timeStatus='warn'; timeText=`${(remaining*24).toFixed(0)}h left`; }
+    else { timeStatus='ok'; timeText=`${remaining.toFixed(1)}d left`; }
+    rows.push({
+      icon: '⏰', label: `${hardExitDays}-day hard exit`,
+      detail: `Position must close by day ${hardExitDays} regardless of P&L · age ${ageDays.toFixed(1)}d`,
+      status: timeText, statusCls: timeStatus,
+    });
+  } else if(reviewDays != null){
+    const remaining = reviewDays - ageDays;
+    let timeStatus, timeText;
+    if(remaining <= 0){ timeStatus='warn'; timeText='REVIEW DUE'; }
+    else if(remaining < 5){ timeStatus='warn'; timeText=`${remaining.toFixed(0)}d to review`; }
+    else { timeStatus='ok'; timeText=`${remaining.toFixed(0)}d to review`; }
+    rows.push({
+      icon: '📅', label: `${reviewDays}-day review`,
+      detail: `Auto-exit at day ${reviewDays} if no stop/target hit before · age ${ageDays.toFixed(1)}d`,
+      status: timeText, statusCls: timeStatus,
+    });
+  }
+
+  const rowsHtml = rows.map(r => `
+    <div class="risk-row">
+      <span class="risk-icon">${r.icon}</span>
+      <div class="risk-text">
+        <div class="risk-text-label">${r.label}</div>
+        <div class="risk-text-detail">${r.detail}</div>
+      </div>
+      <span class="risk-status ${r.statusCls}">${r.status}</span>
+    </div>`).join('');
+
+  return `<div class="dp-section">
+    <div class="dp-section-title">Auto-exit triggers — when this position sells itself</div>
+    ${rowsHtml}
+  </div>`;
+}
+
+function renderSymbolTradeHistory(trades, closedForSym){
+  if(!trades.length && !closedForSym.length){
+    return `<div class="dp-section">
+      <div class="dp-section-title">Trade history for this symbol</div>
+      <div style="font-size:12px;color:#9aa0a6;text-align:center;padding:8px 0;">No trades recorded yet</div>
+    </div>`;
+  }
+  const items = [];
+  closedForSym.forEach(p => {
+    const grossPct = Number(p.pnl_pct) || 0;
+    const profile = (p.market||'').toLowerCase()==='alpaca' ? FEES.alpaca : FEES.coinspot;
+    const entry = Number(p.aud_amount) || 0;
+    const proceeds = entry * (1 + grossPct);
+    const fee = entry*profile.buyPct + proceeds*profile.sellPct
+              + entry*profile.fxOneWayPct + proceeds*profile.fxOneWayPct;
+    const net = (proceeds - entry) - fee;
+    const netPct = entry > 0 ? net/entry : 0;
+    const cls = net > 0.01 ? 'up' : net < -0.01 ? 'down' : '';
+    items.push({
+      sortKey: p.closed_at || p.created_at,
+      html: `<div class="sym-trade">
+        <span class="sym-trade-action sell">CLOSED</span>
+        <div class="sym-trade-body">
+          <div class="sym-trade-line1">${fmtAud(entry)} → ${fmtAud(proceeds)} · net <span class="${cls?'risk-status '+cls:''}">${fmtSignedAud(net)} (${fmtSignedPct(netPct)})</span></div>
+          <div class="sym-trade-line2">held ${fmtHoldDuration(p.created_at, p.closed_at)} · ${fmtSignedPct(grossPct)} gross before est. ${fmtAud(fee)} fees</div>
+        </div>
+        <div class="sym-trade-time">${fmtDateTime(p.closed_at || p.created_at)}</div>
+      </div>`
+    });
+  });
+  trades.forEach(t => {
+    const action = t.action || '';
+    const cls = action === 'BUY' ? 'buy' : 'sell';
+    const aud = Number(t.aud_amount) || 0;
+    const pnl = t.pnl_pct != null ? ` · ${fmtSignedPct(Number(t.pnl_pct))}` : '';
+    items.push({
+      sortKey: t.created_at,
+      html: `<div class="sym-trade">
+        <span class="sym-trade-action ${cls}">${action}</span>
+        <div class="sym-trade-body">
+          <div class="sym-trade-line1">${fmtAud(aud)}${pnl}</div>
+          <div class="sym-trade-line2">${escapeHtml(t.details || '—')}</div>
+        </div>
+        <div class="sym-trade-time">${fmtDateTime(t.created_at)}</div>
+      </div>`
+    });
+  });
+  items.sort((a,b) => new Date(b.sortKey || 0) - new Date(a.sortKey || 0));
+  return `<div class="dp-section">
+    <div class="dp-section-title">Trade history for this symbol (${items.length})</div>
+    ${items.slice(0, 12).map(i => i.html).join('')}
+  </div>`;
+}
+
+function renderTrades(){
+  const render = (list, targetId, empty) => {
+    const el = document.getElementById(targetId);
+    if(!list.length){ el.innerHTML = `<div class="empty">${empty}</div>`; return; }
+    el.innerHTML = list.map(t=>{
+      const ac = t.action==='BUY'?'buy':'sell';
+      const pnl = t.pnl_pct ? ' · ' + (t.pnl_pct*100>=0?'+':'') + (t.pnl_pct*100).toFixed(1) + '%' : '';
+      const time = t.created_at ? new Date(t.created_at).toLocaleTimeString('en-AU',{hour:'2-digit', minute:'2-digit'}) : '';
+      const date = t.created_at ? new Date(t.created_at).toLocaleDateString('en-AU',{day:'numeric', month:'short'}) : '';
+      return `<div class="trade"><div class="trade-icon ${ac}">${t.action}</div><div class="trade-body"><div class="trade-title">${t.symbol}${pnl}</div><div class="trade-detail">${escapeHtml(t.details||'—')}</div></div><div class="trade-time">${date} ${time}</div></div>`;
+    }).join('');
+  };
+  render(allTrades.slice(0,6), 'recent-trades', 'No trades yet');
+  render(allTrades, 'all-trades', 'No trades yet');
+}
+
+function setTf(btn, tf){
+  document.querySelectorAll('.tf-btn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  currentTf = tf;
+  renderChart(tf);
+}
+
+function renderChart(tf){
+  const canvas = document.getElementById('perfChart');
+  if(!canvas) return;
+  if(perfChart){ perfChart.destroy(); }
+  let labels, values, points, title, note, mode;
+  const now = Date.now();
+
+  const windowMs = {'1H': 60*60*1000, '24H': 24*60*60*1000, '1W': 7*24*60*60*1000,
+                    '1M': 30*24*60*60*1000, 'ALL': 365*24*60*60*1000}[tf] || 24*60*60*1000;
+  const cutoff = now - windowMs;
+  const inWindow = allSnapshots
+    .filter(s => {
+      const t = s.created_at || s.recorded_at || s.date;
+      return t && new Date(t).getTime() >= cutoff;
+    })
+    .slice()
+    .reverse();
+
+  if(inWindow.length){
+    points = inWindow.map(s => ({
+      t: new Date(s.created_at || s.recorded_at || s.date),
+      v: Number(s.total_aud)
+    }));
+    title = ({
+      '1H': 'Portfolio value — last hour',
+      '24H': 'Portfolio value — last 24 hours',
+      '1W': 'Portfolio value — last 7 days',
+      '1M': 'Portfolio value — last 30 days',
+      'ALL': 'Portfolio value — all time'
+    })[tf];
+    note = `${inWindow.length} snapshots · 5-min granularity`;
+    mode = (tf === '1H' || tf === '24H') ? 'time' : 'date';
+  } else {
+    points = [{t: new Date(), v: STARTING_AUD}];
+    title = 'Portfolio value';
+    note = 'Waiting for snapshots — bot writes one every 5 min';
+    mode = 'time';
+  }
+
+  labels = points.map(p =>
+    mode === 'time'
+      ? p.t.toLocaleTimeString('en-AU',{hour:'2-digit', minute:'2-digit'})
+      : p.t.toLocaleDateString('en-AU',{month:'short', day:'numeric'})
+  );
+  values = points.map(p => p.v);
+
+  document.getElementById('chart-title').textContent = title;
+  document.getElementById('chart-sub').textContent = note;
+
+  perfChart = new Chart(canvas, {
+    type:'line',
+    data:{labels, datasets:[{
+      data:values, borderColor:'#0d1f38', backgroundColor:'rgba(13,31,56,0.05)',
+      fill:true, tension:0.3, pointRadius: values.length>60 ? 0 : 2, borderWidth:2,
+    }]},
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      plugins:{
+        legend:{display:false},
+        tooltip:{callbacks:{
+          title: ctx => {
+            const p = points[ctx[0].dataIndex];
+            if(!p) return '';
+            return mode === 'time'
+              ? p.t.toLocaleString('en-AU',{weekday:'short', day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'})
+              : p.t.toLocaleDateString('en-AU',{weekday:'short', day:'numeric', month:'short', year:'numeric'});
+          },
+          label: ctx => '$' + ctx.parsed.y.toLocaleString('en-AU',{maximumFractionDigits:2}) + ' AUD'
+        }}
+      },
+      scales:{
+        x:{ticks:{color:'#9aa0a6', font:{size:10}, maxTicksLimit: mode==='time'?12:8}, grid:{color:'rgba(0,0,0,0.04)'}},
+        y:{ticks:{color:'#9aa0a6', font:{size:10}, callback:v=>'$'+v.toLocaleString('en-AU',{maximumFractionDigits:0})}, grid:{color:'rgba(0,0,0,0.04)'}}
+      }
+    }
+  });
+}
+
+function renderIntelligence(){
+  const latestDecision = allDecisions[0];
+  const latestCheck = allChecks[0];
+  const view = (latestDecision && latestDecision.reason) || (latestCheck && latestCheck.reasoning) ||
+               'Bot will provide reasoning at next scan.';
+  document.getElementById('market-view').textContent = view;
+
+  const decEl = document.getElementById('decisions');
+  if(!allDecisions.length){
+    if(allChecks.length){
+      decEl.innerHTML = allChecks.slice(0,10).map(c=>{
+        const time = new Date(c.checked_at).toLocaleTimeString('en-AU',{hour:'2-digit', minute:'2-digit'});
+        const date = new Date(c.checked_at).toLocaleDateString('en-AU',{day:'numeric', month:'short'});
+        return `<div class="trade"><div class="trade-body"><div class="trade-title" style="font-weight:normal;">${escapeHtml(c.reasoning||'(no reasoning)')}</div></div><div class="trade-time">${date} ${time}</div></div>`;
+      }).join('');
+    } else {
+      decEl.innerHTML = '<div class="empty">No decisions yet</div>';
+    }
+    return;
+  }
+
+  decEl.innerHTML = allDecisions.slice(0,20).map(d=>{
+    const time = new Date(d.decided_at).toLocaleTimeString('en-AU',{hour:'2-digit', minute:'2-digit'});
+    const date = new Date(d.decided_at).toLocaleDateString('en-AU',{day:'numeric', month:'short'});
+    const conf = d.confidence != null ? ` · ${(Number(d.confidence)*100).toFixed(0)}% conf` : '';
+    const action = (d.action || 'skip').toUpperCase();
+    const actionCls = action === 'BUY' ? 'buy' : 'sell';
+    const bk = d.bucket || '?';
+    const bMeta = BUCKETS[bk] || {short:'?', cssKey:''};
+    let outcome = '';
+    if(d.realized_pnl_pct != null && d.executed){
+      const pct = Number(d.realized_pnl_pct);
+      const cls = pct > 0 ? 'up' : pct < 0 ? 'down' : '';
+      outcome = ` · realised <span class="risk-status ${cls}">${fmtSignedPct(pct)}</span>`;
+    } else if(d.executed){
+      outcome = ' · open';
+    }
+    return `<div class="sym-trade">
+      <span class="sym-trade-action ${actionCls}">${action}</span>
+      <div class="sym-trade-body">
+        <div class="sym-trade-line1">${d.symbol} <span class="pos-bucket-tag ${bMeta.cssKey}" style="font-size:9px;">${bMeta.short}</span>${conf}${outcome}</div>
+        <div class="sym-trade-line2">${escapeHtml(d.reason || '—')}</div>
+      </div>
+      <div class="sym-trade-time">${date} ${time}</div>
+    </div>`;
+  }).join('');
+}
+
+function renderMarkdown(text){
+  if(!text) return '';
+  let s = text.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+  const lines = s.split('\n');
+  const blocks = [];
+  let buf = []; let inList = false;
+  for(const line of lines){
+    const m = line.match(/^\s*[-•]\s+(.+)$/);
+    if(m){
+      if(!inList){ if(buf.length){ blocks.push({type:'p', text: buf.join('\n')}); buf = []; } inList = true; buf = []; }
+      buf.push(m[1]);
+    } else {
+      if(inList){ blocks.push({type:'ul', items: buf}); buf = []; inList = false; }
+      buf.push(line);
+    }
+  }
+  if(inList) blocks.push({type:'ul', items: buf});
+  else if(buf.length) blocks.push({type:'p', text: buf.join('\n')});
+  return blocks.map(b => {
+    if(b.type === 'ul') return `<ul>${b.items.map(i => `<li>${i}</li>`).join('')}</ul>`;
+    return b.text.replace(/^\s+/, '').split(/\n\s*\n/)
+      .filter(p => p.trim())
+      .map(p => `<p>${p.replace(/\n/g, '<br>')}</p>`)
+      .join('');
+  }).join('');
+}
+
+function renderQA(){
+  const el = document.getElementById('qa-thread');
+  const cutoff = Date.now() - 7*24*60*60*1000;
+  const recent = (allQuestions || []).filter(q => {
+    const t = q.asked_at ? new Date(q.asked_at).getTime() : 0;
+    return t >= cutoff;
+  });
+  if(!recent.length){ el.innerHTML = '<div class="empty">Ask your first question above</div>'; return; }
+  el.innerHTML = recent.slice(0,15).map((q, idx) => {
+    const time = new Date(q.asked_at).toLocaleString('en-AU',
+      {hour:'2-digit', minute:'2-digit', day:'numeric', month:'short'});
+    const isPending = q.status === 'pending';
+    const answerHtml = isPending ? '<em>Thinking… (30-60s)</em>' : renderMarkdown(q.answer || '(no answer)');
+    const open = (idx === 0 || isPending) ? 'open' : '';
+    return `<details class="qa-item" ${open}>
+      <summary class="qa-q">
+        <span class="qa-q-text">${escapeHtml(q.question)}</span>
+        <span class="qa-time">${time}</span>
+      </summary>
+      <div class="qa-a${isPending?' pending':''}">${answerHtml}</div>
+    </details>`;
+  }).join('');
+}
+
+async function askQuestion(){
+  const input = document.getElementById('qa-input');
+  const btn = document.getElementById('qa-submit');
+  const q = input.value.trim();
+  if(!q) return;
+  btn.disabled = true; btn.textContent = 'Sending...';
+  const result = await sb('user_questions', {}, 'POST', {question:q});
+  if(result){
+    input.value = '';
+    await loadAll();
+    let tries = 0;
+    const poll = setInterval(async ()=>{
+      tries++; await loadAll();
+      const latest = allQuestions[0];
+      if((latest && latest.status !== 'pending') || tries > 24) clearInterval(poll);
+    }, 5000);
+  } else {
+    alert('Could not submit. Did you create the user_questions table?');
+  }
+  btn.disabled = false; btn.textContent = 'Ask';
+}
+
+function renderCostWidget(){
+  const today = new Date().toISOString().slice(0,10);
+  const todayUsage = tokenUsage.find(u=>u.date===today);
+  const cost = todayUsage ? Number(todayUsage.cost_usd) : 0;
+  const calls = todayUsage ? Number(todayUsage.call_count) : 0;
+  const pct = Math.min(100, cost / DAILY_BUDGET_USD * 100);
+  const el = document.getElementById('cost-today');
+  el.textContent = '$' + cost.toFixed(4);
+  el.className = 'cost-val ' + (pct>=90?'danger':pct>=70?'warn':'ok');
+  document.getElementById('cost-bar-fill').style.width = pct + '%';
+  document.getElementById('cost-bar-fill').style.background = pct>=90?'#c0392b':pct>=70?'#f59e0b':'#1a7340';
+  document.getElementById('cost-details').textContent = `${calls} Claude calls today · ${pct.toFixed(0)}% of daily cap`;
+}
+
+function renderStory(){
+  const el = document.getElementById('story-text');
+  const today = new Date().toDateString();
+  const todayTrades = allTrades.filter(t=>t.created_at && new Date(t.created_at).toDateString()===today);
+  const todayBuys = todayTrades.filter(t=>t.action==='BUY').length;
+  const todaySells = todayTrades.filter(t=>t.action==='SELL').length;
+  const todayDecisions = allDecisions.filter(d=>d.decided_at && new Date(d.decided_at).toDateString()===today);
+
+  const agg = bucketAggregates();
+  const dayName = new Date().toLocaleDateString('en-AU', {weekday:'long'});
+  const isWeekend = [0,6].includes(new Date().getDay());
+
+  let story = `<strong>${dayName}</strong>. `;
+  if(allPositions.length === 0){
+    story += `No open positions. `;
+  } else {
+    const parts = [];
+    if(agg.swing_crypto.count > 0)    parts.push(`${agg.swing_crypto.count} swing crypto`);
+    if(agg.momentum_crypto.count > 0) parts.push(`${agg.momentum_crypto.count} momentum crypto`);
+    if(agg.swing_stock.count > 0)     parts.push(`${agg.swing_stock.count} US stock`);
+    story += `Holding ${parts.join(', ')} · ${fmtAud(allPositions.reduce((s,p)=>s+marketValueAud(p),0))} deployed. `;
+  }
+
+  if(isWeekend){
+    story += `Weekend — US markets closed until Monday 11:30pm AEST. `;
+    if(agg.swing_stock.count>0) story += `Stock positions frozen at last close. `;
+  }
+
+  if(todayDecisions.length > 0){
+    story += `Bot has made ${todayDecisions.length} Claude decision${todayDecisions.length>1?'s':''} today. `;
+  }
+  if(todayBuys>0 || todaySells>0){
+    story += `${todayBuys} buy${todayBuys===1?'':'s'} and ${todaySells} sell${todaySells===1?'':'s'} executed today.`;
+  } else {
+    story += `No trades executed today.`;
+  }
+  el.innerHTML = story;
+}
+
+function renderLiveStatus(){
+  const el = document.getElementById('live-status');
+  const items = [];
+
+  const hb = botFlags.last_heartbeat;
+  let hbAgo = 999;
+  if(hb){ hbAgo = Math.round((Date.now() - new Date(hb).getTime()) / 60000); }
+  if(hbAgo > 10){
+    items.push({icon:'⚠️', time:'now', text:`Bot may be offline — last heartbeat ${hbAgo}m ago`});
+  } else {
+    items.push({icon:'✓', time:'now', text:`Bot is alive — heartbeat ${hbAgo}m ago. Next scan when scheduled.`});
+  }
+
+  if(allDecisions.length){
+    const last = allDecisions[0];
+    const ago = Math.round((Date.now() - new Date(last.decided_at).getTime()) / 60000);
+    const agoStr = ago < 60 ? `${ago}m ago` : ago < 1440 ? `${Math.round(ago/60)}h ago` : `${Math.round(ago/1440)}d ago`;
+    items.push({
+      icon: '🧠', time: agoStr,
+      text: `Last Claude decision — ${last.action.toUpperCase()} ${last.symbol}: ${last.reason ? last.reason.substring(0, 100) : 'no reason'}`
+    });
+  }
+
+  if(allTrades.length){
+    const t = allTrades[0];
+    const ago = Math.round((Date.now() - new Date(t.created_at).getTime()) / 60000);
+    const agoStr = ago < 60 ? `${ago}m ago` : ago < 1440 ? `${Math.round(ago/60)}h ago` : `${Math.round(ago/1440)}d ago`;
+    items.push({
+      icon: t.action === 'BUY' ? '🟢' : '🔴', time: agoStr,
+      text: `${t.action} ${t.symbol} — ${(t.details || '').substring(0, 100)}`
+    });
+  }
+
+  if(allSnapshots.length){
+    const last = allSnapshots[0];
+    const tField = last.created_at || last.recorded_at;
+    if(tField){
+      const ago = Math.round((Date.now() - new Date(tField).getTime()) / 60000);
+      items.push({
+        icon: '📸', time: `${ago}m ago`,
+        text: `Portfolio snapshot — ${fmtAud(Number(last.total_aud))} (${allPositions.length} open)`
+      });
+    }
+  }
+
+  const today = new Date().toISOString().slice(0,10);
+  const todayCost = (tokenUsage.find(u=>u.date===today) || {});
+  if(todayCost.call_count){
+    items.push({
+      icon: '💰', time: `${todayCost.call_count} calls`,
+      text: `Today's Claude spend: $${Number(todayCost.cost_usd).toFixed(4)} of $2.00 daily cap`
+    });
+  }
+
+  if(!items.length){ el.innerHTML = '<div class="empty">No activity yet</div>'; return; }
+  el.innerHTML = items.map(i=>
+    `<div class="status-row"><span class="status-icon">${i.icon}</span><span class="status-time">${i.time}</span><span class="status-text">${escapeHtml(i.text)}</span></div>`
+  ).join('');
+}
+
+function renderFailures(){
+  const card = document.getElementById('failed-card');
+  const list = document.getElementById('failed-list');
+  const rows = [];
+
+  allDecisions.slice(0, 30).forEach(d => {
+    if(d.action === 'rejected_by_safety'){
+      rows.push({
+        kind: 'fail',
+        symbol: d.symbol,
+        reason: `Safety blocked: ${d.reason || 'unknown'}`,
+        time: d.decided_at,
+      });
+    } else if(d.action === 'skip' && d.confidence != null && d.confidence < 0.6){
+      rows.push({
+        kind: 'skip',
+        symbol: d.symbol,
+        reason: `Claude conf ${(Number(d.confidence)*100).toFixed(0)}%: ${d.reason || ''}`,
+        time: d.decided_at,
+      });
+    }
+  });
+
+  allChecks.slice(0, 20).forEach(c => {
+    let executions = [];
+    try { executions = JSON.parse(c.executions || '[]'); } catch(e){}
+    executions.filter(e => e && !e.success).forEach(e => {
+      rows.push({
+        kind: 'fail',
+        symbol: (e.symbol || '?').toUpperCase(),
+        reason: `${e.action || 'BUY'} failed: ${e.error || 'unknown'}`,
+        time: c.checked_at,
+      });
+    });
+  });
+
+  if(!rows.length){ card.style.display = 'none'; return; }
+  card.style.display = 'block';
+  document.getElementById('failed-count').textContent =
+    `${rows.length} ${rows.length===1?'event':'events'}`;
+  list.innerHTML = rows.slice(0, 12).map(f => {
+    const time = new Date(f.time).toLocaleTimeString('en-AU', {hour:'2-digit', minute:'2-digit'});
+    const badge = f.kind === 'fail'
+      ? '<span class="fail-badge fail-err">FAILED</span>'
+      : '<span class="fail-badge fail-skip">SKIPPED</span>';
+    return `<div class="fail-row">
+      ${badge}
+      <span class="fail-sym">${escapeHtml(f.symbol)}</span>
+      <span class="fail-reason">${escapeHtml(f.reason).substring(0, 100)}</span>
+      <span class="fail-time">${time}</span>
+    </div>`;
+  }).join('');
+}
+
+function renderCostChart(){
+  const canvas = document.getElementById('costChart');
+  if(!canvas) return;
+  if(costChart){ costChart.destroy(); }
+  const last7 = tokenUsage.slice(0,7).reverse();
+  if(!last7.length){
+    document.getElementById('cost-summary').textContent = 'No usage data yet.';
+    return;
+  }
+  const labels = last7.map(u=>new Date(u.date).toLocaleDateString('en-AU',{day:'numeric', month:'short'}));
+  const values = last7.map(u=>Number(u.cost_usd));
+  const totalWeek = values.reduce((a,b)=>a+b, 0);
+  const projMonth = totalWeek / last7.length * 30;
+  document.getElementById('cost-summary').textContent =
+    `7-day total: $${totalWeek.toFixed(2)} · projected monthly: $${projMonth.toFixed(2)}`;
+  costChart = new Chart(canvas, {
+    type:'bar',
+    data:{labels, datasets:[{data:values, backgroundColor:'#0d1f38', borderRadius:4}]},
+    options:{responsive:true, maintainAspectRatio:false,
+      plugins:{legend:{display:false}, tooltip:{callbacks:{label:ctx=>'$'+ctx.parsed.y.toFixed(4)}}},
+      scales:{x:{ticks:{color:'#9aa0a6', font:{size:10}}, grid:{display:false}},
+              y:{ticks:{color:'#9aa0a6', font:{size:10}, callback:v=>'$'+v.toFixed(2)}, grid:{color:'rgba(0,0,0,0.04)'}}}}
+  });
+}
+</script>
+</body>
+</html>
