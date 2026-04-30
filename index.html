@@ -374,6 +374,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       <button class="nav-btn" onclick="showPage('positions',this)">Positions</button>
       <button class="nav-btn" onclick="showPage('intelligence',this)">Intelligence</button>
       <button class="nav-btn" onclick="showPage('cost',this)">Cost</button>
+      <button class="nav-btn" onclick="showPage('asx',this)" title="Australian equities watchlist">🇦🇺 RivX-ASX</button>
     </div>
     <div class="topbar-right">
       <span class="topbar-time" id="last-updated">Loading...</span>
@@ -701,8 +702,72 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       </div>
     </div>
 
+    <!-- RivX-ASX -->
+    <div id="page-asx" class="page">
+      <div class="story-card">
+        <div class="story-title">🇦🇺 RivX-ASX · Australian equities watchlist</div>
+        <div class="story-text" style="font-size:13px;color:#555;">
+          Read-only analysis of ASX 200 stocks. Pre-open scan 09:30, midday 12:30, close 16:30 AEST.
+          High-conviction setups alert you immediately during market hours. Trade these in CommSec —
+          RivX never spends real or paper funds on these signals.
+        </div>
+      </div>
+
+      <div class="stats" id="asx-stats">
+        <div class="stat"><div class="stat-label">Today's signals</div><div class="stat-value" id="asx-stat-today">—</div><div class="stat-sub" id="asx-stat-today-sub">pre-open + intraday</div></div>
+        <div class="stat"><div class="stat-label">Active watchlist</div><div class="stat-value" id="asx-stat-watch">—</div><div class="stat-sub">currently qualifying</div></div>
+        <div class="stat"><div class="stat-label">30-day hit rate</div><div class="stat-value" id="asx-stat-hit">—</div><div class="stat-sub" id="asx-stat-hit-sub">target / stop / open</div></div>
+        <div class="stat"><div class="stat-label">High-conviction</div><div class="stat-value" id="asx-stat-hc">—</div><div class="stat-sub">today</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-row" style="margin-bottom:8px;">
+          <div class="card-title" style="margin-bottom:0;">Today's signals</div>
+          <div style="display:flex;gap:6px;">
+            <button class="period-btn active" data-asxfilter="all" onclick="setAsxFilter('all')">All</button>
+            <button class="period-btn" data-asxfilter="pullback" onclick="setAsxFilter('pullback')">Pullback</button>
+            <button class="period-btn" data-asxfilter="breakout" onclick="setAsxFilter('breakout')">Breakout</button>
+            <button class="period-btn" data-asxfilter="oversold_bounce" onclick="setAsxFilter('oversold_bounce')">Oversold</button>
+          </div>
+        </div>
+        <div id="asx-today-list"><div class="empty">Loading...</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Last 30 days · Performance</div>
+        <table class="history-table" id="asx-history-table">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Setup</th>
+              <th class="num">Conf</th>
+              <th class="num">Entry</th>
+              <th class="num">Stop</th>
+              <th class="num">Target</th>
+              <th>Outcome</th>
+              <th class="num">Return</th>
+              <th>Fired</th>
+            </tr>
+          </thead>
+          <tbody id="asx-history-body">
+            <tr><td colspan="9" class="muted" style="text-align:center;padding:20px;">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Setup types — what each one means</div>
+        <div style="font-size:12px;color:#555;line-height:1.7;">
+          <strong>Pullback</strong> — Quality stock in an uptrend that's dipped 3-8% from its recent high. Buy the dip with a tight stop, target the prior high. Highest hit rate of the three.<br>
+          <strong>Breakout</strong> — Stock breaks above its 20-day high on volume 2x+ the average and holds above the breakout level. Aussie market has thin volume, so we filter aggressively to avoid fake breakouts.<br>
+          <strong>Oversold bounce</strong> — RSI under 30 with a bullish reversal candle, but only if the stock is still above its 200-day MA (we're not catching falling knives in clear downtrends). Speculative — confidence capped at 70%.<br><br>
+          Levels are guidance, not advice. R:R shown is reward divided by risk based on suggested stop and target.
+        </div>
+      </div>
+    </div>
+
   </div>
-  <div class="footer">NYSE · NASDAQ · CRYPTO · AUD · BRISBANE · v2.5</div>
+  <div class="footer">NYSE · NASDAQ · CRYPTO · ASX · AUD · BRISBANE · v2.7</div>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
@@ -897,6 +962,176 @@ function showPage(name, btn){
   if(btn) btn.classList.add('active');
   if(name==='cost') renderCostChart();
   if(name==='strategy') renderStrategyPage();
+  if(name==='asx') loadAsxPage();
+}
+
+// ─── RivX-ASX page ────────────────────────────────────────────────────────
+let _asxFilter = 'all';
+let _asxToday = [];
+let _asxHistory = [];
+
+function setAsxFilter(f){
+  _asxFilter = f;
+  document.querySelectorAll('[data-asxfilter]').forEach(b=>{
+    b.classList.toggle('active', b.getAttribute('data-asxfilter')===f);
+  });
+  renderAsxToday();
+}
+
+async function loadAsxPage(){
+  // Get today's midnight in UTC for filtering "fired today"
+  const now = new Date();
+  const aestOffset = 10 * 60; // minutes
+  const localOffset = -now.getTimezoneOffset();
+  const aestNow = new Date(now.getTime() + (aestOffset - localOffset) * 60000);
+  const aestMidnight = new Date(aestNow);
+  aestMidnight.setHours(0,0,0,0);
+  const utcMidnight = new Date(aestMidnight.getTime() - aestOffset * 60000).toISOString();
+
+  // Pull today's signals
+  const today = await sb('asx_signals', {
+    'fired_at': 'gte.'+utcMidnight,
+    order: 'fired_at.desc',
+    limit: '200',
+  });
+  _asxToday = Array.isArray(today) ? today : [];
+
+  // Pull last 30 days for history table
+  const cutoff = new Date(now.getTime() - 30*24*60*60*1000).toISOString();
+  const hist = await sb('asx_signals', {
+    'fired_at': 'gte.'+cutoff,
+    order: 'fired_at.desc',
+    limit: '500',
+  });
+  _asxHistory = Array.isArray(hist) ? hist : [];
+
+  renderAsxStats();
+  renderAsxToday();
+  renderAsxHistory();
+}
+
+function renderAsxStats(){
+  document.getElementById('asx-stat-today').textContent = _asxToday.length;
+  const hc = _asxToday.filter(s=>s.high_conviction).length;
+  document.getElementById('asx-stat-hc').textContent = hc;
+
+  const watch = _asxToday.filter(s=>!s.outcome || s.outcome==='pending').length;
+  document.getElementById('asx-stat-watch').textContent = watch;
+
+  const resolved = _asxHistory.filter(s=>s.outcome==='hit_target' || s.outcome==='hit_stop');
+  if(resolved.length===0){
+    document.getElementById('asx-stat-hit').textContent = '—';
+    document.getElementById('asx-stat-hit-sub').textContent = 'no closed signals yet';
+  } else {
+    const hits = resolved.filter(s=>s.outcome==='hit_target').length;
+    const pct = (hits/resolved.length)*100;
+    document.getElementById('asx-stat-hit').textContent = pct.toFixed(0)+'%';
+    document.getElementById('asx-stat-hit-sub').textContent = hits+' of '+resolved.length+' hit target';
+  }
+}
+
+function renderAsxToday(){
+  const el = document.getElementById('asx-today-list');
+  let signals = _asxToday;
+  if(_asxFilter !== 'all'){
+    signals = signals.filter(s=>s.setup_type === _asxFilter);
+  }
+  if(signals.length === 0){
+    el.innerHTML = '<div class="empty">No signals'+(_asxFilter==='all'?' yet today.':' for this setup type today.')+'</div>';
+    return;
+  }
+  // Sort by confidence desc
+  signals.sort((a,b)=>(b.confidence||0)-(a.confidence||0));
+  let html = '';
+  for(const s of signals){
+    const setupColor = {
+      'pullback': '#1a7340',
+      'breakout': '#1e3a8a',
+      'oversold_bounce': '#92400e',
+    }[s.setup_type] || '#6b7280';
+    const setupLabel = {
+      'pullback': 'PULLBACK',
+      'breakout': 'BREAKOUT',
+      'oversold_bounce': 'OVERSOLD',
+    }[s.setup_type] || s.setup_type.toUpperCase();
+    const conf = Number(s.confidence || 0) * 100;
+    const price = Number(s.current_price || 0);
+    const stop = Number(s.stop_price || 0);
+    const target = Number(s.target_price || 0);
+    const el_low = Number(s.entry_zone_low || 0);
+    const el_high = Number(s.entry_zone_high || 0);
+    const risk = price - stop;
+    const reward = target - price;
+    const rr = risk > 0 ? (reward / risk) : 0;
+    const fired = s.fired_at ? new Date(s.fired_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '';
+    const outcome = s.outcome || 'pending';
+    const outcomeColor = {
+      'hit_target': '#1a7340',
+      'hit_stop': '#c0392b',
+      'pending': '#9aa0a6',
+    }[outcome] || '#9aa0a6';
+    const outcomeIcon = {
+      'hit_target': '✅',
+      'hit_stop': '❌',
+      'expired': '⏱️',
+      'pending': '⏳',
+    }[outcome] || '⏳';
+    const hcBadge = s.high_conviction ? '<span style="background:#fef3c7;color:#92400e;font-size:9px;padding:2px 6px;border-radius:3px;font-weight:700;margin-left:6px;">⚡ HIGH-CONV</span>' : '';
+
+    html += `
+      <div style="border:1px solid #e8eaed;border-radius:8px;padding:14px;margin-bottom:10px;background:#fff;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
+          <div>
+            <span style="font-size:18px;font-weight:700;color:#0d1f38;">${s.symbol}</span>
+            <span style="font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;margin-left:8px;background:${setupColor}22;color:${setupColor};">${setupLabel}</span>
+            ${hcBadge}
+          </div>
+          <div style="text-align:right;">
+            <div style="font-size:16px;font-weight:600;color:#1a1a2e;">$${price.toFixed(2)}</div>
+            <div style="font-size:10px;color:#9aa0a6;">fired ${fired}</div>
+          </div>
+        </div>
+        <div style="font-size:12px;color:#555;line-height:1.5;margin-bottom:8px;">${(s.reasoning||'').replace(/</g,'&lt;')}</div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;font-size:11px;">
+          <div><div style="color:#9aa0a6;font-size:9px;text-transform:uppercase;letter-spacing:0.05em;">Confidence</div><div style="font-weight:600;color:#1a1a2e;">${conf.toFixed(0)}%</div></div>
+          <div><div style="color:#9aa0a6;font-size:9px;text-transform:uppercase;letter-spacing:0.05em;">Entry zone</div><div style="font-weight:600;color:#1a1a2e;">$${el_low.toFixed(2)}–$${el_high.toFixed(2)}</div></div>
+          <div><div style="color:#9aa0a6;font-size:9px;text-transform:uppercase;letter-spacing:0.05em;">Stop</div><div style="font-weight:600;color:#c0392b;">$${stop.toFixed(2)}</div></div>
+          <div><div style="color:#9aa0a6;font-size:9px;text-transform:uppercase;letter-spacing:0.05em;">Target · R:R</div><div style="font-weight:600;color:#1a7340;">$${target.toFixed(2)} · ${rr.toFixed(1)}</div></div>
+        </div>
+        <div style="margin-top:10px;font-size:11px;color:${outcomeColor};">${outcomeIcon} <strong>${outcome.replace('_',' ')}</strong>${s.outcome_price ? ' @ $'+Number(s.outcome_price).toFixed(2) : ''}${s.return_pct != null ? ' · '+(Number(s.return_pct)*100).toFixed(2)+'%' : ''}</div>
+      </div>`;
+  }
+  el.innerHTML = html;
+}
+
+function renderAsxHistory(){
+  const tbody = document.getElementById('asx-history-body');
+  if(_asxHistory.length === 0){
+    tbody.innerHTML = '<tr><td colspan="9" class="muted" style="text-align:center;padding:20px;">No signals in the last 30 days yet.</td></tr>';
+    return;
+  }
+  let html = '';
+  for(const s of _asxHistory.slice(0, 100)){
+    const conf = Number(s.confidence || 0) * 100;
+    const fired = s.fired_at ? new Date(s.fired_at).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
+    const outcome = s.outcome || 'pending';
+    const outcomeClass = outcome === 'hit_target' ? 'up' : (outcome === 'hit_stop' ? 'down' : 'muted');
+    const ret = s.return_pct != null ? (Number(s.return_pct)*100) : null;
+    const retStr = ret != null ? (ret>=0?'+':'')+ret.toFixed(2)+'%' : '—';
+    const retClass = ret == null ? 'muted' : (ret >= 0 ? 'up' : 'down');
+    html += `<tr>
+      <td class="sym-cell">${s.symbol}</td>
+      <td>${(s.setup_type||'').replace('_',' ')}</td>
+      <td class="num">${conf.toFixed(0)}%</td>
+      <td class="num">$${Number(s.current_price||0).toFixed(2)}</td>
+      <td class="num">$${Number(s.stop_price||0).toFixed(2)}</td>
+      <td class="num">$${Number(s.target_price||0).toFixed(2)}</td>
+      <td class="${outcomeClass}">${outcome.replace('_',' ')}</td>
+      <td class="num ${retClass}">${retStr}</td>
+      <td class="muted">${fired}</td>
+    </tr>`;
+  }
+  tbody.innerHTML = html;
 }
 
 async function sb(table, params, method='GET', body=null){
