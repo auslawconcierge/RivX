@@ -1,29 +1,26 @@
-# RIVX_VERSION: v2.7-asx-analyser-2026-04-30
+# RIVX_VERSION: v2.8-reconciliation-2026-04-30
 """
 RivX bot.py — main loop orchestrator (v2 strategy).
 
+v2.8 changes from v2.7:
+  - SELL flow no longer marks Supabase position as 'closed' until Alpaca
+    confirms the fill. New status 'pending_close' bridges the gap. The
+    pending_sells.resolve_pending_closes() job runs every snapshot to
+    move pending_close → closed once Alpaca confirms a real fill price.
+  - Scanner candidates are filtered through scanner_exclusions.filter_blocked_symbols()
+    so we never try to buy a symbol that has an open Alpaca order
+    (prevents wash-trade rejections like AVGO tonight).
+  - reconciler.tick() runs every 10 minutes in read-only mode, comparing
+    Alpaca's actual state to Supabase and writing mismatches to the new
+    reconciliation_log table. One Telegram warning per day if anything
+    diverges.
+
 v2.6 fix: claude_decisions.executed was being set to True BEFORE
-execute_buy() ran. If the buy then failed (price feed disagreement,
-Alpaca rejection, exchange error), the decision row stayed marked as
-"executed=True" forever — so SHIB tonight showed as a successful buy
-in the daily summary even though the trade actually failed.
+execute_buy() ran. Now we write executed=False first, capture the row id,
+and only PATCH executed=True after a successful fill.
 
-Now the flow is:
-  1. Write the decision row first with executed=False, capture the id.
-  2. Call execute_buy() and check the result.
-  3. If success: PATCH the row to executed=True.
-  4. If failure: row stays at executed=False; the failure message is
-     stored in the `reason` field by appending "EXECUTION FAILED: ..."
-
-This means rich_summary.py can now trust executed=True as ground truth.
-
-v2.5 prior: run_daily_summary delegates to bot.rich_summary for a
-comprehensive Telegram report.
-
-v2.4 prior: stock entry prices were stored as USD-per-share (or $0
-placeholder that never got healed), causing the dashboard to show fake
--19% losses on AMD/AVGO/AAPL. Fix: read the actual fill from Alpaca after
-every buy, convert to AUD/share, store that.
+v2.4 fix: stock entry prices now read from actual Alpaca fill, stored
+as USD-per-share. AUD conversion happens at display time.
 """
 
 from __future__ import annotations
@@ -71,6 +68,19 @@ except Exception as _asx_err:
     log.warning(f"ASX module unavailable: {_asx_err}")
     asx_runner = None
     _ASX_AVAILABLE = False
+
+# v2.8: reconciliation, pending sells, scanner exclusions
+try:
+    from bot import reconciler
+    from bot import pending_sells
+    from bot import scanner_exclusions
+    _RECONCILIATION_AVAILABLE = True
+except Exception as _rec_err:
+    log.warning(f"v2.8 reconciliation modules unavailable: {_rec_err}")
+    reconciler = None
+    pending_sells = None
+    scanner_exclusions = None
+    _RECONCILIATION_AVAILABLE = False
 
 
 # ── Loop cadence ──────────────────────────────────────────────────────────
@@ -440,6 +450,43 @@ def execute_sell(
             if not v.allowed:
                 return False, f"safety blocked: {v.reason}"
 
+        # v2.8: route through pending_sells module so we don't close
+        # Supabase position until Alpaca actually confirms the fill
+        if _RECONCILIATION_AVAILABLE and pending_sells is not None:
+            ok, msg = pending_sells.submit_sell_for_stock(
+                symbol=symbol, position=position, db=db, alpaca=alpaca, log_obj=log,
+            )
+            if ok:
+                # Update consec losses + claude_decisions only if we got a
+                # confirmed fill at submission time. For pending closes,
+                # the resolver does this when the fill confirms.
+                if "closed @" in msg:
+                    pnl_pct = (current_usd - avg_entry_usd) / avg_entry_usd if avg_entry_usd > 0 else 0
+                    prior = int(db.get_flag("consec_losses") or 0)
+                    new_count = safety.update_consecutive_losses(prior, last_trade_was_loss=(pnl_pct < 0))
+                    db.set_flag("consec_losses", str(new_count))
+                    try:
+                        recent = db._get("claude_decisions", {
+                            "symbol": f"eq.{symbol}",
+                            "executed": "eq.true",
+                            "closed_at": "is.null",
+                            "order": "decided_at.desc",
+                            "limit": "1",
+                        })
+                        if recent:
+                            row_id = recent[0].get("id")
+                            if row_id:
+                                db._patch("claude_decisions", {
+                                    "closed_at": safety.now_utc_iso(),
+                                    "realized_pnl_pct": pnl_pct,
+                                    "exit_reason": reason[:200] if reason else "",
+                                }, "id", str(row_id))
+                    except Exception as e:
+                        log.debug(f"claude_decisions outcome update {symbol}: {e}")
+                return True, msg
+            return False, msg
+
+        # Fallback (old path) if v2.8 modules aren't loaded
         try:
             res = alpaca.sell(symbol)
         except Exception as e:
@@ -546,6 +593,10 @@ def manage_open_positions(db, alpaca, coinspot, tg: TelegramNotifier):
 
     for sym, pos in positions.items():
         try:
+            # v2.8: skip positions in pending_close — the resolver handles them
+            if (pos.get("status") or "").lower() == "pending_close":
+                continue
+
             bucket = (pos.get("bucket") or "").strip()
 
             if bucket == strategy.Bucket.SWING_STOCK and not stock_market_open:
@@ -613,8 +664,9 @@ def run_buy_cycle(
     """
     v2.6: writes claude_decisions rows with executed=False FIRST, captures
     the row id, then patches executed=True only after execute_buy returns
-    success. This way executed=True is ground truth for "trade actually
-    completed", not just "Claude said buy and safety filter passed."
+    success.
+    v2.8: filters stock candidates against open Alpaca orders before
+    running them through the brain, preventing wash-trade rejections.
     """
     log.info(f"buy cycle: {mode}")
     try:
@@ -628,6 +680,14 @@ def run_buy_cycle(
         else:
             crypto = scanner.scan_crypto()
             candidates = [c for c in crypto if c["bucket"] == mode]
+
+        # v2.8: filter out symbols with open Alpaca orders (prevents wash-trade
+        # rejections). Only stock candidates can hit this — crypto is unaffected.
+        if _RECONCILIATION_AVAILABLE and scanner_exclusions is not None:
+            stock_candidates = [c for c in candidates if c.get("bucket") == strategy.Bucket.SWING_STOCK]
+            non_stock_candidates = [c for c in candidates if c.get("bucket") != strategy.Bucket.SWING_STOCK]
+            stock_candidates = scanner_exclusions.filter_blocked_symbols(stock_candidates, log_obj=log)
+            candidates = stock_candidates + non_stock_candidates
 
         # Always log the scan event, even if no candidates — so the daily
         # summary can say "8 AM scan ran, 0 candidates found" instead of
@@ -1012,10 +1072,11 @@ def _call_claude_for_qa(client, context: str, question: str) -> str:
 
 def main():
     try:
-        log.info(f"RivX v2.7 starting — {'PAPER' if PAPER_MODE else 'LIVE'} mode")
+        log.info(f"RivX v2.8 starting — {'PAPER' if PAPER_MODE else 'LIVE'} mode")
         log.info(f"Strategy: $4K swing crypto / $2K momentum crypto / $3.5K stocks / $500 ops floor")
         log.info(f"Schedule: crypto 8 AM + 4 PM AEST | stocks 11 PM + 3 AM AEST (weekdays) | summaries 8 AM + 8 PM AEST")
         log.info(f"ASX analyser: {'enabled' if _ASX_AVAILABLE else 'DISABLED (import failed)'}")
+        log.info(f"Reconciliation: {'enabled (read-only)' if _RECONCILIATION_AVAILABLE else 'DISABLED (import failed)'}")
         sys.stdout.flush()
 
         db = SupabaseLogger()
@@ -1032,9 +1093,10 @@ def main():
         today = aest_now().date().isoformat()
         if db.get_flag("last_startup") != today:
             db.set_flag("last_startup", today)
-            asx_status = "ASX analyser online 🇦🇺" if _ASX_AVAILABLE else "ASX analyser DISABLED"
-            tg.send(f"🟢 RivX v2.7 online. {'PAPER' if PAPER_MODE else 'LIVE'} mode. "
-                    f"{asx_status}.")
+            asx_status = "ASX online 🇦🇺" if _ASX_AVAILABLE else "ASX DISABLED"
+            rec_status = "Reconciler online" if _RECONCILIATION_AVAILABLE else "Reconciler DISABLED"
+            tg.send(f"🟢 RivX v2.8 online. {'PAPER' if PAPER_MODE else 'LIVE'} mode. "
+                    f"{asx_status}. {rec_status}.")
 
         log.info("setup complete — entering main loop")
         sys.stdout.flush()
@@ -1075,17 +1137,29 @@ def main():
             run_manual_orders(db, alpaca, coinspot, tg)
             process_pending_questions(db)
 
-            # v2.7: ASX analyser tick. Self-contained — own schedule,
-            # own DB writes, never touches RivX portfolio. No-op when
-            # import failed.
+            # v2.7: ASX analyser tick
             if _ASX_AVAILABLE and asx_runner is not None:
                 try:
                     asx_runner.tick(db, tg, log)
                 except Exception as e:
                     log.warning(f"asx tick error (non-fatal): {e}")
 
+            # v2.8: reconciliation tick (read-only mode for now). Cheap when
+            # nothing's due — only does real work every 10 minutes.
+            if _RECONCILIATION_AVAILABLE and reconciler is not None:
+                try:
+                    reconciler.tick(db, alpaca, tg, log)
+                except Exception as e:
+                    log.warning(f"reconciler tick error (non-fatal): {e}")
+
             if now_ts - last_snapshot >= SNAPSHOT_INTERVAL_SEC:
                 run_snapshot(db, alpaca)
+                # v2.8: resolve any pending stock closes (Alpaca confirmations)
+                if _RECONCILIATION_AVAILABLE and pending_sells is not None:
+                    try:
+                        pending_sells.resolve_pending_closes(db, alpaca, log)
+                    except Exception as e:
+                        log.warning(f"resolve_pending_closes error (non-fatal): {e}")
                 manage_open_positions(db, alpaca, coinspot, tg)
                 last_snapshot = now_ts
 
