@@ -1,9 +1,16 @@
-# RIVX_VERSION: v2.3-supabase-logger-2026-04-26
+# RIVX_VERSION: v2.6-portfolio-value-fix-2026-04-30
 """
 RivX supabase_logger.py
 Stores all bot state between loop iterations.
 Tables: trades, positions, signal_weights, snapshots, approved_plan,
         crypto_checks, bot_flags
+
+v2.6 fix: get_portfolio_value() previously only counted open positions +
+cash. When all positions were closed, total_aud snapped back to $10,000
+even though closed positions had realised gains/losses. Now includes
+sum of realised P&L from `positions` table where status='closed'.
+This means: total = cash + open_market_value + realised_pnl_lifetime,
+which is what the dashboard math reconciles to.
 
 v2.2 changes from v1:
   - set_flag / get_flag now write to the dedicated `bot_flags` table
@@ -338,24 +345,34 @@ class SupabaseLogger:
 
     def get_portfolio_value(self) -> dict:
         """
-        Live portfolio total computed from current open positions + cash.
-        Falls back to snapshots only if positions table is unreadable.
+        Live portfolio total = cash + market value of open positions + lifetime
+        realised P&L from closed positions.
 
-        Returns total_aud (current), day_pnl (vs yesterday's snapshot if we
-        have one, else zero), total_pnl (vs $10K starting capital).
+        v2.6 fix: previously this only counted cash + market_value of open
+        positions. When everything was closed, total_aud snapped back to the
+        starting $10,000 even though realised gains/losses had moved the real
+        balance. Now sums realised P&L (aud_amount × pnl_pct) across all
+        closed positions and adds it in.
+
+        Cash modelling: starting capital minus capital deployed into currently-
+        OPEN positions. Closed positions don't tie up cash — their realised P&L
+        becomes part of cash automatically (via the realised_lifetime add).
         """
         STARTING = STARTING_CAPITAL_AUD
         try:
-            positions = self._get("positions", {"status": "eq.open"}) or []
+            open_positions = self._get("positions", {"status": "eq.open"}) or []
         except Exception:
-            positions = []
+            open_positions = []
 
-        # For each open position, prefer market_value computed from
-        # qty × current_price (truthful, includes FX move). Fall back to
-        # aud_amount × (1 + pnl_pct) if qty/current_price missing.
-        deployed_entry = 0.0   # capital that went into entries
+        try:
+            closed_positions = self._get("positions", {"status": "eq.closed"}) or []
+        except Exception:
+            closed_positions = []
+
+        # ── Open positions: market value + capital deployed ─────────────
+        deployed_entry = 0.0   # capital that went into entries (still locked up)
         market_value   = 0.0   # current value of those positions
-        for p in positions:
+        for p in open_positions:
             entry = float(p.get("aud_amount") or 0)
             deployed_entry += entry
 
@@ -366,19 +383,11 @@ class SupabaseLogger:
             mv = 0.0
             if qty > 0 and current_price > 0:
                 if market == "alpaca":
-                    # Stocks: current_price is USD, convert via stored
-                    # entry rate = aud_amount / (qty × usd_entry)
-                    usd_entry = float(p.get("entry_price") or 0)
-                    if usd_entry > 0 and entry > 0:
-                        # Implied AUD/USD at entry, then mark to current USD price
-                        # AUD value = qty × current_USD × (entry_AUD / (qty × usd_entry))
-                        # But we don't have today's FX cleanly server-side, so use
-                        # the simpler: entry × (1 + pnl_pct) which captures USD move
-                        # but not FX. Good enough for portfolio total in practice.
-                        pnl_pct = float(p.get("pnl_pct") or 0)
-                        mv = entry * (1 + pnl_pct)
-                    else:
-                        mv = entry
+                    # Stocks: current_price is USD. We don't have today's FX
+                    # cleanly server-side, so use entry × (1 + pnl_pct) which
+                    # captures the USD move via Alpaca's unrealized_plpc.
+                    pnl_pct = float(p.get("pnl_pct") or 0)
+                    mv = entry * (1 + pnl_pct) if entry > 0 else 0
                 else:
                     # Crypto: current_price is AUD-native
                     mv = qty * current_price
@@ -389,21 +398,47 @@ class SupabaseLogger:
 
             market_value += mv
 
-        cash = max(0, STARTING - deployed_entry)
+        # ── Closed positions: lifetime realised P&L ─────────────────────
+        # Filter out phantom cleanups (entry==exit AND pnl_pct==0). Those are
+        # rows we manually marked closed without a real sell — they shouldn't
+        # count toward realised gains.
+        realised_lifetime = 0.0
+        for c in closed_positions:
+            try:
+                aud = float(c.get("aud_amount") or 0)
+                pct = float(c.get("pnl_pct") or 0)
+                entry_p = float(c.get("entry_price") or 0)
+                exit_p  = float(c.get("exit_price") or 0)
+                # Phantom cleanup detection: entry == exit AND pnl == 0
+                if abs(entry_p - exit_p) < 0.0001 and abs(pct) < 0.0001:
+                    continue
+                realised_lifetime += aud * pct
+            except (TypeError, ValueError):
+                continue
+
+        # ── Cash & total ────────────────────────────────────────────────
+        # Cash = starting capital + lifetime realised gains − capital still
+        # locked up in open positions. When you close a winner, your cash
+        # goes up by the entry amount + realised gain. This formula captures that.
+        cash = STARTING + realised_lifetime - deployed_entry
+        cash = max(0, cash)
+
         total = market_value + cash
 
-        # Day P&L: compare to yesterday's snapshot if we have one
+        # ── Day P&L: vs prior snapshot (kept simple) ────────────────────
         try:
-            snaps = self._get("snapshots", {"order": "date.desc", "limit": "1"}) or []
+            snaps = self._get("snapshots", {"order": "created_at.desc",
+                                             "limit": "1"}) or []
             prev_total = float(snaps[0].get("total_aud", STARTING)) if snaps else STARTING
         except Exception:
             prev_total = STARTING
 
         return {
-            "total_aud":      round(total, 2),
-            "day_pnl":        round(total - prev_total, 2),
-            "total_pnl":      round(total - STARTING, 2),
-            "deployed_aud":   round(deployed_entry, 2),
-            "market_value":   round(market_value, 2),
-            "cash_aud":       round(cash, 2),
+            "total_aud":         round(total, 2),
+            "day_pnl":           round(total - prev_total, 2),
+            "total_pnl":         round(total - STARTING, 2),
+            "realised_lifetime": round(realised_lifetime, 2),
+            "deployed_aud":      round(deployed_entry, 2),
+            "market_value":      round(market_value, 2),
+            "cash_aud":          round(cash, 2),
         }
