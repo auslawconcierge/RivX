@@ -1,12 +1,18 @@
-# RIVX_VERSION: v2.4-entry-price-fix-2026-04-28
+# RIVX_VERSION: v2.5-rich-summary-2026-04-30
 """
 RivX bot.py — main loop orchestrator (v2 strategy).
 
-v2.4 fix: stock entry prices were stored as USD-per-share (or $0 placeholder
-that never got healed), causing the dashboard to show fake -19% losses on
-AMD/AVGO/AAPL. Fix: read the actual fill from Alpaca after every buy, convert
-to AUD/share, store that. _sync_alpaca_stocks now also passes avg_entry_price
-so existing bad rows self-heal on the next snapshot tick.
+v2.5 change: run_daily_summary now delegates to bot.rich_summary for a
+comprehensive Telegram report (closes today, open positions with stop/target
+distances, deployment by bucket, decisions, API spend, next scan time).
+The previous thin "Portfolio / Today / No trades" summary is removed.
+Everything else identical to v2.4.
+
+v2.4 prior: stock entry prices were stored as USD-per-share (or $0
+placeholder that never got healed), causing the dashboard to show fake -19%
+losses on AMD/AVGO/AAPL. Fix: read the actual fill from Alpaca after every
+buy, convert to AUD/share, store that. _sync_alpaca_stocks now also passes
+avg_entry_price so existing bad rows self-heal on the next snapshot tick.
 """
 
 from __future__ import annotations
@@ -753,43 +759,9 @@ def run_buy_cycle(
 # ── Daily summary push ───────────────────────────────────────────────────
 
 def run_daily_summary(db, tg: TelegramNotifier):
-    try:
-        portfolio = db.get_portfolio_value() or {}
-        recent    = db.get_recent_trades(limit=50) or []
-
-        total_aud = float(portfolio.get("total_aud") or strategy.STARTING_CAPITAL_AUD)
-        day_pnl   = float(portfolio.get("day_pnl") or 0.0)
-        total_pnl = float(portfolio.get("total_pnl") or 0.0)
-
-        midnight_aest = aest_now().replace(hour=0, minute=0, second=0, microsecond=0)
-        midnight_utc  = midnight_aest.astimezone(timezone.utc)
-        actions = []
-        for t in recent:
-            try:
-                ts_str = (t.get("created_at") or "").replace("Z", "+00:00")
-                ts = datetime.fromisoformat(ts_str)
-                if ts < midnight_utc:
-                    continue
-                a = (t.get("action") or "").upper()
-                sym = t.get("symbol", "?")
-                pct = float(t.get("pnl_pct") or 0) * 100 if a == "SELL" else 0.0
-                if a == "SELL":
-                    actions.append(f"SELL {sym} ({pct:+.2f}%)")
-                elif a == "BUY":
-                    actions.append(f"BUY {sym}")
-            except Exception:
-                pass
-
-        tg.send_daily_summary(
-            total_aud=total_aud,
-            day_pnl=day_pnl,
-            total_pnl=total_pnl,
-            actions=actions,
-        )
-        log.info(f"daily summary sent: {len(actions)} actions, total=${total_aud:.2f}")
-    except Exception as e:
-        log.error(f"daily summary failed: {e}")
-        log.debug(traceback.format_exc())
+    """v2.5: delegates to bot.rich_summary for a comprehensive report."""
+    from bot.rich_summary import run_rich_daily_summary
+    run_rich_daily_summary(db, tg, log)
 
 
 # ── Manual orders ────────────────────────────────────────────────────────
@@ -1020,7 +992,7 @@ def _call_claude_for_qa(client, context: str, question: str) -> str:
 
 def main():
     try:
-        log.info(f"RivX v2.4 starting — {'PAPER' if PAPER_MODE else 'LIVE'} mode")
+        log.info(f"RivX v2.5 starting — {'PAPER' if PAPER_MODE else 'LIVE'} mode")
         log.info(f"Strategy: $4K swing crypto / $2K momentum crypto / $3.5K stocks / $500 ops floor")
         log.info(f"Schedule: crypto 8 AM + 4 PM AEST | stocks 11 PM + 3 AM AEST (weekdays) | summaries 8 AM + 8 PM AEST")
         sys.stdout.flush()
@@ -1039,8 +1011,8 @@ def main():
         today = aest_now().date().isoformat()
         if db.get_flag("last_startup") != today:
             db.set_flag("last_startup", today)
-            tg.send(f"🟢 RivX v2.4 online. {'PAPER' if PAPER_MODE else 'LIVE'} mode. "
-                    f"Stock entry-price fix deployed.")
+            tg.send(f"🟢 RivX v2.5 online. {'PAPER' if PAPER_MODE else 'LIVE'} mode. "
+                    f"Rich daily summaries enabled.")
 
         log.info("setup complete — entering main loop")
         sys.stdout.flush()
