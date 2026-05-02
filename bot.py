@@ -1,6 +1,21 @@
-# RIVX_VERSION: v2.8.2-token-usage-2026-05-02
+# RIVX_VERSION: v2.9.0-cadence-2026-05-03
 """
 RivX bot.py — main loop orchestrator (v2 strategy).
+
+v2.9.0 changes from v2.8.2:
+  - Crypto scan cadence overhaul. Crypto markets are 24/7 but the bot
+    was only scanning during Australian daytime, missing breakouts that
+    happen during US trading hours.
+      * Momentum crypto: was 2x/day (8 AM + 4 PM AEST), now every 2 hours
+        24/7 (12 scans/day). Catches breakouts that develop overnight
+        Brisbane-time when US markets are most active.
+      * Swing crypto: was 1x/day (8 AM AEST), now 2x/day (8 AM + 8 PM
+        AEST). Catches pullbacks that develop during US hours.
+  - Daily buy cap raised from 6 to 10 in safety.py to match the new
+    momentum cadence — otherwise on a strong-trend day the cap would
+    block valid swing/stock buys later in the day.
+  - Stock scan cadence unchanged (11 PM + 3 AM AEST weekdays).
+  - Cost impact at $0.05/scan: ~$0.80/day total, well under the $2 cap.
 
 v2.8.2 changes from v2.8.1:
   - Cost tab fix: every Claude API call (buy decisions + Q&A) now writes
@@ -90,11 +105,19 @@ except Exception as _rec_err:
 
 
 # ── Loop cadence ──────────────────────────────────────────────────────────
+# v2.9.0: crypto markets are 24/7. Scan times reflect that.
+#   - Swing crypto: 2x/day (was 1x). Catches pullbacks during US hours.
+#   - Momentum crypto: 12x/day every 2 hours (was 2x). Catches breakouts
+#     that fire during US trading hours when Brisbane is asleep.
+#   - Stock cadence unchanged — US market hours are already covered by
+#     11 PM + 3 AM AEST scans.
 
 MAIN_TICK_SECONDS         = 30
 SNAPSHOT_INTERVAL_SEC     = 300
-SWING_CRYPTO_TIMES_AEST   = ["08:00"]
-MOMENTUM_TIMES_AEST       = ["08:00", "16:00"]
+SWING_CRYPTO_TIMES_AEST   = ["08:00", "20:00"]
+MOMENTUM_TIMES_AEST       = ["00:00", "02:00", "04:00", "06:00",
+                             "08:00", "10:00", "12:00", "14:00",
+                             "16:00", "18:00", "20:00", "22:00"]
 SWING_STOCK_TIMES_AEST    = ["23:00", "03:00"]
 DAILY_SUMMARY_TIMES_AEST  = ["08:00", "20:00"]
 HEARTBEAT_FLAG            = "last_heartbeat"
@@ -937,10 +960,12 @@ Auto-exits per bucket:
 - Momentum: -10% stop / +30% target (full exit) / 7d hard exit
 - Swing stocks: -5% stop / +12% target (take half) / 4% trail / 30d review
 
-Schedule:
-- Crypto scans 8 AM + 4 PM AEST
-- Stock scans 11 PM + 3 AM AEST (US weekdays)
+Schedule (v2.9):
+- Swing crypto scans: 8 AM + 8 PM AEST (twice daily)
+- Momentum crypto scans: every 2 hours, 24/7 (12 scans/day) — catches breakouts during US trading hours
+- Stock scans: 11 PM + 3 AM AEST (US weekdays)
 - Snapshots every 5 min, heartbeat every 30 sec
+- Daily buy cap: 10 buys per UTC day
 
 When answering:
 - Be direct, conversational, no fluff
@@ -1119,11 +1144,12 @@ def _call_claude_for_qa(client, context: str, question: str) -> tuple[str, int, 
 
 def main():
     try:
-        log.info(f"RivX v2.8.2 starting — {'PAPER' if PAPER_MODE else 'LIVE'} mode")
+        log.info(f"RivX v2.9.0 starting — {'PAPER' if PAPER_MODE else 'LIVE'} mode")
         log.info(f"Strategy: $4K swing crypto / $2K momentum crypto / $3.5K stocks / $500 ops floor")
-        log.info(f"Schedule: crypto 8 AM + 4 PM AEST | stocks 11 PM + 3 AM AEST (weekdays) | summaries 8 AM + 8 PM AEST")
+        log.info(f"Schedule: swing crypto 8 AM + 8 PM AEST | momentum crypto every 2 hrs 24/7 | stocks 11 PM + 3 AM AEST (weekdays)")
         log.info("ASX analyser: removed in v2.8.1")
         log.info("Token usage tracking: enabled (v2.8.2)")
+        log.info("Cadence v2.9.0: momentum every 2 hrs (12/day), swing crypto twice daily, daily buy cap 10")
         log.info(f"Reconciliation: {'enabled (read-only)' if _RECONCILIATION_AVAILABLE else 'DISABLED (import failed)'}")
         sys.stdout.flush()
 
@@ -1142,8 +1168,8 @@ def main():
         if db.get_flag("last_startup") != today:
             db.set_flag("last_startup", today)
             rec_status = "Reconciler online" if _RECONCILIATION_AVAILABLE else "Reconciler DISABLED"
-            tg.send(f"🟢 RivX v2.8.2 online. {'PAPER' if PAPER_MODE else 'LIVE'} mode. "
-                    f"{rec_status}.")
+            tg.send(f"🟢 RivX v2.9.0 online. {'PAPER' if PAPER_MODE else 'LIVE'} mode. "
+                    f"{rec_status}. Momentum scans now every 2 hrs, 24/7.")
 
         log.info("setup complete — entering main loop")
         sys.stdout.flush()
@@ -1166,7 +1192,8 @@ def main():
         raise
 
     last_snapshot = 0.0
-    last_swing_crypto_run = db.get_flag("last_swing_crypto_run")
+    # v2.9.0: swing crypto now has multiple slots, track per-time like momentum/stock
+    last_swing_crypto_runs = {t: db.get_flag(f"last_swing_crypto_{t}") for t in SWING_CRYPTO_TIMES_AEST}
     last_momentum_runs = {t: db.get_flag(f"last_momentum_{t}") for t in MOMENTUM_TIMES_AEST}
     last_stock_runs = {t: db.get_flag(f"last_stock_{t}") for t in SWING_STOCK_TIMES_AEST}
     last_summary_runs = {t: db.get_flag(f"last_summary_{t}") for t in DAILY_SUMMARY_TIMES_AEST}
@@ -1213,13 +1240,15 @@ def main():
 
             kill = (db.get_flag("kill_switch") or "").lower() in ("on", "1", "true")
             if not kill:
+                # v2.9.0: swing crypto now twice daily (8 AM + 8 PM AEST)
                 for t in SWING_CRYPTO_TIMES_AEST:
-                    if at_or_past_time_today(t, last_swing_crypto_run):
+                    if at_or_past_time_today(t, last_swing_crypto_runs.get(t)):
                         run_buy_cycle(mode=strategy.Bucket.SWING_CRYPTO,
                                       db=db, alpaca=alpaca, coinspot=coinspot, tg=tg)
-                        last_swing_crypto_run = safety.now_utc_iso()
-                        db.set_flag("last_swing_crypto_run", last_swing_crypto_run)
+                        last_swing_crypto_runs[t] = safety.now_utc_iso()
+                        db.set_flag(f"last_swing_crypto_{t}", last_swing_crypto_runs[t])
 
+                # v2.9.0: momentum crypto every 2 hours, 24/7
                 for t in MOMENTUM_TIMES_AEST:
                     if at_or_past_time_today(t, last_momentum_runs.get(t)):
                         run_buy_cycle(mode=strategy.Bucket.MOMENTUM_CRYPTO,
