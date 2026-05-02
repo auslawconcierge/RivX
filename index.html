@@ -1,18 +1,21 @@
 <!DOCTYPE html>
-<!-- RIVX_VERSION: v2.5-dashboard-math-fix-2026-04-29 -->
+<!-- RIVX_VERSION: v2.6-dashboard-asx-removed-pw-hashed-2026-05-02 -->
 <!--
-  v2.5 changes from v2.3:
-    1. Portfolio + P&L cards now use gross mark-to-market (cash + market_value),
-       matching Telegram and the bot's snapshot. Hypothetical sell fees no
-       longer subtracted from the headline. They show as small grey text
-       underneath ("if liquidated now: $X after $Y in fees").
-    2. Position cards lead with the P&L delta (big green/red), worth-now
-       moves to a smaller second line. The dashboard now answers "am I
-       winning or losing" at a glance instead of forcing the user to do
-       mental subtraction.
-    3. Bucket headers show net delta-from-deployed in the same green/red.
-    4. Strategy bucket constants in the BUCKETS object are unchanged from
-       v2.3 — they match strategy.py.
+  v2.6 changes from v2.5:
+    1. RivX-ASX tab fully removed. Bot side stopped writing asx_signals
+       in v2.8.1 because Yahoo Finance was blocking ASX requests from
+       Render's Singapore IPs. Tab + all ASX-related JS/HTML stripped.
+       Will revisit if/when we wire up a paid data provider.
+    2. Login password is no longer stored in plaintext in this file. It is
+       now stored as a SHA-256 hash, computed via the browser's Web Crypto
+       API at login time. Viewing the page source no longer reveals the
+       password (although the hash is still discoverable, brute-forcing a
+       strong password against a hash is impractical). For belt-and-braces,
+       the recommendation is to also enable Vercel Pro's "Password
+       Protection" in the project settings, which enforces auth server-side
+       before this file is ever served.
+    3. Login persistence moved from sessionStorage to localStorage so the
+       user stays logged in across browser closes on the same device.
 -->
 <html lang="en">
 <head>
@@ -117,7 +120,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .pos-group-count{font-weight:400;color:#9aa0a6;font-size:11px;margin-left:4px;}
 .pos-group-sub{font-size:10px;color:#9aa0a6;margin-top:2px;letter-spacing:0.02em;}
 .pos-group-totals{text-align:right;}
-/* bucket header now leads with the delta, not the value */
 .pos-group-pnl-big{font-size:18px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-0.5px;line-height:1.1;}
 .pos-group-pnl-big.up{color:#1a7340;}
 .pos-group-pnl-big.down{color:#c0392b;}
@@ -138,7 +140,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .pos-pct-badge.down{background:#fdecea;color:#c0392b;}
 .pos-pct-badge.flat{background:#f5f6f8;color:#6b7280;}
 
-/* THE BIG GREEN/RED DELTA — this is now the headline of every position card */
 .pos-delta-big{font-size:28px;font-weight:700;letter-spacing:-1px;line-height:1.05;font-variant-numeric:tabular-nums;margin-bottom:2px;}
 .pos-delta-big.up{color:#1a7340;}
 .pos-delta-big.down{color:#c0392b;}
@@ -374,7 +375,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       <button class="nav-btn" onclick="showPage('positions',this)">Positions</button>
       <button class="nav-btn" onclick="showPage('intelligence',this)">Intelligence</button>
       <button class="nav-btn" onclick="showPage('cost',this)">Cost</button>
-      <button class="nav-btn" onclick="showPage('asx',this)" title="Australian equities watchlist">🇦🇺 RivX-ASX</button>
     </div>
     <div class="topbar-right">
       <span class="topbar-time" id="last-updated">Loading...</span>
@@ -702,72 +702,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       </div>
     </div>
 
-    <!-- RivX-ASX -->
-    <div id="page-asx" class="page">
-      <div class="story-card">
-        <div class="story-title">🇦🇺 RivX-ASX · Australian equities watchlist</div>
-        <div class="story-text" style="font-size:13px;color:#555;">
-          Read-only analysis of ASX 200 stocks. Pre-open scan 09:30, midday 12:30, close 16:30 AEST.
-          High-conviction setups alert you immediately during market hours. Trade these in CommSec —
-          RivX never spends real or paper funds on these signals.
-        </div>
-      </div>
-
-      <div class="stats" id="asx-stats">
-        <div class="stat"><div class="stat-label">Today's signals</div><div class="stat-value" id="asx-stat-today">—</div><div class="stat-sub" id="asx-stat-today-sub">pre-open + intraday</div></div>
-        <div class="stat"><div class="stat-label">Active watchlist</div><div class="stat-value" id="asx-stat-watch">—</div><div class="stat-sub">currently qualifying</div></div>
-        <div class="stat"><div class="stat-label">30-day hit rate</div><div class="stat-value" id="asx-stat-hit">—</div><div class="stat-sub" id="asx-stat-hit-sub">target / stop / open</div></div>
-        <div class="stat"><div class="stat-label">High-conviction</div><div class="stat-value" id="asx-stat-hc">—</div><div class="stat-sub">today</div></div>
-      </div>
-
-      <div class="card">
-        <div class="card-row" style="margin-bottom:8px;">
-          <div class="card-title" style="margin-bottom:0;">Today's signals</div>
-          <div style="display:flex;gap:6px;">
-            <button class="period-btn active" data-asxfilter="all" onclick="setAsxFilter('all')">All</button>
-            <button class="period-btn" data-asxfilter="pullback" onclick="setAsxFilter('pullback')">Pullback</button>
-            <button class="period-btn" data-asxfilter="breakout" onclick="setAsxFilter('breakout')">Breakout</button>
-            <button class="period-btn" data-asxfilter="oversold_bounce" onclick="setAsxFilter('oversold_bounce')">Oversold</button>
-          </div>
-        </div>
-        <div id="asx-today-list"><div class="empty">Loading...</div></div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">Last 30 days · Performance</div>
-        <table class="history-table" id="asx-history-table">
-          <thead>
-            <tr>
-              <th>Symbol</th>
-              <th>Setup</th>
-              <th class="num">Conf</th>
-              <th class="num">Entry</th>
-              <th class="num">Stop</th>
-              <th class="num">Target</th>
-              <th>Outcome</th>
-              <th class="num">Return</th>
-              <th>Fired</th>
-            </tr>
-          </thead>
-          <tbody id="asx-history-body">
-            <tr><td colspan="9" class="muted" style="text-align:center;padding:20px;">Loading...</td></tr>
-          </tbody>
-        </table>
-      </div>
-
-      <div class="card">
-        <div class="card-title">Setup types — what each one means</div>
-        <div style="font-size:12px;color:#555;line-height:1.7;">
-          <strong>Pullback</strong> — Quality stock in an uptrend that's dipped 3-8% from its recent high. Buy the dip with a tight stop, target the prior high. Highest hit rate of the three.<br>
-          <strong>Breakout</strong> — Stock breaks above its 20-day high on volume 2x+ the average and holds above the breakout level. Aussie market has thin volume, so we filter aggressively to avoid fake breakouts.<br>
-          <strong>Oversold bounce</strong> — RSI under 30 with a bullish reversal candle, but only if the stock is still above its 200-day MA (we're not catching falling knives in clear downtrends). Speculative — confidence capped at 70%.<br><br>
-          Levels are guidance, not advice. R:R shown is reward divided by risk based on suggested stop and target.
-        </div>
-      </div>
-    </div>
-
   </div>
-  <div class="footer">NYSE · NASDAQ · CRYPTO · ASX · AUD · BRISBANE · v2.7</div>
+  <div class="footer">NYSE · NASDAQ · CRYPTO · AUD · BRISBANE · v2.6</div>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
@@ -775,7 +711,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 // ─── Config ────────────────────────────────────────────────────────────────
 const SUPABASE_URL = 'https://fsbnhrfipzmulbypheyl.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_k12zd-TEPlpGJDC5DkxsUA_w8-fN3p5';
-const PASSWORD = 'RivX@Boat2026!';
+
+// v2.6: password is no longer stored in plaintext. The line below is the
+// SHA-256 hash of the actual passphrase. The login() function hashes the
+// user's input and compares it to this. Source-view shows the hash, not
+// the password. (Belt-and-braces: also enable Vercel Pro's Password
+// Protection on this project so the file is never served unauthenticated.)
+const PASSWORD_HASH = 'a2827833524a68b705e47e62a405243d295f5142ca297a14974ffaf86d347970';
+
 const FX_URL = 'https://api.frankfurter.app/latest?from=USD&to=AUD';
 const PAPRIKA_URL = 'https://api.coinpaprika.com/v1/tickers?limit=300';
 const DAILY_BUDGET_USD = 2.00;
@@ -868,13 +811,43 @@ let allSnapshots=[], allTrades=[], allPositions=[], allClosed=[],
     allChecks=[], allDecisions=[], allQuestions=[], tokenUsage=[],
     botFlags={}, livePrices={};
 
-function login(){
-  if(document.getElementById('pw').value===PASSWORD){
-    sessionStorage.setItem('rivx_auth','1');
-    showDash();
-  } else document.getElementById('login-error').style.display='block';
+// ─── Auth ──────────────────────────────────────────────────────────────────
+// v2.6: hash the user's input and compare to PASSWORD_HASH. Login persists
+// in localStorage so the user stays signed in across browser closes on the
+// same device.
+
+async function sha256Hex(str){
+  const buf = new TextEncoder().encode(str);
+  const digest = await crypto.subtle.digest('SHA-256', buf);
+  return Array.from(new Uint8Array(digest))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
 }
-function logout(){ sessionStorage.removeItem('rivx_auth'); location.reload(); }
+
+async function login(){
+  const input = document.getElementById('pw').value;
+  const errorEl = document.getElementById('login-error');
+  errorEl.style.display = 'none';
+  try {
+    const hash = await sha256Hex(input);
+    if(hash === PASSWORD_HASH){
+      localStorage.setItem('rivx_auth', '1');
+      showDash();
+    } else {
+      errorEl.style.display = 'block';
+    }
+  } catch(e){
+    errorEl.textContent = 'Login error: ' + (e.message || e);
+    errorEl.style.display = 'block';
+  }
+}
+
+function logout(){
+  localStorage.removeItem('rivx_auth');
+  // Also clear legacy sessionStorage flag in case it's still around
+  try { sessionStorage.removeItem('rivx_auth'); } catch(e){}
+  location.reload();
+}
 
 let killSwitchState = 'off';
 
@@ -953,7 +926,9 @@ function showDash(){
   loadAll();
   setInterval(loadAll, 60000);
 }
-if(sessionStorage.getItem('rivx_auth')) showDash();
+// v2.6: localStorage persists across browser closes (was sessionStorage).
+// Also honour any legacy sessionStorage flag from older sessions.
+if(localStorage.getItem('rivx_auth') || sessionStorage.getItem('rivx_auth')) showDash();
 
 function showPage(name, btn){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
@@ -962,178 +937,9 @@ function showPage(name, btn){
   if(btn) btn.classList.add('active');
   if(name==='cost') renderCostChart();
   if(name==='strategy') renderStrategyPage();
-  if(name==='asx') loadAsxPage();
 }
 
-// ─── RivX-ASX page ────────────────────────────────────────────────────────
-let _asxFilter = 'all';
-let _asxToday = [];
-let _asxHistory = [];
-
-function setAsxFilter(f){
-  _asxFilter = f;
-  document.querySelectorAll('[data-asxfilter]').forEach(b=>{
-    b.classList.toggle('active', b.getAttribute('data-asxfilter')===f);
-  });
-  renderAsxToday();
-}
-
-async function loadAsxPage(){
-  // Get today's midnight in UTC for filtering "fired today"
-  const now = new Date();
-  const aestOffset = 10 * 60; // minutes
-  const localOffset = -now.getTimezoneOffset();
-  const aestNow = new Date(now.getTime() + (aestOffset - localOffset) * 60000);
-  const aestMidnight = new Date(aestNow);
-  aestMidnight.setHours(0,0,0,0);
-  const utcMidnight = new Date(aestMidnight.getTime() - aestOffset * 60000).toISOString();
-
-  // Pull today's signals
-  const today = await sb('asx_signals', {
-    'fired_at': 'gte.'+utcMidnight,
-    order: 'fired_at.desc',
-    limit: '200',
-  });
-  _asxToday = Array.isArray(today) ? today : [];
-
-  // Pull last 30 days for history table
-  const cutoff = new Date(now.getTime() - 30*24*60*60*1000).toISOString();
-  const hist = await sb('asx_signals', {
-    'fired_at': 'gte.'+cutoff,
-    order: 'fired_at.desc',
-    limit: '500',
-  });
-  _asxHistory = Array.isArray(hist) ? hist : [];
-
-  renderAsxStats();
-  renderAsxToday();
-  renderAsxHistory();
-}
-
-function renderAsxStats(){
-  document.getElementById('asx-stat-today').textContent = _asxToday.length;
-  const hc = _asxToday.filter(s=>s.high_conviction).length;
-  document.getElementById('asx-stat-hc').textContent = hc;
-
-  const watch = _asxToday.filter(s=>!s.outcome || s.outcome==='pending').length;
-  document.getElementById('asx-stat-watch').textContent = watch;
-
-  const resolved = _asxHistory.filter(s=>s.outcome==='hit_target' || s.outcome==='hit_stop');
-  if(resolved.length===0){
-    document.getElementById('asx-stat-hit').textContent = '—';
-    document.getElementById('asx-stat-hit-sub').textContent = 'no closed signals yet';
-  } else {
-    const hits = resolved.filter(s=>s.outcome==='hit_target').length;
-    const pct = (hits/resolved.length)*100;
-    document.getElementById('asx-stat-hit').textContent = pct.toFixed(0)+'%';
-    document.getElementById('asx-stat-hit-sub').textContent = hits+' of '+resolved.length+' hit target';
-  }
-}
-
-function renderAsxToday(){
-  const el = document.getElementById('asx-today-list');
-  let signals = _asxToday;
-  if(_asxFilter !== 'all'){
-    signals = signals.filter(s=>s.setup_type === _asxFilter);
-  }
-  if(signals.length === 0){
-    el.innerHTML = '<div class="empty">No signals'+(_asxFilter==='all'?' yet today.':' for this setup type today.')+'</div>';
-    return;
-  }
-  // Sort by confidence desc
-  signals.sort((a,b)=>(b.confidence||0)-(a.confidence||0));
-  let html = '';
-  for(const s of signals){
-    const setupColor = {
-      'pullback': '#1a7340',
-      'breakout': '#1e3a8a',
-      'oversold_bounce': '#92400e',
-    }[s.setup_type] || '#6b7280';
-    const setupLabel = {
-      'pullback': 'PULLBACK',
-      'breakout': 'BREAKOUT',
-      'oversold_bounce': 'OVERSOLD',
-    }[s.setup_type] || s.setup_type.toUpperCase();
-    const conf = Number(s.confidence || 0) * 100;
-    const price = Number(s.current_price || 0);
-    const stop = Number(s.stop_price || 0);
-    const target = Number(s.target_price || 0);
-    const el_low = Number(s.entry_zone_low || 0);
-    const el_high = Number(s.entry_zone_high || 0);
-    const risk = price - stop;
-    const reward = target - price;
-    const rr = risk > 0 ? (reward / risk) : 0;
-    const fired = s.fired_at ? new Date(s.fired_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '';
-    const outcome = s.outcome || 'pending';
-    const outcomeColor = {
-      'hit_target': '#1a7340',
-      'hit_stop': '#c0392b',
-      'pending': '#9aa0a6',
-    }[outcome] || '#9aa0a6';
-    const outcomeIcon = {
-      'hit_target': '✅',
-      'hit_stop': '❌',
-      'expired': '⏱️',
-      'pending': '⏳',
-    }[outcome] || '⏳';
-    const hcBadge = s.high_conviction ? '<span style="background:#fef3c7;color:#92400e;font-size:9px;padding:2px 6px;border-radius:3px;font-weight:700;margin-left:6px;">⚡ HIGH-CONV</span>' : '';
-
-    html += `
-      <div style="border:1px solid #e8eaed;border-radius:8px;padding:14px;margin-bottom:10px;background:#fff;">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
-          <div>
-            <span style="font-size:18px;font-weight:700;color:#0d1f38;">${s.symbol}</span>
-            <span style="font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;margin-left:8px;background:${setupColor}22;color:${setupColor};">${setupLabel}</span>
-            ${hcBadge}
-          </div>
-          <div style="text-align:right;">
-            <div style="font-size:16px;font-weight:600;color:#1a1a2e;">$${price.toFixed(2)}</div>
-            <div style="font-size:10px;color:#9aa0a6;">fired ${fired}</div>
-          </div>
-        </div>
-        <div style="font-size:12px;color:#555;line-height:1.5;margin-bottom:8px;">${(s.reasoning||'').replace(/</g,'&lt;')}</div>
-        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;font-size:11px;">
-          <div><div style="color:#9aa0a6;font-size:9px;text-transform:uppercase;letter-spacing:0.05em;">Confidence</div><div style="font-weight:600;color:#1a1a2e;">${conf.toFixed(0)}%</div></div>
-          <div><div style="color:#9aa0a6;font-size:9px;text-transform:uppercase;letter-spacing:0.05em;">Entry zone</div><div style="font-weight:600;color:#1a1a2e;">$${el_low.toFixed(2)}–$${el_high.toFixed(2)}</div></div>
-          <div><div style="color:#9aa0a6;font-size:9px;text-transform:uppercase;letter-spacing:0.05em;">Stop</div><div style="font-weight:600;color:#c0392b;">$${stop.toFixed(2)}</div></div>
-          <div><div style="color:#9aa0a6;font-size:9px;text-transform:uppercase;letter-spacing:0.05em;">Target · R:R</div><div style="font-weight:600;color:#1a7340;">$${target.toFixed(2)} · ${rr.toFixed(1)}</div></div>
-        </div>
-        <div style="margin-top:10px;font-size:11px;color:${outcomeColor};">${outcomeIcon} <strong>${outcome.replace('_',' ')}</strong>${s.outcome_price ? ' @ $'+Number(s.outcome_price).toFixed(2) : ''}${s.return_pct != null ? ' · '+(Number(s.return_pct)*100).toFixed(2)+'%' : ''}</div>
-      </div>`;
-  }
-  el.innerHTML = html;
-}
-
-function renderAsxHistory(){
-  const tbody = document.getElementById('asx-history-body');
-  if(_asxHistory.length === 0){
-    tbody.innerHTML = '<tr><td colspan="9" class="muted" style="text-align:center;padding:20px;">No signals in the last 30 days yet.</td></tr>';
-    return;
-  }
-  let html = '';
-  for(const s of _asxHistory.slice(0, 100)){
-    const conf = Number(s.confidence || 0) * 100;
-    const fired = s.fired_at ? new Date(s.fired_at).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
-    const outcome = s.outcome || 'pending';
-    const outcomeClass = outcome === 'hit_target' ? 'up' : (outcome === 'hit_stop' ? 'down' : 'muted');
-    const ret = s.return_pct != null ? (Number(s.return_pct)*100) : null;
-    const retStr = ret != null ? (ret>=0?'+':'')+ret.toFixed(2)+'%' : '—';
-    const retClass = ret == null ? 'muted' : (ret >= 0 ? 'up' : 'down');
-    html += `<tr>
-      <td class="sym-cell">${s.symbol}</td>
-      <td>${(s.setup_type||'').replace('_',' ')}</td>
-      <td class="num">${conf.toFixed(0)}%</td>
-      <td class="num">$${Number(s.current_price||0).toFixed(2)}</td>
-      <td class="num">$${Number(s.stop_price||0).toFixed(2)}</td>
-      <td class="num">$${Number(s.target_price||0).toFixed(2)}</td>
-      <td class="${outcomeClass}">${outcome.replace('_',' ')}</td>
-      <td class="num ${retClass}">${retStr}</td>
-      <td class="muted">${fired}</td>
-    </tr>`;
-  }
-  tbody.innerHTML = html;
-}
-
+// ─── Supabase helper ──────────────────────────────────────────────────────
 async function sb(table, params, method='GET', body=null){
   try {
     const url = new URL(SUPABASE_URL + '/rest/v1/' + table);
@@ -1441,16 +1247,6 @@ function cashAud(){
   return Math.max(0, STARTING_AUD - totalDeployed() + closedGrossPaperAud());
 }
 
-// ─── THE SINGLE SOURCE OF TRUTH FOR PORTFOLIO VALUE ─────────────────────────
-// This must agree with Telegram's daily summary AND with snapshots written by
-// bot/supabase_logger.py:get_portfolio_value(). All three compute the same
-// thing the same way.
-//
-//   portfolio = cash + sum(market_value of every open position)
-//             = cash + sum(qty × current_price)
-//
-// No subtraction of hypothetical sell fees. Fees are a separate informational
-// number, shown smaller, labelled "if liquidated now".
 function portfolioTotalAud(){
   let mv = 0;
   for(const p of allPositions) mv += marketValueAud(p);
@@ -1563,10 +1359,6 @@ function renderRiskStatus(){
   }
 }
 
-// ─── Stats — FIXED. Uses portfolioTotalAud() / portfolioPnlAud() so the
-// headline numbers match Telegram and the snapshot card. Hypothetical sell
-// fees moved into the sub-line as informational text.
-// ───────────────────────────────────────────────────────────────────────────
 function renderStats(){
   let openEstFees = 0, todayPnlAud = 0;
 
@@ -1589,19 +1381,16 @@ function renderStats(){
   const closedFees = closedFeesEstAud();
   const liquidationValue = total - openEstFees - closedFees;
 
-  // Portfolio card — gross mark-to-market, matches Telegram
   document.getElementById('s-port').textContent = fmtAud(total);
   document.getElementById('s-port-sub').textContent =
     `${allPositions.length} open · if liquidated ${fmtAud(liquidationValue)} after fees`;
 
-  // P&L card — vs $10K starting capital, gross
   const pnlEl = document.getElementById('s-pnl');
   pnlEl.textContent = fmtSignedAud(pnl);
   pnlEl.className = 'stat-value ' + (pnl>0.01?'up':pnl<-0.01?'down':'');
   const todayStr = Math.abs(todayPnlAud) > 0.005 ? `${fmtSignedAud(todayPnlAud)} today · ` : '';
   document.getElementById('s-pnl-sub').textContent = `${todayStr}${fmtSignedPct(portfolioPnlPct())} since start`;
 
-  // Realised
   const realisedEl = document.getElementById('s-realised');
   const realisedSub = document.getElementById('s-realised-sub');
   if(allClosed.length === 0){
@@ -1631,7 +1420,6 @@ function renderStats(){
   document.getElementById('s-cost').textContent = '$' + Number(todayCost).toFixed(2);
 }
 
-// ─── Allocation card ───────────────────────────────────────────────────────
 function renderAllocation(){
   const agg = bucketAggregates();
   const sw = agg.swing_crypto.value;
@@ -1657,7 +1445,6 @@ function renderAllocation(){
   document.getElementById('bar-st').style.width   = (st/total*100)+'%';
 }
 
-// ─── Positions — REDESIGNED to lead with the P&L delta ─────────────────────
 function renderPositions(){
   const el = document.getElementById('positions-grid');
   if(!allPositions.length){
@@ -1689,9 +1476,6 @@ function renderPositions(){
     const bk        = bucketOf(p);
     const bMeta     = BUCKETS[bk] || {label:'?', cssKey:'', short:'?'};
 
-    // The headline class is driven by the GROSS P&L sign — that's what users
-    // actually want to see ("am I winning or losing right now?"). Net-of-fees
-    // becomes the secondary detail.
     const cls = grossAud > 0.01 ? 'up' : grossAud < -0.01 ? 'down' : 'flat';
     const active = selectedHolding === p.symbol ? 'active' : '';
 
@@ -1710,11 +1494,8 @@ function renderPositions(){
         </span>
         <span class="pos-pct-badge ${cls}">${fmtSignedPct(grossPct)}</span>
       </div>
-
-      <!-- HERO: the big green/red signed-dollar delta -->
       <div class="pos-delta-big ${cls}">${fmtSignedAud(grossAud)}</div>
       <div class="pos-delta-sub">${fmtAud(valAud)} now · from $${entryCost.toFixed(0)} deployed</div>
-
       <div class="pos-divider"></div>
       <div class="pos-row"><span class="pos-row-k">If sold now (after fees)</span><span class="pos-row-v ${netAud>0.01?'up':netAud<-0.01?'down':''}">${fmtSignedAud(netAud)} (${fmtSignedPct(netPctVal)})</span></div>
       <div class="pos-row"><span class="pos-row-k">Est. round-trip fees</span><span class="pos-row-v">−${fmtAud(fees.total)}</span></div>
@@ -1722,7 +1503,6 @@ function renderPositions(){
     </div>`;
   };
 
-  // Group by bucket; bucket header now shows the delta as the headline
   const html = BUCKET_ORDER.map(k => {
     const items = agg[k].positions;
     if(!items.length) return '';
@@ -1762,7 +1542,6 @@ function renderPositions(){
   }
 }
 
-// ─── Realised P&L period filtering ─────────────────────────────────────────
 function periodCutoffMs(period){
   const now = Date.now();
   if(period === 'day'){
@@ -2015,8 +1794,6 @@ async function selectHolding(sym){
   document.getElementById('holding-sub').textContent =
     `${bMeta.label} · ${marketLabel} · bought ${fmtRelativeFromIso(pos.created_at)}`;
 
-  // Detail header lead with the BIG signed P&L delta, same convention as
-  // the cards. Value goes underneath.
   const cls = grossAud > 0.01 ? 'up' : grossAud < -0.01 ? 'down' : 'flat';
   const valueColor = cls === 'up' ? '#1a7340' : cls === 'down' ? '#c0392b' : '#1a1a2e';
 
