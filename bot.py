@@ -1,6 +1,13 @@
-# RIVX_VERSION: v2.8.1-asx-removed-2026-05-02
+# RIVX_VERSION: v2.8.2-token-usage-2026-05-02
 """
 RivX bot.py — main loop orchestrator (v2 strategy).
+
+v2.8.2 changes from v2.8.1:
+  - Cost tab fix: every Claude API call (buy decisions + Q&A) now writes
+    to the token_usage table via db.record_token_usage(). Was previously
+    only writing daily spend to a bot_flags entry, so the dashboard's
+    Cost tab showed nothing. Q&A path refactored to also capture token
+    counts (was previously silent on usage).
 
 v2.8.1 changes from v2.8:
   - ASX analyser fully removed. Yahoo Finance was blocking ASX requests
@@ -666,6 +673,7 @@ def run_buy_cycle(
     success.
     v2.8: filters stock candidates against open Alpaca orders before
     running them through the brain, preventing wash-trade rejections.
+    v2.8.2: writes Claude API token usage to token_usage table.
     """
     log.info(f"buy cycle: {mode}")
     try:
@@ -744,6 +752,18 @@ def run_buy_cycle(
 
         new_spent = spent + result.estimated_cost_usd
         db.set_flag(f"claude_spend_{utc_now().strftime('%Y%m%d')}", f"{new_spent:.4f}")
+
+        # v2.8.2: write token usage to token_usage table for the Cost tab.
+        # Only record if we actually called Claude (non-zero tokens).
+        if result.used_input_tokens > 0 or result.used_output_tokens > 0:
+            try:
+                db.record_token_usage(
+                    input_tokens=result.used_input_tokens,
+                    output_tokens=result.used_output_tokens,
+                    cost_usd=result.estimated_cost_usd,
+                )
+            except Exception as e:
+                log.debug(f"record_token_usage (buy cycle) failed: {e}")
 
         if result.error:
             tg.send(f"⚠️ Brain error: {result.error}")
@@ -893,6 +913,13 @@ def run_manual_orders(db, alpaca, coinspot, tg: TelegramNotifier):
 
 # ── Q&A ──────────────────────────────────────────────────────────────────
 
+# Sonnet 4.6 pricing per Anthropic's docs at the time of writing:
+#   $3 per 1M input tokens
+#   $15 per 1M output tokens
+def _qa_estimate_cost_usd(input_tokens: int, output_tokens: int) -> float:
+    return (input_tokens * 3.0 + output_tokens * 15.0) / 1_000_000
+
+
 QA_MODEL = "claude-sonnet-4-6"
 QA_MAX_TOKENS = 600
 QA_POLL_LIMIT = 3
@@ -965,7 +992,8 @@ def process_pending_questions(db):
 
         log.info(f"Q&A: answering q{qid}: {question_text[:60]!r}")
         try:
-            answer = _call_claude_for_qa(client, context_msg, question_text)
+            # v2.8.2: returns (answer, input_tokens, output_tokens)
+            answer, in_tok, out_tok = _call_claude_for_qa(client, context_msg, question_text)
         except Exception as e:
             log.error(f"Q&A Claude call failed for q{qid}: {e}")
             db._patch("user_questions",
@@ -973,6 +1001,18 @@ def process_pending_questions(db):
                        "answer": f"Sorry — Claude call failed: {e}"},
                       "id", str(qid))
             continue
+
+        # v2.8.2: write Q&A token usage to token_usage table
+        if in_tok > 0 or out_tok > 0:
+            try:
+                cost = _qa_estimate_cost_usd(in_tok, out_tok)
+                db.record_token_usage(
+                    input_tokens=in_tok,
+                    output_tokens=out_tok,
+                    cost_usd=cost,
+                )
+            except Exception as e:
+                log.debug(f"record_token_usage (Q&A) failed: {e}")
 
         ok = db._patch("user_questions",
                        {"status": "complete",
@@ -1050,7 +1090,11 @@ def _build_qa_context(positions: dict, portfolio: dict, recent: list, db) -> str
     return "\n".join(parts)
 
 
-def _call_claude_for_qa(client, context: str, question: str) -> str:
+def _call_claude_for_qa(client, context: str, question: str) -> tuple[str, int, int]:
+    """
+    v2.8.2: returns (answer_text, input_tokens, output_tokens) so the caller
+    can write to token_usage.
+    """
     user_msg = f"{context}\n\n---\n\nQUESTION FROM USER: {question}"
 
     resp = client.messages.create(
@@ -1060,21 +1104,26 @@ def _call_claude_for_qa(client, context: str, question: str) -> str:
         messages=[{"role": "user", "content": user_msg}],
     )
 
+    answer = "(no answer generated)"
     if resp.content and len(resp.content) > 0:
         first = resp.content[0]
         if hasattr(first, "text"):
-            return first.text.strip()
-    return "(no answer generated)"
+            answer = first.text.strip()
+
+    in_tok = getattr(getattr(resp, "usage", None), "input_tokens", 0) or 0
+    out_tok = getattr(getattr(resp, "usage", None), "output_tokens", 0) or 0
+    return answer, in_tok, out_tok
 
 
 # ── Main loop ────────────────────────────────────────────────────────────
 
 def main():
     try:
-        log.info(f"RivX v2.8.1 starting — {'PAPER' if PAPER_MODE else 'LIVE'} mode")
+        log.info(f"RivX v2.8.2 starting — {'PAPER' if PAPER_MODE else 'LIVE'} mode")
         log.info(f"Strategy: $4K swing crypto / $2K momentum crypto / $3.5K stocks / $500 ops floor")
         log.info(f"Schedule: crypto 8 AM + 4 PM AEST | stocks 11 PM + 3 AM AEST (weekdays) | summaries 8 AM + 8 PM AEST")
         log.info("ASX analyser: removed in v2.8.1")
+        log.info("Token usage tracking: enabled (v2.8.2)")
         log.info(f"Reconciliation: {'enabled (read-only)' if _RECONCILIATION_AVAILABLE else 'DISABLED (import failed)'}")
         sys.stdout.flush()
 
@@ -1093,7 +1142,7 @@ def main():
         if db.get_flag("last_startup") != today:
             db.set_flag("last_startup", today)
             rec_status = "Reconciler online" if _RECONCILIATION_AVAILABLE else "Reconciler DISABLED"
-            tg.send(f"🟢 RivX v2.8.1 online. {'PAPER' if PAPER_MODE else 'LIVE'} mode. "
+            tg.send(f"🟢 RivX v2.8.2 online. {'PAPER' if PAPER_MODE else 'LIVE'} mode. "
                     f"{rec_status}.")
 
         log.info("setup complete — entering main loop")
