@@ -1,4 +1,4 @@
-# RIVX_VERSION: v2.1-render-fixed-2026-04-26
+# RIVX_VERSION: v2.9.0-buy-cap-10-2026-05-03
 """
 RivX safety.py — circuit breakers and bot-level safeguards.
 
@@ -23,8 +23,10 @@ Five guards:
 
   3. Daily trade cap
      Maximum N buys per UTC day. Stops a runaway bot from blowing
-     the budget on a bad day. Default: 6 (covers $4 momentum + $2 swing
-     daily volume estimates).
+     the budget on a bad day.
+     v2.9.0: bumped from 6 to 10 to match the new momentum cadence
+     (12 scans/day). With cap at 6, a strong-trend day could exhaust
+     the cap by mid-morning and block valid swing/stock buys.
 
   4. Consecutive losses circuit breaker
      If the last N closed trades were all losses, halt. The strategy
@@ -58,7 +60,7 @@ log = logging.getLogger(__name__)
 DRAWDOWN_HALT_PCT       = 0.05   # 5% from peak halts new buys
 DRAWDOWN_RESUME_PCT     = 0.03   # must recover to within 3% of peak to resume
 SINGLE_LOSS_HALT_PCT    = 0.15   # >15% loss on a single sell halts bot
-DAILY_BUY_CAP           = 6      # max buys per UTC day
+DAILY_BUY_CAP           = 10     # max buys per UTC day (v2.9.0: was 6)
 CONSECUTIVE_LOSS_HALT   = 4      # 4 losing closes in a row halts bot
 HEARTBEAT_STALE_MINUTES = 10     # if heartbeat older than this, alert
 
