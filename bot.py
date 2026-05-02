@@ -1,6 +1,12 @@
-# RIVX_VERSION: v2.8-reconciliation-2026-04-30
+# RIVX_VERSION: v2.8.1-asx-removed-2026-05-02
 """
 RivX bot.py — main loop orchestrator (v2 strategy).
+
+v2.8.1 changes from v2.8:
+  - ASX analyser fully removed. Yahoo Finance was blocking ASX requests
+    from Render's Singapore IPs (every ticker returning empty responses).
+    All ASX module imports, tick calls, and startup messages stripped.
+    Will revisit with a paid data provider in a future version.
 
 v2.8 changes from v2.7:
   - SELL flow no longer marks Supabase position as 'closed' until Alpaca
@@ -59,15 +65,8 @@ from bot.telegram_notify import TelegramNotifier
 from bot.alpaca_trader import AlpacaTrader
 from bot.coinspot_trader import CoinSpotTrader
 
-# v2.7: ASX analyser is optional — if it fails to import (e.g. yfinance
-# missing), RivX core still runs. The tick is a no-op when import failed.
-try:
-    from bot import asx_runner
-    _ASX_AVAILABLE = True
-except Exception as _asx_err:
-    log.warning(f"ASX module unavailable: {_asx_err}")
-    asx_runner = None
-    _ASX_AVAILABLE = False
+# v2.8.1: ASX analyser removed. Yahoo Finance blocking ASX requests from
+# Render IPs. Will revisit with a paid data provider in a future version.
 
 # v2.8: reconciliation, pending sells, scanner exclusions
 try:
@@ -1072,10 +1071,10 @@ def _call_claude_for_qa(client, context: str, question: str) -> str:
 
 def main():
     try:
-        log.info(f"RivX v2.8 starting — {'PAPER' if PAPER_MODE else 'LIVE'} mode")
+        log.info(f"RivX v2.8.1 starting — {'PAPER' if PAPER_MODE else 'LIVE'} mode")
         log.info(f"Strategy: $4K swing crypto / $2K momentum crypto / $3.5K stocks / $500 ops floor")
         log.info(f"Schedule: crypto 8 AM + 4 PM AEST | stocks 11 PM + 3 AM AEST (weekdays) | summaries 8 AM + 8 PM AEST")
-        log.info(f"ASX analyser: {'enabled' if _ASX_AVAILABLE else 'DISABLED (import failed)'}")
+        log.info("ASX analyser: removed in v2.8.1")
         log.info(f"Reconciliation: {'enabled (read-only)' if _RECONCILIATION_AVAILABLE else 'DISABLED (import failed)'}")
         sys.stdout.flush()
 
@@ -1093,10 +1092,9 @@ def main():
         today = aest_now().date().isoformat()
         if db.get_flag("last_startup") != today:
             db.set_flag("last_startup", today)
-            asx_status = "ASX online 🇦🇺" if _ASX_AVAILABLE else "ASX DISABLED"
             rec_status = "Reconciler online" if _RECONCILIATION_AVAILABLE else "Reconciler DISABLED"
-            tg.send(f"🟢 RivX v2.8 online. {'PAPER' if PAPER_MODE else 'LIVE'} mode. "
-                    f"{asx_status}. {rec_status}.")
+            tg.send(f"🟢 RivX v2.8.1 online. {'PAPER' if PAPER_MODE else 'LIVE'} mode. "
+                    f"{rec_status}.")
 
         log.info("setup complete — entering main loop")
         sys.stdout.flush()
@@ -1137,12 +1135,7 @@ def main():
             run_manual_orders(db, alpaca, coinspot, tg)
             process_pending_questions(db)
 
-            # v2.7: ASX analyser tick
-            if _ASX_AVAILABLE and asx_runner is not None:
-                try:
-                    asx_runner.tick(db, tg, log)
-                except Exception as e:
-                    log.warning(f"asx tick error (non-fatal): {e}")
+            # v2.8.1: ASX tick removed
 
             # v2.8: reconciliation tick (read-only mode for now). Cheap when
             # nothing's due — only does real work every 10 minutes.
