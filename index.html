@@ -1,6 +1,16 @@
 <!DOCTYPE html>
-<!-- RIVX_VERSION: v2.6-dashboard-asx-removed-pw-hashed-2026-05-02 -->
+<!-- RIVX_VERSION: v2.7-pwa-mobile-2026-05-03 -->
 <!--
+  v2.7 changes from v2.6:
+    1. PWA enablement. Added manifest.webmanifest, apple-touch-icon, theme
+       colour, apple-mobile-web-app-* meta tags. iPhone users can now
+       "Add to Home Screen" from Safari and the dashboard runs full-screen
+       like a native app, with the RivX icon.
+    2. Mobile layout pass for iPhone-sized screens (≤720px). Topbar wraps
+       cleanly, nav tabs become horizontally scrollable with proper tap
+       targets, redundant badge/time text hidden to free up width, login
+       form fits narrow viewports. No JS changes — purely CSS + new metas.
+
   v2.6 changes from v2.5:
     1. RivX-ASX tab fully removed. Bot side stopped writing asx_signals
        in v2.8.1 because Yahoo Finance was blocking ASX requests from
@@ -20,26 +30,43 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>RivX</title>
+
+<!-- v2.7: PWA + iOS home-screen support -->
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#0d1f38">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="RivX">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+<link rel="icon" type="image/png" sizes="512x512" href="/icon-512.png">
+
 <style>
 *{margin:0;padding:0;box-sizing:border-box;}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f6f8;color:#1a1a2e;min-height:100vh;font-size:14px;}
 
 /* Login */
-#login-screen{display:flex;align-items:center;justify-content:center;min-height:100vh;}
-.login-wrap{width:400px;}
+#login-screen{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:0 16px;}
+.login-wrap{width:100%;max-width:400px;}
 .login-header{text-align:center;margin-bottom:28px;}
 .login-logo{font-size:48px;font-weight:700;color:#0d1f38;letter-spacing:-2px;}
 .login-sub{font-size:10px;color:#9aa0a6;letter-spacing:0.25em;text-transform:uppercase;margin-top:6px;}
 .login-box{background:#0d1f38;border-radius:14px;padding:28px;}
-.login-box input{width:100%;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:12px 14px;color:white;font-size:14px;margin-bottom:10px;outline:none;font-family:monospace;}
-.login-btn{width:100%;background:white;color:#0d1f38;border:none;border-radius:8px;padding:12px;font-size:13px;font-weight:700;cursor:pointer;letter-spacing:0.1em;}
+.login-box input{width:100%;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:12px 14px;color:white;font-size:16px;margin-bottom:10px;outline:none;font-family:monospace;}
+.login-btn{width:100%;background:white;color:#0d1f38;border:none;border-radius:8px;padding:14px;font-size:13px;font-weight:700;cursor:pointer;letter-spacing:0.1em;}
 .login-error{color:#f87171;font-size:12px;text-align:center;margin-top:10px;display:none;}
 
 /* Dashboard */
 #dashboard{display:none;}
-.topbar{background:#0d1f38;padding:0 20px;display:flex;align-items:center;justify-content:space-between;height:52px;position:sticky;top:0;z-index:100;}
+.topbar{background:#0d1f38;padding:0 20px;display:flex;align-items:center;justify-content:space-between;height:52px;position:sticky;top:0;z-index:100;
+  /* iPhone notch / Dynamic Island safe-area support */
+  padding-top:env(safe-area-inset-top);
+  padding-left:max(20px, env(safe-area-inset-left));
+  padding-right:max(20px, env(safe-area-inset-right));
+}
 .topbar-left{display:flex;align-items:center;gap:10px;}
 .topbar-logo{font-size:18px;font-weight:600;color:white;}
 .topbar-badge{font-size:10px;padding:3px 9px;border-radius:12px;background:rgba(255,255,255,0.08);color:#94a3b8;letter-spacing:0.08em;}
@@ -59,7 +86,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .force-sell-btn{font-size:11px;padding:6px 12px;border:1px solid #fecaca;border-radius:6px;background:#fef2f2;color:#c0392b;cursor:pointer;font-weight:600;letter-spacing:0.02em;}
 .force-sell-btn:hover{background:#fee2e2;border-color:#fca5a5;}
 
-.main{padding:20px;max-width:1320px;margin:0 auto;}
+.main{padding:20px;max-width:1320px;margin:0 auto;
+  /* respect iPhone home-indicator area */
+  padding-bottom:max(20px, env(safe-area-inset-bottom));
+}
 .page{display:none;}
 .page.active{display:block;}
 
@@ -222,7 +252,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .cost-bar-fill{height:100%;transition:width 0.3s;}
 
 .empty{text-align:center;padding:24px;font-size:12px;color:#c4c7cc;}
-.footer{text-align:center;padding:14px;font-size:10px;color:#c4c7cc;letter-spacing:0.12em;}
+.footer{text-align:center;padding:14px;font-size:10px;color:#c4c7cc;letter-spacing:0.12em;
+  padding-bottom:max(14px, env(safe-area-inset-bottom));
+}
 
 /* Today's story / status / failures */
 .story-card{background:linear-gradient(135deg,#0d1f38 0%,#1a2f4a 100%);color:white;padding:18px;border-radius:10px;margin-bottom:14px;}
@@ -344,6 +376,72 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   .stats,.alloc{grid-template-columns:1fr 1fr;}
   .main{padding:12px;}
 }
+
+/* ─── v2.7: mobile topbar layout ─────────────────────────────────────────
+   On narrow screens (≤720px) the single-row topbar is too cramped.
+   Restructure to two rows with the tabs scrolling horizontally, and
+   hide redundant elements that wouldn't fit anyway. */
+@media(max-width:720px){
+  .topbar{
+    flex-wrap:wrap;
+    height:auto;
+    gap:8px;
+    padding-top:max(8px, env(safe-area-inset-top));
+    padding-bottom:6px;
+    padding-left:max(12px, env(safe-area-inset-left));
+    padding-right:max(12px, env(safe-area-inset-right));
+  }
+  .topbar-left{flex:1;min-width:0;gap:8px;}
+  .topbar-logo{font-size:17px;}
+  .topbar-badge{display:none;}
+  .topbar-right{gap:6px;}
+  .topbar-time{display:none;}
+  /* Hide refresh on mobile — auto-refresh polls every 60s anyway */
+  #refresh-btn{display:none;}
+  /* Make sign-out compact */
+  #signout-btn{padding:7px 9px;font-size:11px;}
+  .topbar-btn-kill{padding:7px 11px;font-size:11px;}
+  /* Nav becomes its own scrollable row below the action bar */
+  .nav{
+    order:99;
+    width:100%;
+    overflow-x:auto;
+    -webkit-overflow-scrolling:touch;
+    justify-content:flex-start;
+    padding-bottom:2px;
+    margin:0 -12px;
+    padding-left:12px;
+    padding-right:12px;
+    scrollbar-width:none;
+  }
+  .nav::-webkit-scrollbar{display:none;}
+  .nav-btn{
+    padding:9px 14px;
+    font-size:13px;
+    flex-shrink:0;
+    min-height:36px;
+  }
+  /* Force-sell + topbar buttons larger for finger taps */
+  .force-sell-btn{padding:10px 14px;font-size:12px;}
+  /* Bigger tap targets on the period toggle */
+  .period-btn{padding:5px 9px;font-size:10px;}
+  /* Card-row often has the "View rules" pattern — let it wrap */
+  .card-row{flex-wrap:wrap;gap:6px;}
+  /* Realised P&L stat: the inline period toggle inside the label is tight */
+  #s-realised + .stat-sub, .stat .stat-label{flex-wrap:wrap;}
+  /* Q&A row stacks on narrow screens for thumb-friendly input */
+  .qa-row{flex-direction:column;}
+  .qa-input{font-size:16px;}
+  .qa-submit{padding:12px;}
+  /* Login slightly smaller on phones */
+  .login-logo{font-size:42px;}
+}
+
+/* When running as installed PWA (display-mode standalone), pad below the
+   sticky topbar to clear the iOS status bar. */
+@media all and (display-mode: standalone){
+  .topbar{padding-top:max(env(safe-area-inset-top), 12px);}
+}
 </style>
 </head>
 <body>
@@ -355,7 +453,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       <div class="login-sub">Autonomous Trading · v2</div>
     </div>
     <div class="login-box">
-      <input type="password" id="pw" placeholder="Passphrase" onkeydown="if(event.key==='Enter')login()"/>
+      <input type="password" id="pw" placeholder="Passphrase" onkeydown="if(event.key==='Enter')login()" autocomplete="current-password"/>
       <button class="login-btn" onclick="login()">ENTER</button>
     </div>
     <div class="login-error" id="login-error">Incorrect passphrase</div>
@@ -379,8 +477,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     <div class="topbar-right">
       <span class="topbar-time" id="last-updated">Loading...</span>
       <button class="topbar-btn topbar-btn-kill" id="kill-switch-btn" onclick="toggleKillSwitch()">Trading: ON</button>
-      <button class="topbar-btn" onclick="loadAll()">Refresh</button>
-      <button class="topbar-btn" onclick="logout()">Sign out</button>
+      <button class="topbar-btn" id="refresh-btn" onclick="loadAll()">Refresh</button>
+      <button class="topbar-btn" id="signout-btn" onclick="logout()">Sign out</button>
     </div>
   </div>
 
@@ -520,7 +618,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
           </div>
           <div class="alloc-item">
             <div class="alloc-label">Daily buy cap</div>
-            <div class="alloc-val">6</div>
+            <div class="alloc-val">10</div>
             <div class="alloc-pct">UTC day reset</div>
           </div>
         </div>
@@ -548,8 +646,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
         </div>
         <div class="risk-row"><span class="risk-icon">⏱</span>
           <div class="risk-text"><div class="risk-text-label">Daily buy cap</div>
-            <div class="risk-text-detail">Maximum 6 buys per UTC day. Resets at UTC midnight.</div></div>
-          <span class="risk-status ok" id="risk-buys-today">0 / 6 today</span>
+            <div class="risk-text-detail">Maximum 10 buys per UTC day. Resets at UTC midnight.</div></div>
+          <span class="risk-status ok" id="risk-buys-today">0 / 10 today</span>
         </div>
         <div class="risk-row"><span class="risk-icon">📊</span>
           <div class="risk-text"><div class="risk-text-label">Consecutive losses</div>
@@ -574,8 +672,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
           <strong>Every 30 sec</strong> — heartbeat, kill switch, manual orders<br>
           <strong>Every 5 min</strong> — mark-to-market, exit-rule check<br>
           <strong>8:00 AM</strong> — daily summary + swing crypto scan + momentum crypto scan<br>
-          <strong>4:00 PM</strong> — momentum crypto scan<br>
-          <strong>8:00 PM</strong> — daily summary<br>
+          <strong>Every 2 hours, 24/7</strong> — momentum crypto scan (12 scans/day)<br>
+          <strong>8:00 PM</strong> — daily summary + swing crypto scan<br>
           <strong>11:00 PM (weekdays)</strong> — stock scan, 30 min before NYSE open<br>
           <strong>3:00 AM (weekdays)</strong> — stock scan, mid-session
         </div>
@@ -694,7 +792,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       <div class="card">
         <div class="card-title">How Claude is used</div>
         <div style="font-size:12px;color:#555;line-height:1.7;">
-          <strong>Buy decisions</strong> — at every scheduled scan (8 AM, 4 PM, 11 PM, 3 AM), Claude reviews up to 8 mechanically-qualified candidates and decides which to buy. Uses Claude Opus 4.7. Costs ~5-15 cents per scan.<br>
+          <strong>Buy decisions</strong> — at every scheduled scan, Claude reviews up to 8 mechanically-qualified candidates and decides which to buy. Uses Claude Opus 4.7. Costs ~5-15 cents per scan.<br>
           <strong>Q&A</strong> — your dashboard questions. About 1.2 cents per question.<br>
           <strong>What Claude does NOT do</strong>: place stops, manage exits, or override safety. Those run mechanically without calling the API.<br><br>
           <strong>Hard cap</strong>: $2 USD per day. If hit, the bot stops calling Claude for the rest of the day. Positions still get managed mechanically. Typical month: $20-40 USD.
@@ -703,7 +801,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     </div>
 
   </div>
-  <div class="footer">NYSE · NASDAQ · CRYPTO · AUD · BRISBANE · v2.6</div>
+  <div class="footer">NYSE · NASDAQ · CRYPTO · AUD · BRISBANE · v2.7</div>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
@@ -750,7 +848,7 @@ const BUCKETS = {
       'Trailing stop': '5% giveback after target',
       'Review': '30 days',
     },
-    cadence: 'Once daily, 8:00 AM AEST',
+    cadence: 'Twice daily, 8:00 AM + 8:00 PM AEST',
   },
   momentum_crypto: {
     key: 'momentum_crypto',
@@ -774,7 +872,7 @@ const BUCKETS = {
       'Trailing stop': 'none',
       'Hard exit': '7 days',
     },
-    cadence: 'Twice daily, 8:00 AM + 4:00 PM AEST',
+    cadence: 'Every 2 hours, 24/7 (12/day)',
   },
   swing_stock: {
     key: 'swing_stock',
@@ -1334,8 +1432,8 @@ function renderRiskStatus(){
   const buysToday = Number(botFlags['buys_today_'+today]) || 0;
   const buysEl = document.getElementById('risk-buys-today');
   if(buysEl){
-    buysEl.textContent = `${buysToday} / 6 today`;
-    buysEl.className = 'risk-status ' + (buysToday >= 6 ? 'danger' : buysToday >= 4 ? 'warn' : 'ok');
+    buysEl.textContent = `${buysToday} / 10 today`;
+    buysEl.className = 'risk-status ' + (buysToday >= 10 ? 'danger' : buysToday >= 7 ? 'warn' : 'ok');
   }
 
   const consec = Number(botFlags.consec_losses) || 0;
