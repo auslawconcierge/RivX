@@ -1,6 +1,35 @@
-# RIVX_VERSION: v2.9.0-cadence-2026-05-03
+# RIVX_VERSION: v2.9.3-trailing-stop-fix-2026-05-06
 """
 RivX bot.py — main loop orchestrator (v2 strategy).
+
+v2.9.3 changes from v2.9.0:
+  - TRAILING STOP BUG FIX. peak_pnl_pct was never being written to
+    Supabase, so trailing stops weren't actually active. Two issues
+    in manage_open_positions():
+
+    1. The fallback `peak = pos.get("peak_pnl_pct") or pnl_pct` made
+       null-peak indistinguishable from zero-peak. When peak was null,
+       it fell back to current pnl_pct, then `decide_exit_swing_stock`
+       returned new_peak = max(stored_peak, pnl_pct) = pnl_pct, then
+       the update condition `if new_peak > peak` became `pnl_pct > pnl_pct`
+       which is False. So the database never got updated. Forever.
+
+    2. Swing stocks were completely skipped when US market was closed.
+       That meant peak_pnl_pct couldn't be updated for stock positions
+       outside of 11:30 PM–6 AM AEST. AMD ran from +12% to +19% during
+       a market session but the snapshot loop never saw it because the
+       five-minute cycles outside market hours just `continue`d past it.
+
+    FIX:
+    - Read stored peak as None-aware (use a sentinel)
+    - Always write peak_pnl_pct on every snapshot if current pnl_pct is
+      higher than stored peak (or if stored is null)
+    - For swing_stock when market is closed: still update peak from
+      Alpaca's after-hours/extended price feed (Alpaca returns prices
+      24/7), still skip the actual exit-rule firing (because we can't
+      sell when market is closed anyway)
+
+  - No other changes. All other v2.9.0 cadence behaviour preserved.
 
 v2.9.0 changes from v2.8.2:
   - Crypto scan cadence overhaul. Crypto markets are 24/7 but the bot
@@ -614,6 +643,29 @@ def execute_sell(
 # ── Position management ─────────────────────────────────────────────────
 
 def manage_open_positions(db, alpaca, coinspot, tg: TelegramNotifier):
+    """
+    v2.9.3: TRAILING STOP BUG FIX.
+
+    The previous version had two bugs that meant trailing stops were never
+    actually active:
+
+    (1) When peak_pnl_pct was null in the DB (which is the initial state for
+        every position), the fallback `pos.get("peak_pnl_pct") or pnl_pct`
+        used the current pnl_pct as the peak. Then the strategy returned
+        new_peak = max(stored, current) which equals current. Then the
+        update guard `if new_peak > stored` became `current > current`
+        which is False. Peak was never written. Forever.
+
+    (2) Swing stocks were skipped entirely when US market was closed. But
+        Alpaca returns prices 24/7 (after-hours, pre-market, etc), so the
+        peak should still update — we just can't actually fire a sell
+        outside market hours. By skipping the whole loop iteration we
+        also skipped the peak update.
+
+    FIX: track stored peak as None-aware. Always write peak when current
+    exceeds stored (or when stored is null). For swing stocks when market
+    is closed: still update peak, just don't try to execute a sell.
+    """
     positions = db.get_positions()
     if not positions:
         return
@@ -628,31 +680,72 @@ def manage_open_positions(db, alpaca, coinspot, tg: TelegramNotifier):
 
             bucket = (pos.get("bucket") or "").strip()
 
-            if bucket == strategy.Bucket.SWING_STOCK and not stock_market_open:
-                continue
-
             entry = float(pos.get("entry_price") or 0)
             if entry <= 0:
                 continue
 
             pnl_pct = float(pos.get("pnl_pct") or 0)
-            peak = float(pos.get("peak_pnl_pct") or pnl_pct)
+
+            # v2.9.3: read stored peak as None-aware. We need to know
+            # whether peak has ever been recorded vs whether it's zero.
+            raw_peak = pos.get("peak_pnl_pct")
+            if raw_peak is None:
+                stored_peak = None
+            else:
+                try:
+                    stored_peak = float(raw_peak)
+                except (TypeError, ValueError):
+                    stored_peak = None
+
+            # Compute the peak we should use for this iteration's exit logic.
+            # If nothing's stored, current pnl_pct is the floor.
+            effective_peak = stored_peak if stored_peak is not None else pnl_pct
+
+            # v2.9.3: ALWAYS update peak in DB if current pnl is higher,
+            # OR if stored is null (first time we've seen this position).
+            # This is the actual fix — was previously gated by an
+            # if-greater-than check that never triggered when stored was null.
+            should_write_peak = (
+                stored_peak is None or pnl_pct > stored_peak
+            )
+            if should_write_peak:
+                new_peak_value = max(effective_peak, pnl_pct)
+                try:
+                    db._patch("positions",
+                              {"peak_pnl_pct": new_peak_value},
+                              "symbol", sym)
+                    # Reflect the write back into our local variable so
+                    # the exit-decision logic below sees it.
+                    effective_peak = new_peak_value
+                    log.debug(f"peak updated: {sym} → {new_peak_value*100:+.2f}%")
+                except Exception as e:
+                    log.warning(f"peak write {sym}: {e}")
+
+            # v2.9.3: stock market closed → we updated the peak above,
+            # but don't try to fire an actual sell (Alpaca will reject
+            # market orders outside market hours anyway).
+            if bucket == strategy.Bucket.SWING_STOCK and not stock_market_open:
+                continue
+
             age_days = _position_age_days(pos)
 
             if bucket == strategy.Bucket.SWING_CRYPTO:
                 d = strategy.decide_exit_swing_crypto(
-                    pnl_pct=pnl_pct, peak_pnl_pct=peak, age_days=age_days,
+                    pnl_pct=pnl_pct, peak_pnl_pct=effective_peak, age_days=age_days,
                 )
             elif bucket == strategy.Bucket.MOMENTUM_CRYPTO:
                 d = strategy.decide_exit_momentum(pnl_pct=pnl_pct, age_days=age_days)
             elif bucket == strategy.Bucket.SWING_STOCK:
                 d = strategy.decide_exit_swing_stock(
-                    pnl_pct=pnl_pct, peak_pnl_pct=peak, age_days=age_days,
+                    pnl_pct=pnl_pct, peak_pnl_pct=effective_peak, age_days=age_days,
                 )
             else:
                 continue
 
-            if hasattr(d, "new_peak_pnl_pct") and d.new_peak_pnl_pct > peak:
+            # Defensive: strategy may also return new_peak_pnl_pct higher
+            # than we just wrote (shouldn't happen since we computed it,
+            # but keep the existing logic intact for safety).
+            if hasattr(d, "new_peak_pnl_pct") and d.new_peak_pnl_pct > effective_peak:
                 try:
                     db._patch("positions",
                               {"peak_pnl_pct": d.new_peak_pnl_pct},
@@ -1144,12 +1237,13 @@ def _call_claude_for_qa(client, context: str, question: str) -> tuple[str, int, 
 
 def main():
     try:
-        log.info(f"RivX v2.9.0 starting — {'PAPER' if PAPER_MODE else 'LIVE'} mode")
+        log.info(f"RivX v2.9.3 starting — {'PAPER' if PAPER_MODE else 'LIVE'} mode")
         log.info(f"Strategy: $4K swing crypto / $2K momentum crypto / $3.5K stocks / $500 ops floor")
         log.info(f"Schedule: swing crypto 8 AM + 8 PM AEST | momentum crypto every 2 hrs 24/7 | stocks 11 PM + 3 AM AEST (weekdays)")
         log.info("ASX analyser: removed in v2.8.1")
         log.info("Token usage tracking: enabled (v2.8.2)")
         log.info("Cadence v2.9.0: momentum every 2 hrs (12/day), swing crypto twice daily, daily buy cap 10")
+        log.info("v2.9.3: trailing stop peak tracking fix — peak_pnl_pct now writes correctly")
         log.info(f"Reconciliation: {'enabled (read-only)' if _RECONCILIATION_AVAILABLE else 'DISABLED (import failed)'}")
         sys.stdout.flush()
 
@@ -1168,8 +1262,8 @@ def main():
         if db.get_flag("last_startup") != today:
             db.set_flag("last_startup", today)
             rec_status = "Reconciler online" if _RECONCILIATION_AVAILABLE else "Reconciler DISABLED"
-            tg.send(f"🟢 RivX v2.9.0 online. {'PAPER' if PAPER_MODE else 'LIVE'} mode. "
-                    f"{rec_status}. Momentum scans now every 2 hrs, 24/7.")
+            tg.send(f"🟢 RivX v2.9.3 online. {'PAPER' if PAPER_MODE else 'LIVE'} mode. "
+                    f"{rec_status}. Trailing stop tracking fixed.")
 
         log.info("setup complete — entering main loop")
         sys.stdout.flush()
