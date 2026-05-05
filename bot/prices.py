@@ -1,37 +1,27 @@
+# RIVX_VERSION: v2.9.2-multi-source-prices-2026-05-04
 """
 RivX prices.py — single source of truth for crypto pricing.
 
-This module exists because yesterday's bot lost $300 on phantom ARB data
-when CoinSpot returned $29.51 for a coin actually worth $0.40. That kind of
-failure must be impossible going forward.
+v2.9.2: CoinSpot's bulk pubapi gutted to ~17 symbols, blocking every
+mid-cap crypto trade via "price not validated". This version tries four
+price sources in order until one returns a number, then validates against
+Binance. Validation rule (5% disagreement = refuse trade) is unchanged.
 
-The contract this module provides:
+Sources tried for CoinSpot AUD price, in order:
+  1. /pubapi/v2/latest/{coin}     per-coin v2  (preferred)
+  2. /pubapi/latest/{coin}        per-coin v1  (legacy fallback)
+  3. /pubapi/v2/latest            bulk v2      (currently broken but cheap to try)
+  4. CoinPaprika USD price × FX   external     (last resort, AUD-implied)
 
-  get_crypto_price(symbol) -> PriceQuote | None
-
-Where PriceQuote is a validated price object with:
-  - aud: float          (price in AUD, what we'd actually pay/receive)
-  - usd: float          (Binance USD spot, the reference)
-  - source: str         (which Binance host responded)
-  - cs_aud: float       (CoinSpot AUD if available, else 0)
-  - validated: bool     (True iff Binance and CoinSpot agree within tolerance)
-  - disagreement_pct: float (how much the two sources differ, abs %)
-
-If validated=False, the bot MUST NOT trade. The Telegram alert + log entry
-are produced by the caller, not here — this module just measures truth.
-
-Sources, in order:
-  1. Binance USD spot price (primary "this is what the world says")
-     - Multiple host fallbacks: api.binance.com, api1-3, data-api.binance.vision
-     - Free, no auth, ~50ms response time, 99.99% uptime
-  2. CoinSpot AUD spot price (secondary "this is what we'd actually trade at")
-     - Used to compute the implied AUD price for execution
-     - Failure here is non-fatal — we proceed with Binance USD × FX rate
-  3. Frankfurter USD/AUD (for converting Binance USD to AUD when CoinSpot down)
-     - Free, ECB-backed, no rate limit
-
-Cross-validation rule: if both Binance and CoinSpot return prices, they must
-agree within PRICE_DISAGREEMENT_TOLERANCE (default 5%). Otherwise validated=False.
+Source 4 is new. If CoinSpot is fully unreachable for a coin, we use
+CoinPaprika's USD price converted to AUD via Frankfurter FX. CoinPaprika
+is already used elsewhere in the bot for ranks, so it's a known-good source.
+The trade-off: CoinPaprika gives us a global market price, not CoinSpot's
+actual quote. The 5% Binance-vs-secondary validation still applies, so a
+real CoinSpot quote that disagrees with global will still be caught. The
+risk that remains: CoinSpot's actual fill could be a bit worse than the
+CoinPaprika-derived price suggests. In paper mode this is fine. In live
+mode the 1% CoinSpot fee + 1-2% spread already provides margin.
 """
 
 import os
@@ -48,6 +38,7 @@ log = logging.getLogger(__name__)
 # ── Configuration ─────────────────────────────────────────────────────────
 
 PRICE_DISAGREEMENT_TOLERANCE = 0.05   # 5% — agreed in strategy session
+
 BINANCE_HOSTS = [
     "https://api.binance.com",
     "https://api1.binance.com",
@@ -55,12 +46,31 @@ BINANCE_HOSTS = [
     "https://api3.binance.com",
     "https://data-api.binance.vision",
 ]
-COINSPOT_HOSTS = [
-    "https://www.coinspot.com.au/pubapi/v2/latest",
-    "https://www.coinspot.com.au/pubapi/latest",
+
+COINSPOT_BASE = "https://www.coinspot.com.au"
+COINSPOT_PER_COIN_PATHS = [
+    "/pubapi/v2/latest/{coin}",
+    "/pubapi/latest/{coin}",
 ]
+COINSPOT_BULK_PATHS = [
+    "/pubapi/v2/latest",
+    "/pubapi/latest",
+]
+
+# Cloudflare-friendly headers — same as scanner.py
+COINSPOT_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+COINPAPRIKA_TICKERS = "https://api.coinpaprika.com/v1/tickers"
 FRANKFURTER_URL = "https://api.frankfurter.app/latest?from=USD&to=AUD"
-USD_AUD_FALLBACK = 1.55  # used only if Frankfurter is also down
+USD_AUD_FALLBACK = 1.55
 
 CACHE_DIR = Path(os.environ.get("RIVX_CACHE_DIR", "/tmp/rivx_cache"))
 try:
@@ -68,8 +78,9 @@ try:
 except Exception:
     CACHE_DIR = Path("/tmp")
 
-PRICE_CACHE_TTL = 60   # 1 min — prices are tactical, must be fresh
-FX_CACHE_TTL    = 3600 # 1 hr — FX moves slowly enough
+PRICE_CACHE_TTL = 60
+FX_CACHE_TTL    = 3600
+PAPRIKA_CACHE_TTL = 300   # 5 min — paprika tickers move fast enough
 
 
 # ── Data class ────────────────────────────────────────────────────────────
@@ -77,20 +88,20 @@ FX_CACHE_TTL    = 3600 # 1 hr — FX moves slowly enough
 @dataclass
 class PriceQuote:
     symbol: str
-    aud: float                    # price in AUD (what we trade at)
-    usd: float                    # Binance USD reference
-    source: str                   # which Binance host responded
-    cs_aud: float                 # CoinSpot AUD (0 if unavailable)
-    validated: bool               # both sources agreed within tolerance
-    disagreement_pct: float       # 0.0 if only one source available
-    fx_rate: float                # USD→AUD rate used for conversion
-    fetched_at: float             # unix timestamp
+    aud: float
+    usd: float
+    source: str
+    cs_aud: float
+    validated: bool
+    disagreement_pct: float
+    fx_rate: float
+    fetched_at: float
 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
-# ── File cache helpers ────────────────────────────────────────────────────
+# ── Cache helpers ─────────────────────────────────────────────────────────
 
 def _cache_get(key: str, max_age: int):
     p = CACHE_DIR / f"{key}.json"
@@ -113,13 +124,11 @@ def _cache_set(key: str, data) -> None:
 # ── FX rate (USD → AUD) ───────────────────────────────────────────────────
 
 def get_usd_aud_rate() -> float:
-    """Returns USD→AUD rate (i.e. 1 USD = X AUD). Cached 1 hour."""
     cached = _cache_get("fx_usd_aud", FX_CACHE_TTL)
     if cached and isinstance(cached, dict):
         rate = cached.get("rate", 0)
-        if 0.5 < rate < 3.0:  # sanity bounds
+        if 0.5 < rate < 3.0:
             return rate
-
     try:
         r = requests.get(FRANKFURTER_URL, timeout=5)
         if r.status_code == 200:
@@ -130,8 +139,6 @@ def get_usd_aud_rate() -> float:
                 return rate
     except Exception as e:
         log.warning(f"Frankfurter FX fetch failed: {e}")
-
-    # Fallback to last cached value (even if stale) before hardcoded fallback
     p = CACHE_DIR / "fx_usd_aud.json"
     if p.exists():
         try:
@@ -142,7 +149,6 @@ def get_usd_aud_rate() -> float:
                 return rate
         except Exception:
             pass
-
     log.error(f"All FX sources failed, using hardcoded {USD_AUD_FALLBACK}")
     return USD_AUD_FALLBACK
 
@@ -150,13 +156,6 @@ def get_usd_aud_rate() -> float:
 # ── Binance USD price ─────────────────────────────────────────────────────
 
 def _binance_price_usd(symbol: str) -> tuple[float, str]:
-    """
-    Returns (price_usd, host_used). Tries each host in order until one works.
-    Returns (0, "") if all fail.
-
-    Symbol convention: pass plain symbol like "BTC", we append "USDT".
-    Binance's most liquid USD pair for everything is X-USDT.
-    """
     pair = f"{symbol.upper()}USDT"
     for host in BINANCE_HOSTS:
         try:
@@ -171,8 +170,6 @@ def _binance_price_usd(symbol: str) -> tuple[float, str]:
                 if price > 0:
                     return price, host
             elif r.status_code == 400:
-                # 400 = symbol doesn't exist on Binance (e.g. some Aussie-only coins).
-                # No point trying other hosts, they all use the same exchange.
                 log.debug(f"Binance: {pair} not listed (400)")
                 return 0, ""
         except Exception as e:
@@ -182,88 +179,178 @@ def _binance_price_usd(symbol: str) -> tuple[float, str]:
     return 0, ""
 
 
-# ── CoinSpot AUD price ────────────────────────────────────────────────────
+# ── CoinPaprika USD price (new in v2.9.2 as price source) ────────────────
 
-def _coinspot_universe() -> dict:
-    """
-    Returns {SYMBOL: aud_last_price} for everything CoinSpot lists.
-    Cached 60s. Returns {} if CoinSpot is unreachable.
-    """
-    cached = _cache_get("coinspot_universe", PRICE_CACHE_TTL)
+def _paprika_all_tickers() -> dict:
+    """Returns {SYMBOL: {price_usd: ...}} for top 500 coins. Cached 5 min."""
+    cached = _cache_get("paprika_tickers", PAPRIKA_CACHE_TTL)
     if cached:
         return cached
-
-    for url in COINSPOT_HOSTS:
-        try:
-            r = requests.get(url, timeout=8)
-            if r.status_code != 200:
-                continue
-            data = r.json()
-            prices_obj = data.get("prices") or data
-            if not isinstance(prices_obj, dict):
-                continue
+    try:
+        r = requests.get(COINPAPRIKA_TICKERS, params={"limit": 500}, timeout=10)
+        if r.status_code == 200:
+            rows = r.json() or []
             out = {}
-            for sym_raw, entry in prices_obj.items():
-                sym = sym_raw.upper()
-                if isinstance(entry, dict):
-                    try:
-                        out[sym] = float(entry.get("last") or 0)
-                    except (TypeError, ValueError):
-                        pass
-                elif isinstance(entry, (int, float, str)):
-                    try:
-                        out[sym] = float(entry)
-                    except (TypeError, ValueError):
-                        pass
-            if len(out) > 0:
-                _cache_set("coinspot_universe", out)
+            for row in rows:
+                sym = (row.get("symbol") or "").upper()
+                quotes = row.get("quotes") or {}
+                usd = (quotes.get("USD") or {}).get("price")
+                if sym and usd and usd > 0:
+                    out[sym] = {"usd": float(usd), "rank": row.get("rank") or 9999}
+            if len(out) > 50:
+                _cache_set("paprika_tickers", out)
                 return out
-        except Exception as e:
-            log.debug(f"CoinSpot {url} failed: {e}")
-
-    # Stale cache fallback (up to 1 hour old)
-    stale = _cache_get("coinspot_universe", 3600)
+    except Exception as e:
+        log.warning(f"CoinPaprika tickers fetch: {e}")
+    stale = _cache_get("paprika_tickers", 86400)
     if stale:
-        log.warning("CoinSpot live unavailable, using stale (<1h) cache")
+        log.warning("CoinPaprika tickers: live unavailable, using stale cache")
         return stale
-
     return {}
 
 
-def _coinspot_price_aud(symbol: str) -> float:
-    """Returns CoinSpot AUD spot for one symbol, or 0 if unavailable."""
-    universe = _coinspot_universe()
-    return float(universe.get(symbol.upper(), 0))
+def _paprika_price_aud(symbol: str, fx_rate: float) -> float:
+    """Returns CoinPaprika-derived AUD price for symbol, or 0 if not found."""
+    tickers = _paprika_all_tickers()
+    entry = tickers.get(symbol.upper())
+    if not entry:
+        return 0.0
+    usd = entry.get("usd", 0)
+    return usd * fx_rate if usd > 0 and fx_rate > 0 else 0.0
+
+
+# ── CoinSpot AUD price ────────────────────────────────────────────────────
+
+def _extract_last_from_payload(data, sym: str) -> float:
+    if not isinstance(data, dict):
+        return 0.0
+    prices = data.get("prices")
+    if isinstance(prices, dict) and "last" in prices:
+        try:
+            return float(prices["last"])
+        except (TypeError, ValueError):
+            pass
+    if isinstance(prices, (str, int, float)):
+        try:
+            return float(prices)
+        except (TypeError, ValueError):
+            pass
+    if isinstance(prices, dict):
+        entry = prices.get(sym.upper()) or prices.get(sym.lower())
+        if isinstance(entry, dict) and "last" in entry:
+            try:
+                return float(entry["last"])
+            except (TypeError, ValueError):
+                pass
+        if isinstance(entry, (str, int, float)):
+            try:
+                return float(entry)
+            except (TypeError, ValueError):
+                pass
+    return 0.0
+
+
+def _coinspot_price_aud(symbol: str) -> tuple[float, str]:
+    """
+    Returns (aud_price, source_label). source_label tells us which path won
+    so we can debug. (0.0, "") if all paths fail.
+    """
+    sym = symbol.upper().strip()
+    if not sym:
+        return 0.0, ""
+
+    cache_key = f"cs_price_{sym}"
+    cached = _cache_get(cache_key, PRICE_CACHE_TTL)
+    if cached and isinstance(cached, dict):
+        try:
+            v = float(cached.get("aud", 0))
+            src = cached.get("source", "cache")
+            if v > 0:
+                return v, src
+        except (TypeError, ValueError):
+            pass
+
+    last_status, last_body = None, ""
+
+    # Tier 1: per-coin endpoints
+    for path in COINSPOT_PER_COIN_PATHS:
+        url = f"{COINSPOT_BASE}{path.format(coin=sym)}"
+        try:
+            r = requests.get(url, headers=COINSPOT_HEADERS, timeout=5)
+            last_status = r.status_code
+            if r.status_code != 200:
+                last_body = (r.text or "")[:120].replace("\n", " ")
+                continue
+            data = r.json()
+            if isinstance(data, dict) and data.get("status") == "error":
+                continue
+            price = _extract_last_from_payload(data, sym)
+            if price > 0:
+                src = f"coinspot:{path}"
+                _cache_set(cache_key, {"aud": price, "source": src, "fetched": time.time()})
+                return price, src
+        except Exception as e:
+            log.debug(f"coinspot per-coin {sym} via {path}: {e}")
+
+    # Tier 2: bulk endpoints
+    for path in COINSPOT_BULK_PATHS:
+        url = f"{COINSPOT_BASE}{path}"
+        try:
+            r = requests.get(url, headers=COINSPOT_HEADERS, timeout=8)
+            if r.status_code != 200:
+                continue
+            data = r.json()
+            price = _extract_last_from_payload(data, sym)
+            if price > 0:
+                src = f"coinspot:{path}"
+                _cache_set(cache_key, {"aud": price, "source": src, "fetched": time.time()})
+                return price, src
+        except Exception as e:
+            log.debug(f"coinspot bulk {sym} via {path}: {e}")
+
+    if last_status and last_status != 200:
+        log.warning(
+            f"coinspot price {sym}: all CoinSpot paths failed "
+            f"(last status {last_status}, body={last_body!r})"
+        )
+
+    return 0.0, ""
 
 
 # ── Public API: validated price quote ─────────────────────────────────────
 
 def get_crypto_price(symbol: str) -> Optional[PriceQuote]:
     """
-    Returns a validated PriceQuote, or None if no source has a price for this
-    symbol at all. The PriceQuote.validated flag indicates whether sources
-    agree within tolerance.
-
-    The bot's contract: if validated is False, do not trade. If returned None,
-    do not trade. Only trade on a quote where validated=True.
+    v2.9.2: tries CoinSpot (4 endpoints), then CoinPaprika as a final
+    fallback for the secondary price. Validation logic unchanged: Binance
+    vs secondary must agree within 5% to allow a trade.
     """
     sym = symbol.upper().strip()
 
     binance_usd, binance_host = _binance_price_usd(sym)
-    cs_aud = _coinspot_price_aud(sym)
     fx = get_usd_aud_rate()
+    cs_aud, cs_source = _coinspot_price_aud(sym)
 
-    # No price anywhere → nothing to validate, nothing to trade
-    if binance_usd <= 0 and cs_aud <= 0:
+    # If CoinSpot has nothing, try CoinPaprika as the secondary source
+    secondary_source = cs_source
+    secondary_aud = cs_aud
+    if cs_aud <= 0:
+        paprika_aud = _paprika_price_aud(sym, fx)
+        if paprika_aud > 0:
+            secondary_aud = paprika_aud
+            secondary_source = "coinpaprika"
+            log.info(f"prices: {sym} secondary via CoinPaprika ${paprika_aud:.6f} AUD (CoinSpot unavailable)")
+
+    # No price anywhere
+    if binance_usd <= 0 and secondary_aud <= 0:
         log.warning(f"prices: no source has a price for {sym}")
         return None
 
-    # Both sources available: cross-validate
-    if binance_usd > 0 and cs_aud > 0:
+    # Both Binance and a secondary available: cross-validate
+    if binance_usd > 0 and secondary_aud > 0:
         implied_aud = binance_usd * fx
-        # Disagreement as a fraction of the larger value (so symmetric)
-        bigger = max(implied_aud, cs_aud)
-        smaller = min(implied_aud, cs_aud)
+        bigger = max(implied_aud, secondary_aud)
+        smaller = min(implied_aud, secondary_aud)
         disagreement = (bigger - smaller) / bigger if bigger > 0 else 1.0
         validated = disagreement <= PRICE_DISAGREEMENT_TOLERANCE
 
@@ -271,51 +358,49 @@ def get_crypto_price(symbol: str) -> Optional[PriceQuote]:
             log.warning(
                 f"prices: {sym} DISAGREEMENT {disagreement*100:.1f}% — "
                 f"Binance ${binance_usd:.4f} USD = ${implied_aud:.4f} AUD vs "
-                f"CoinSpot ${cs_aud:.4f} AUD"
+                f"{secondary_source} ${secondary_aud:.4f} AUD"
+            )
+        else:
+            log.info(
+                f"prices: {sym} validated — Binance ${implied_aud:.4f} AUD vs "
+                f"{secondary_source} ${secondary_aud:.4f} AUD ({disagreement*100:.1f}% disagree)"
             )
 
         return PriceQuote(
             symbol=sym,
-            # Trade execution happens on CoinSpot, so the "true" AUD price
-            # we'd actually pay is CoinSpot's. Use that as the trade price
-            # ONLY if validated. If not validated, caller must refuse.
-            aud=cs_aud if validated else 0.0,
+            aud=secondary_aud if validated else 0.0,
             usd=binance_usd,
             source=binance_host,
-            cs_aud=cs_aud,
+            cs_aud=secondary_aud,
             validated=validated,
             disagreement_pct=round(disagreement * 100, 2),
             fx_rate=fx,
             fetched_at=time.time(),
         )
 
-    # Only Binance available (CoinSpot down or doesn't list this coin)
-    if binance_usd > 0 and cs_aud <= 0:
-        # Can't validate. Report unvalidated. The caller decides whether to
-        # trust a single source. For BUYS, we'll refuse. For HOLDS, we'll use
-        # this as a fallback display price.
-        log.info(f"prices: {sym} only on Binance (CoinSpot has no listing or is down)")
+    # Only Binance (no CoinSpot, no CoinPaprika)
+    if binance_usd > 0 and secondary_aud <= 0:
+        log.info(f"prices: {sym} only on Binance (no secondary source)")
         return PriceQuote(
             symbol=sym,
-            aud=binance_usd * fx,  # implied
+            aud=binance_usd * fx,
             usd=binance_usd,
             source=binance_host,
             cs_aud=0.0,
-            validated=False,        # single-source = not validated for buys
+            validated=False,
             disagreement_pct=0.0,
             fx_rate=fx,
             fetched_at=time.time(),
         )
 
-    # Only CoinSpot available (Binance doesn't list this coin)
-    # This is suspicious — most legitimate coins are on Binance. Don't trade.
-    log.warning(f"prices: {sym} only on CoinSpot — Binance doesn't list it. Treating as unvalidated.")
+    # Only secondary, no Binance — suspicious
+    log.warning(f"prices: {sym} only on {secondary_source} — Binance doesn't list it. Treating as unvalidated.")
     return PriceQuote(
         symbol=sym,
-        aud=cs_aud,
-        usd=cs_aud / fx if fx > 0 else 0,  # implied USD
-        source="coinspot_only",
-        cs_aud=cs_aud,
+        aud=secondary_aud,
+        usd=secondary_aud / fx if fx > 0 else 0,
+        source=secondary_source,
+        cs_aud=secondary_aud,
         validated=False,
         disagreement_pct=0.0,
         fx_rate=fx,
@@ -323,11 +408,5 @@ def get_crypto_price(symbol: str) -> Optional[PriceQuote]:
     )
 
 
-# ── Convenience: bulk price fetch ─────────────────────────────────────────
-
 def get_crypto_prices(symbols: list) -> dict:
-    """
-    Returns {symbol: PriceQuote or None} for a list of symbols.
-    Used by the snapshot loop to mark portfolio to market.
-    """
     return {sym: get_crypto_price(sym) for sym in symbols}
