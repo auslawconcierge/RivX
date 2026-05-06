@@ -1,6 +1,30 @@
-# RIVX_VERSION: v2.9.3-trailing-stop-fix-2026-05-06
+# RIVX_VERSION: v2.9.4-orphan-stock-heal-2026-05-07
 """
 RivX bot.py — main loop orchestrator (v2 strategy).
+
+v2.9.4 changes from v2.9.3:
+  - SELF-HEALING ORPHAN STOCK CLOSE. Previously: when Alpaca said "no live
+    position" for a stock that Supabase still showed as open, execute_sell
+    returned False with the message "alpaca reports no live position
+    (already closed?)". The next snapshot would try the same sell again.
+    Forever. Telegram alert every 5 minutes until manually intervened.
+
+    This is exactly what happened to AMD on 2026-05-06: pending_sells'
+    Supabase status PATCH failed silently (the v2.8 migration adding
+    pending_order_id / pending_since columns may not have run), so the
+    position stayed status='open'. Alpaca filled the sell. Resolver had
+    nothing to find. execute_sell looped on the dead guard.
+
+    FIX: when alpaca.get_position returns None for a stock we still show
+    as open, fetch the most recent filled SELL order for that symbol from
+    Alpaca's /v2/orders endpoint and use its fill price to close the
+    Supabase position properly. Bookkeeping (consec_losses, claude_decisions)
+    is updated as for any normal close. The Telegram alert that used to
+    spam every 5 minutes now becomes a single one-shot reconciliation
+    note inside the manage loop.
+
+  - No other behavioural changes. v2.9.3 trailing-stop fix and all earlier
+    cadence behaviour preserved.
 
 v2.9.3 changes from v2.9.0:
   - TRAILING STOP BUG FIX. peak_pnl_pct was never being written to
@@ -367,6 +391,120 @@ def _sync_alpaca_stocks(db, alpaca, symbols):
             log.debug(f"alpaca sync {sym}: {e}")
 
 
+# ── v2.9.4: Self-healing orphan stock close ──────────────────────────────
+
+def _heal_orphan_stock_close(*, symbol: str, position: dict, db,
+                              reason: str = "auto-heal") -> tuple[bool, str]:
+    """
+    Called when Alpaca says "no position" for a stock that Supabase still
+    shows as open. Looks up the most recent filled SELL order on Alpaca for
+    this symbol, computes pnl from stored entry vs that fill price, and
+    closes the Supabase position properly. All bookkeeping (consec_losses,
+    claude_decisions outcome row) is updated as for any normal close.
+
+    Returns (ok, msg) compatible with execute_sell's return contract.
+    """
+    import requests
+
+    headers = {
+        "APCA-API-KEY-ID": ALPACA_API_KEY,
+        "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
+    }
+
+    try:
+        r = requests.get(
+            "https://paper-api.alpaca.markets/v2/orders",
+            headers=headers,
+            params={"status": "closed", "symbols": symbol,
+                    "direction": "desc", "limit": "20"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        orders = r.json() or []
+    except Exception as e:
+        return False, f"{symbol}: heal failed querying alpaca orders: {e}"
+
+    # Find the most recent FILLED SELL with a real fill price.
+    sell_order = None
+    for o in orders:
+        if (o.get("side") or "").lower() != "sell":
+            continue
+        if (o.get("status") or "").lower() != "filled":
+            continue
+        fp = float(o.get("filled_avg_price") or 0)
+        if fp <= 0:
+            continue
+        sell_order = o
+        break
+
+    if not sell_order:
+        return False, (f"{symbol}: alpaca reports no live position and no recent "
+                       f"filled sell order found — manual investigation needed")
+
+    fill_price_usd = float(sell_order.get("filled_avg_price") or 0)
+    filled_at      = (sell_order.get("filled_at") or "")[:19]
+    order_id       = sell_order.get("id") or ""
+
+    avg_entry_usd = float(position.get("entry_price") or 0)
+    if avg_entry_usd <= 0:
+        return False, (f"{symbol}: heal can't compute pnl — stored entry_price is 0. "
+                       f"Manual close needed (fill was ${fill_price_usd:.4f} USD, "
+                       f"order {order_id[:8]} at {filled_at})")
+
+    pnl_pct = (fill_price_usd - avg_entry_usd) / avg_entry_usd
+
+    try:
+        db.close_position(symbol=symbol, exit_price=fill_price_usd, pnl_pct=pnl_pct)
+    except Exception as e:
+        return False, f"{symbol}: heal close_position failed: {e}"
+
+    # Clear any pending_close residue (best-effort; columns may not exist).
+    try:
+        db._patch("positions", {
+            "pending_order_id": None,
+            "pending_since": None,
+        }, "symbol", symbol)
+    except Exception:
+        pass
+
+    # consec_losses bookkeeping
+    try:
+        prior = int(db.get_flag("consec_losses") or 0)
+        new_count = safety.update_consecutive_losses(
+            prior, last_trade_was_loss=(pnl_pct < 0),
+        )
+        db.set_flag("consec_losses", str(new_count))
+    except Exception as e:
+        log.debug(f"heal consec_losses {symbol}: {e}")
+
+    # claude_decisions outcome row
+    try:
+        recent = db._get("claude_decisions", {
+            "symbol": f"eq.{symbol}",
+            "executed": "eq.true",
+            "closed_at": "is.null",
+            "order": "decided_at.desc",
+            "limit": "1",
+        })
+        if recent:
+            row_id = recent[0].get("id")
+            if row_id:
+                db._patch("claude_decisions", {
+                    "closed_at": safety.now_utc_iso(),
+                    "realized_pnl_pct": pnl_pct,
+                    "exit_reason": f"healed orphan: {reason}"[:200],
+                }, "id", str(row_id))
+    except Exception as e:
+        log.debug(f"heal claude_decisions {symbol}: {e}")
+
+    log.info(f"HEALED orphan SELL {symbol}: ${fill_price_usd:.4f} USD "
+             f"({pnl_pct*100:+.2f}%) from order {order_id[:8]} filled {filled_at}")
+
+    return True, (f"healed orphan — closed @ ${fill_price_usd:.4f} USD "
+                  f"({pnl_pct*100:+.2f}%) using order {order_id[:8]} "
+                  f"filled {filled_at}")
+
+
 # ── Trade execution ──────────────────────────────────────────────────────
 
 def execute_buy(
@@ -484,8 +622,17 @@ def execute_sell(
             live = alpaca.get_position(symbol)
         except Exception as e:
             return False, f"{symbol}: alpaca position fetch failed: {e}"
+
         if not live:
-            return False, f"{symbol}: alpaca reports no live position (already closed?)"
+            # v2.9.4: self-heal. Alpaca says no position but Supabase still
+            # shows one open — almost certainly a sell that filled but never
+            # propagated back to Supabase. Find the actual fill on Alpaca,
+            # close Supabase using that fill price, write all bookkeeping.
+            log.warning(f"{symbol}: alpaca reports no live position — attempting heal")
+            return _heal_orphan_stock_close(
+                symbol=symbol, position=position, db=db,
+                reason=reason,
+            )
 
         try:
             avg_entry_usd = float(live.get("avg_entry_price") or 0)
@@ -759,7 +906,13 @@ def manage_open_positions(db, alpaca, coinspot, tg: TelegramNotifier):
                     is_forced=False, reason=d.reason,
                 )
                 if ok:
-                    tg.send(f"📤 SELL {sym}: {d.reason}\n{msg}")
+                    # v2.9.4: heal-path messages start with "healed orphan"
+                    # so we can tell the user this was reconciliation, not
+                    # a normal sell.
+                    if msg.startswith("healed orphan"):
+                        tg.send(f"🔧 RECONCILED {sym}: original sell never propagated. {msg}")
+                    else:
+                        tg.send(f"📤 SELL {sym}: {d.reason}\n{msg}")
                 else:
                     log.warning(f"sell {sym} failed: {msg}")
                     tg.send(f"⚠️ SELL {sym} FAILED: {msg}")
@@ -1237,13 +1390,14 @@ def _call_claude_for_qa(client, context: str, question: str) -> tuple[str, int, 
 
 def main():
     try:
-        log.info(f"RivX v2.9.3 starting — {'PAPER' if PAPER_MODE else 'LIVE'} mode")
+        log.info(f"RivX v2.9.4 starting — {'PAPER' if PAPER_MODE else 'LIVE'} mode")
         log.info(f"Strategy: $4K swing crypto / $2K momentum crypto / $3.5K stocks / $500 ops floor")
         log.info(f"Schedule: swing crypto 8 AM + 8 PM AEST | momentum crypto every 2 hrs 24/7 | stocks 11 PM + 3 AM AEST (weekdays)")
         log.info("ASX analyser: removed in v2.8.1")
         log.info("Token usage tracking: enabled (v2.8.2)")
         log.info("Cadence v2.9.0: momentum every 2 hrs (12/day), swing crypto twice daily, daily buy cap 10")
         log.info("v2.9.3: trailing stop peak tracking fix — peak_pnl_pct now writes correctly")
+        log.info("v2.9.4: orphan stock close auto-heal — recovers from sells that filled on Alpaca but didn't write to Supabase")
         log.info(f"Reconciliation: {'enabled (read-only)' if _RECONCILIATION_AVAILABLE else 'DISABLED (import failed)'}")
         sys.stdout.flush()
 
@@ -1262,8 +1416,8 @@ def main():
         if db.get_flag("last_startup") != today:
             db.set_flag("last_startup", today)
             rec_status = "Reconciler online" if _RECONCILIATION_AVAILABLE else "Reconciler DISABLED"
-            tg.send(f"🟢 RivX v2.9.3 online. {'PAPER' if PAPER_MODE else 'LIVE'} mode. "
-                    f"{rec_status}. Trailing stop tracking fixed.")
+            tg.send(f"🟢 RivX v2.9.4 online. {'PAPER' if PAPER_MODE else 'LIVE'} mode. "
+                    f"{rec_status}. Orphan stock heal active.")
 
         log.info("setup complete — entering main loop")
         sys.stdout.flush()
