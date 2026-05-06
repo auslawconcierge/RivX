@@ -1,25 +1,37 @@
-# RIVX_VERSION: v2.9.4-pending-sells-patch-check-2026-05-07
+# RIVX_VERSION: v2.9.4-pending-sells-direct-patch-2026-05-07
 """
 Pending sells tracker.
 
 v2.9.4 fix from v2.8:
-  submit_sell_for_stock previously called db._patch but didn't check the
-  return value. db._patch returns False on HTTP errors (it doesn't raise),
-  so when the v2.8 schema migration (adding pending_order_id and
-  pending_since columns to positions) hadn't been run, the PATCH would
-  silently fail and submit_sell_for_stock would still return True with
-  "marked pending_close". That left Alpaca with a sell order in flight,
-  Supabase with the position still status='open', and execute_sell
-  looping forever on the no-live-position guard once Alpaca filled.
+  Two bugs, plus a subtle interaction.
 
-  This is what happened to AMD on 2026-05-06.
+  BUG 1: submit_sell_for_stock didn't check the return value of db._patch.
+  db._patch returns False on HTTP errors without raising, so any failure
+  silently flowed through and submit_sell still returned True.
 
-  FIX: actually check the PATCH return value. On failure, retry with a
-  status-only PATCH (no extra columns) so at least the position is moved
-  out of 'open' state. If even that fails, log critically, stash the
-  order id in bot_flags as a recovery breadcrumb, and return False so
-  the caller knows the close didn't fully land. The bot.py self-heal
-  path (v2.9.4) will catch the orphan on the next manage cycle.
+  BUG 2 (the one that actually broke AMD on 2026-05-06): _finalise_close
+  called db.close_position. close_position queries
+    SELECT * FROM positions WHERE symbol=X AND status='open'
+  But by the time _finalise_close runs, the position is status='pending_close'
+  — submit_sell_for_stock put it there. The query returns nothing. The
+  close silently no-ops. _finalise_close then nulls pending_order_id and
+  returns True with "confirmed fill @ ...".
+
+  Five minutes later, resolve_pending_closes finds AMD with status='pending_close'
+  and pending_order_id=null, hits the "no order_id, reverting to open"
+  branch, sets status='open'. The next manage cycle fires the exit rule
+  again. execute_sell calls alpaca.get_position — Alpaca has no position
+  (the original sell already filled). Returns False with "alpaca reports
+  no live position." Telegram alert. Loop forever.
+
+  FIX: _finalise_close does the close PATCH directly using the row id,
+  in one atomic update that sets status='closed' AND clears pending fields.
+  Does not touch close_position at all. Works regardless of whether the
+  row is in status='open' or status='pending_close'.
+
+  ALSO: submit_sell_for_stock now checks the PATCH return value. If the
+  PATCH to pending_close fails, it logs critically and stashes the order
+  id in bot_flags so bot.py's self-heal path (v2.9.4) can recover.
 
 ORIGINAL v2.8 DOCSTRING:
 
@@ -50,9 +62,7 @@ Fix:
 DB SCHEMA REQUIREMENTS:
   - positions.status accepts a new value 'pending_close'
   - positions has columns: pending_order_id (text), pending_since (timestamptz)
-  These are added in a migration the user runs once. v2.9.4 degrades
-  gracefully if the migration hasn't run, but the fully-tracked
-  pending_close lifecycle requires the columns.
+  These are added in a migration the user runs once.
 
 The reconciler (reconciler.py) is independent — it observes that Alpaca
 and Supabase agree, but doesn't drive the close lifecycle. This module
@@ -75,11 +85,12 @@ def submit_sell_for_stock(*, symbol: str, position: dict,
     Submit a sell order to Alpaca and mark the Supabase position as
     pending_close. Does NOT close the position in Supabase yet.
 
-    Returns (ok, message). ok=True means the order was successfully
-    submitted AND Supabase reflects the pending state. If the Alpaca
-    order goes through but Supabase update fails, returns False with
-    a recovery breadcrumb stashed in bot_flags — bot.py's self-heal
-    path will catch it on the next manage cycle.
+    Returns (ok, message). ok=True means the order was submitted to
+    Alpaca AND Supabase was updated to pending_close. If Supabase
+    update fails after Alpaca accepts the order, returns False with
+    the order id stashed in bot_flags as a recovery breadcrumb — the
+    self-heal path in bot.py (v2.9.4) will close the orphan on the
+    next manage cycle.
     """
     if log_obj is None:
         log_obj = log
@@ -104,10 +115,7 @@ def submit_sell_for_stock(*, symbol: str, position: dict,
             db=db, log_obj=log_obj, reason="submit-time fill",
         )
 
-    # Otherwise: mark pending_close with full tracking columns.
-    # v2.9.4: ACTUALLY CHECK THE PATCH RETURN VALUE. db._patch returns
-    # False on HTTP errors without raising, so the previous bare call
-    # would silently swallow schema mismatches.
+    # Otherwise: mark pending_close. v2.9.4: ACTUALLY CHECK THE RETURN.
     full_data = {
         "status": "pending_close",
         "pending_order_id": order_id,
@@ -116,40 +124,17 @@ def submit_sell_for_stock(*, symbol: str, position: dict,
     ok = db._patch("positions", full_data, "symbol", symbol)
 
     if not ok:
-        # Fall back to status-only — schema migration may not have run.
-        # At least move out of 'open' state so manage_open_positions
-        # doesn't keep firing exit logic.
-        log_obj.warning(f"{symbol}: pending_close PATCH (full) failed — "
-                        f"retrying status-only (schema migration may be missing)")
-        ok = db._patch("positions", {"status": "pending_close"},
-                       "symbol", symbol)
-        if not ok:
-            # Worst case: Alpaca order is live, Supabase still says open.
-            # Stash the order id so we have a breadcrumb. The bot.py
-            # self-heal path (v2.9.4) will close Supabase using the
-            # actual fill on the next manage cycle.
-            log_obj.error(f"CRITICAL: {symbol} sell order {order_id} submitted "
-                          f"to Alpaca but Supabase status update failed entirely. "
-                          f"Position will look orphaned. Self-heal will run on "
-                          f"next manage cycle.")
-            try:
-                db.set_flag(f"orphan_sell_{symbol}", order_id)
-            except Exception:
-                pass
-            return False, (f"alpaca order {order_id[:8]} submitted but supabase "
-                           f"update failed — auto-heal will close on next cycle")
-
-        # Status-only patch worked — still record the breadcrumb so we
-        # can correlate later if needed, but don't error out. The
-        # 48h-stale timeout in resolve_pending_closes will eventually
-        # revert this position to 'open', and the heal will then run.
-        log_obj.warning(f"{symbol}: marked status=pending_close but "
-                        f"pending_order_id/since columns are missing — "
-                        f"add them via migration; auto-heal will recover")
+        # Alpaca order is live, Supabase failed. Record breadcrumb;
+        # bot.py's self-heal will close on the next manage cycle.
+        log_obj.error(f"CRITICAL: {symbol} sell order {order_id} submitted "
+                      f"to Alpaca but pending_close PATCH failed. Self-heal "
+                      f"will close on next manage cycle.")
         try:
             db.set_flag(f"orphan_sell_{symbol}", order_id)
         except Exception:
             pass
+        return False, (f"alpaca order {order_id[:8]} submitted but supabase "
+                       f"update failed — auto-heal will close on next cycle")
 
     log_obj.info(f"SELL {symbol}: order {order_id} submitted, status={status}, "
                  f"marked pending_close")
@@ -183,13 +168,6 @@ def resolve_pending_closes(db, alpaca, log_obj=None) -> int:
     for pos in pending:
         sym = pos.get("symbol")
         order_id = pos.get("pending_order_id") or ""
-        if not order_id:
-            # v2.9.4: if the schema is missing pending_order_id, fall back
-            # to bot_flags breadcrumb stashed by submit_sell_for_stock.
-            try:
-                order_id = db.get_flag(f"orphan_sell_{sym}") or ""
-            except Exception:
-                order_id = ""
 
         if not order_id:
             log_obj.warning(f"pending_close on {sym} has no order_id, reverting to open")
@@ -259,7 +237,13 @@ def resolve_pending_closes(db, alpaca, log_obj=None) -> int:
 
 def _finalise_close(*, symbol: str, position: dict, fill_price: float,
                     db, log_obj, reason: str) -> tuple[bool, str]:
-    """Compute pnl and close the position properly in Supabase."""
+    """
+    Close the position by direct PATCH. v2.9.4: does NOT call
+    db.close_position because that function only matches status='open'
+    and we may be transitioning out of status='pending_close'. Instead
+    we PATCH the row by id with status='closed' and cleared pending
+    fields, all in one atomic update.
+    """
     avg_entry = float(position.get("entry_price") or 0)
     if avg_entry <= 0:
         # Try to derive from aud_amount and qty
@@ -272,20 +256,50 @@ def _finalise_close(*, symbol: str, position: dict, fill_price: float,
 
     pnl_pct = (fill_price - avg_entry) / avg_entry if avg_entry > 0 else 0
 
-    try:
-        db.close_position(symbol=symbol, exit_price=fill_price, pnl_pct=pnl_pct)
-    except Exception as e:
-        return False, f"close_position failed: {e}"
+    # Find the row id. The position dict from resolve_pending_closes already
+    # contains id (it came from a _get result). If not present (paranoid
+    # case), look it up by symbol matching either open or pending_close.
+    pos_id = position.get("id")
+    if not pos_id:
+        try:
+            existing = db._get("positions", {
+                "symbol": f"eq.{symbol}",
+                "status": "in.(open,pending_close)",
+                "order": "created_at.desc",
+                "limit": "1",
+            })
+            if existing:
+                pos_id = existing[0].get("id")
+        except Exception as e:
+            return False, f"close lookup failed: {e}"
 
-    # Clear pending fields explicitly (close_position may not do this).
-    # Best-effort — columns may not exist if migration didn't run.
-    try:
-        db._patch("positions", {
-            "pending_order_id": None,
-            "pending_since": None,
-        }, "symbol", symbol)
-    except Exception:
-        pass
+    if not pos_id:
+        return False, f"no open/pending_close row found for {symbol}"
+
+    close_data = {
+        "status": "closed",
+        "exit_price": fill_price,
+        "pnl_pct": pnl_pct,
+        "closed_at": datetime.now(timezone.utc).isoformat(),
+        "pending_order_id": None,
+        "pending_since": None,
+    }
+
+    ok = db._patch("positions", close_data, "id", str(pos_id))
+
+    if not ok:
+        # Retry without the pending_* nulls in case those columns somehow
+        # weren't migrated. Belt and braces — we know they exist now, but
+        # this avoids a hard failure if the schema diverges in the future.
+        retry_data = {
+            "status": "closed",
+            "exit_price": fill_price,
+            "pnl_pct": pnl_pct,
+            "closed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        ok = db._patch("positions", retry_data, "id", str(pos_id))
+        if not ok:
+            return False, f"close PATCH failed for {symbol} (id {pos_id})"
 
     log_obj.info(f"SELL {symbol}: confirmed fill @ ${fill_price:.4f} "
                  f"({pnl_pct*100:+.2f}%) — {reason}")
