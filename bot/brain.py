@@ -1,4 +1,4 @@
-# RIVX_VERSION: v2.1-render-fixed-2026-04-26
+# RIVX_VERSION: v3.0-trail-only-prompt-2026-05-07
 """
 RivX brain.py — Claude wrapper for trading decisions.
 
@@ -16,36 +16,13 @@ NON-NEGOTIABLE RULE: Claude is never the final authority. If Claude:
 → result is NO TRADE. There is no "mechanical fallback" path. Empty is fine.
 ═══════════════════════════════════════════════════════════════════════════
 
-Job: given a list of candidates from scanner.py and the current portfolio
-state, ask Claude which (if any) to buy. Return structured decisions.
-
-This module is intentionally narrow:
-
-  - It does NOT fetch market data (that's prices.py + scanner.py).
-  - It does NOT execute trades (that's bot.py).
-  - It does NOT decide rules (that's strategy.py).
-  - It DOES translate "scanner says these qualify" + "we have these positions"
-    into "Claude says: buy these, skip those, here's why."
-
-Why Claude in the loop at all (when strategy.py already qualifies things)?
-Because qualification is binary — it says "this matches a pullback pattern."
-Claude adds judgment — "of these 8 qualified pullbacks, which 2 actually look
-clean, and which look like falling knives or news-driven panic?" The
-strategy rules are the floor; Claude is the editor.
-
-Yesterday's lessons baked in:
-
-  - We never tell Claude "fill all slots" or use a "mechanical fallback."
-    If Claude says no to all candidates, we buy nothing. Empty is fine.
-
-  - The prompt explicitly forbids buying coins that have already pumped.
-    Even if a candidate slipped through (it shouldn't, scanner blocks this),
-    Claude is told: pumps and breakouts beyond their initial move are skips.
-
-  - Token budget is hard-capped per call. No 6000-token responses.
-
-  - Output is structured JSON only — no free-form "I'd suggest..." text
-    that yesterday's parser tried (and failed) to regex-extract trades from.
+v3.0 changes (2026-05-07):
+  - System prompt updated to reflect trail-only exits and new entry windows
+    so Claude judges candidates against the right framework
+  - Per-call buy cap raised from 3 to 4 to match higher candidate flow
+  - Signal field rename: broke_7d_high_today → broke_5d_high_today
+    (matches scanner.py v3.0 which tightened momentum window)
+  - prescore_momentum_crypto signature updated
 """
 
 import os
@@ -64,18 +41,16 @@ log = logging.getLogger(__name__)
 MODEL_DECIDE = "claude-opus-4-7"   # the model that picks trades
 MAX_TOKENS_DECIDE = 1500           # generous enough for 10 candidates × short reasoning
 DAILY_USD_CAP = 2.0                # hard ceiling — same as before
-SYSTEM_PROMPT_VERSION = 4          # bump this when prompt changes for tracking
+SYSTEM_PROMPT_VERSION = 5          # v3.0: bumped from 4 to 5
 MIN_CONFIDENCE = 0.6               # below this, treat as "skip" even if Claude said buy
 MAX_CANDIDATES_TO_CLAUDE = 8       # token-budget cap; rank scanner output, send top 8
 MAX_BUYS_PER_CLUSTER = 2           # don't buy 3 highly-correlated assets in one round
 
 
 # ── Correlation clusters ─────────────────────────────────────────────────
-# Coarse but useful grouping: assets in the same cluster tend to move together,
-# so buying multiple from one cluster isn't diversification — it's concentration.
-# Anything not listed defaults to its own single-asset cluster.
+
 ASSET_CLUSTERS = {
-    # Layer-1 platforms — usually move together on "L1 narrative" days
+    # Layer-1 platforms
     "ETH": "l1", "SOL": "l1", "AVAX": "l1", "NEAR": "l1", "APT": "l1",
     "SUI": "l1", "SEI": "l1", "ICP": "l1", "ATOM": "l1", "DOT": "l1",
     "TON": "l1", "TRX": "l1", "ALGO": "l1", "HBAR": "l1",
@@ -83,7 +58,7 @@ ASSET_CLUSTERS = {
     # L2/scaling
     "ARB": "l2", "OP": "l2", "MATIC": "l2", "IMX": "l2", "STX": "l2",
 
-    # Memecoins — extreme correlation in retail-driven moves
+    # Memecoins
     "DOGE": "meme", "SHIB": "meme", "PEPE": "meme", "WIF": "meme",
     "BONK": "meme", "FLOKI": "meme",
 
@@ -94,14 +69,13 @@ ASSET_CLUSTERS = {
     "UNI": "defi", "AAVE": "defi", "CRV": "defi", "COMP": "defi",
     "MKR": "defi", "SUSHI": "defi", "LDO": "defi",
 
-    # Tech/semi stocks (when buying multiple at once = sector concentration)
+    # Tech/semi stocks
     "NVDA": "semi", "AMD": "semi", "AVGO": "semi", "TSM": "semi",
     "AAPL": "megacap", "MSFT": "megacap", "GOOGL": "megacap",
     "AMZN": "megacap", "META": "megacap", "TSLA": "megacap", "NFLX": "megacap",
 
-    # ETFs — own cluster each (hard to "diversify" by buying multiple broad ETFs)
+    # ETFs
     "SPY": "etf", "QQQ": "etf", "IWM": "etf",
-    # BTC: own cluster — uncorrelated enough with everything else to ignore here
 }
 
 
@@ -146,8 +120,9 @@ def _format_candidate(c: dict) -> str:
         bits.append(f"pullback {sig['pullback_pct']*100:+.1f}%")
     if "above_50d_ma" in sig:
         bits.append("above 50dMA" if sig["above_50d_ma"] else "BELOW 50dMA")
-    if "broke_7d_high_today" in sig and sig["broke_7d_high_today"]:
-        bits.append("broke 7d high today")
+    # v3.0: renamed field
+    if "broke_5d_high_today" in sig and sig["broke_5d_high_today"]:
+        bits.append("broke 5d high today")
     if "volume_ratio" in sig:
         bits.append(f"vol {sig['volume_ratio']:.1f}x avg")
     if "close" in sig:
@@ -159,7 +134,7 @@ def _format_candidate(c: dict) -> str:
 def _prescore_candidate(c: dict) -> float:
     """
     Deterministic ranking score. Used to cap candidates sent to Claude when
-    there are more than MAX_CANDIDATES_TO_CLAUDE qualified setups. Higher = better.
+    there are more than MAX_CANDIDATES_TO_CLAUDE qualified setups.
     """
     sig = c.get("signal", {})
     bucket = c.get("bucket", "")
@@ -170,9 +145,10 @@ def _prescore_candidate(c: dict) -> float:
             above_50d_ma=sig.get("above_50d_ma", False),
         )
     if bucket == strategy.Bucket.MOMENTUM_CRYPTO:
+        # v3.0: 5d high break + 5d volume ratio
         return strategy.prescore_momentum_crypto(
             market_cap_rank=sig.get("rank", 9999),
-            broke_7d_high_today=sig.get("broke_7d_high_today", False),
+            broke_5d_high_today=sig.get("broke_5d_high_today", False),
             volume_ratio=sig.get("volume_ratio", 0.0),
         )
     if bucket == strategy.Bucket.SWING_STOCK:
@@ -206,19 +182,36 @@ def _format_portfolio(positions: dict, slot_state: dict, cash_aud: float) -> str
     return "\n".join(lines)
 
 
-SYSTEM_PROMPT = """You are RivX's trade decider. You see candidates that ALREADY passed the strategy's mechanical rules (correct rank, correct pullback or breakout, correct volume). Your job is judgment: of these qualified candidates, which actually look clean enough to buy now?
+# v3.0: prompt rewritten for trail-only exits and updated thresholds
+SYSTEM_PROMPT = """You are RivX's trade decider. You see candidates that ALREADY passed the strategy's mechanical rules. Your job is judgment: of these qualified candidates, which actually look clean enough to buy now?
+
+STRATEGY FRAMEWORK (v3.0 — TRAIL-ONLY EXITS):
+
+  Allocation: $10K total — $4K swing crypto / $2K momentum crypto / $3.5K stocks / $500 ops floor
+
+  Exit rules (trail-only — no target sells; winners run until trail catches them):
+    Swing crypto: stop -8%, trail arms at +10% peak with 5% giveback, 14d review
+    Momentum:    stop -10%, trail arms at +20% peak with 7% giveback, 4d hard exit
+    Swing stocks: stop -5%, trail arms at +8% peak with 4% giveback, 14d review
+
+  Entry windows (what the scanner has already filtered for):
+    Swing crypto: top-30 cap, 4-13% pullback off 7d high, above 50d MA
+    Momentum:    rank 30-200, broke 5d high today on ≥1.5x avg volume
+    Swing stocks: quality list, 3-12% pullback off 7d high, above 50d MA
 
 CORE PRINCIPLES (non-negotiable):
 
-1. SKIP IS THE DEFAULT. If you have any meaningful doubt, skip. Empty slots are fine. Cash is a position.
+1. SKIP IS THE DEFAULT. If you have any meaningful doubt, skip. Empty slots are fine. Cash is a position. The strategy is trend-following — most candidates that qualify will still lose money individually. Edge comes from the runners that pay for the stops.
 
-2. NEVER buy something that has already pumped 15%+ in the last 24h. The scanner shouldn't show you these, but if one slips through (e.g. a 24h surge after qualifying earlier), skip it. You're catching pullbacks and fresh breakouts, not chasing tops.
+2. NEVER buy something that has already pumped 15%+ in the last 24h. The scanner shouldn't show you these, but if one slips through, skip it. You're catching pullbacks and fresh breakouts, not chasing tops.
 
 3. NEVER buy something the user already holds. Re-entries get explicit approval, not bot autonomy.
 
 4. RESPECT BUCKET CAPS. If swing_crypto has 5/5 slots full, don't buy more for that bucket no matter how good the setup looks.
 
-5. AT MOST 3 BUYS PER CALL. Even if 8 candidates look great, pick the 3 cleanest. Diversification isn't piling in.
+5. AT MOST 4 BUYS PER CALL. Even if 8 candidates look great, pick the 4 cleanest. Diversification isn't piling in.
+
+6. BIAS TOWARD MOMENTUM CANDIDATES if the bucket has slots free. The momentum bucket targets ~60-80 trades/year by design — it's the frequency engine. Swing buckets cycle slower. If a momentum candidate is borderline-clean, lean buy; if a swing candidate is borderline-clean, lean skip.
 
 OUTPUT FORMAT (strict JSON, no preamble, no markdown):
 
@@ -252,7 +245,7 @@ def _build_user_message(
 CANDIDATES ({len(candidates)} qualified)
 {candidate_lines}
 
-Decide: which to buy, which to skip, and why. Remember: skip is default; never buy something the user already holds; respect bucket caps; at most 3 buys."""
+Decide: which to buy, which to skip, and why. Remember: skip is default; never buy something the user already holds; respect bucket caps; at most 4 buys."""
 
 
 # ── Response parsing ────────────────────────────────────────────────────
@@ -262,10 +255,8 @@ def _parse_response(text: str) -> tuple[list, str, str]:
     Parse Claude's JSON output.
     Returns (decisions_list, summary, error_str). error_str is "" on success.
     """
-    # Strip common prefixes/suffixes Claude sometimes adds despite system prompt
     text = text.strip()
     if text.startswith("```"):
-        # Remove ``` and ```json wrappers
         lines = text.split("\n")
         if lines[0].startswith("```"):
             lines = lines[1:]
@@ -320,7 +311,6 @@ def _estimate_cost_usd(input_tokens: int, output_tokens: int) -> float:
     Opus 4.7 pricing per Anthropic's docs at the time of writing:
       $15 per 1M input tokens
       $75 per 1M output tokens
-    Conservative; if pricing changes the number is just a soft estimate.
     """
     return (input_tokens * 15.0 + output_tokens * 75.0) / 1_000_000
 
@@ -336,20 +326,7 @@ def decide_buys(
     anthropic_client=None,
     daily_spent_usd: float = 0.0,
 ) -> BrainResult:
-    """
-    Ask Claude which candidates to actually buy.
-
-    Args:
-        candidates: list of dicts from scanner.scan_*()
-        positions: {symbol: {pnl_pct, market, ...}} — currently held
-        slot_state: {bucket: count_used} — for cap awareness
-        cash_aud: available cash for buying
-        anthropic_client: an Anthropic client object with .messages.create().
-                          Pass None to skip the API call (used by tests)
-        daily_spent_usd: how much already spent today; aborts if over cap
-
-    Returns: BrainResult with decisions list + metadata
-    """
+    """Ask Claude which candidates to actually buy."""
     if daily_spent_usd >= DAILY_USD_CAP:
         log.warning(f"brain: daily cap ${DAILY_USD_CAP} reached, skipping decision")
         return BrainResult(
@@ -358,8 +335,6 @@ def decide_buys(
             error=f"daily_spent ${daily_spent_usd:.2f} >= cap ${DAILY_USD_CAP:.2f}",
         )
 
-    # Filter out candidates for symbols we already hold — never call Claude on
-    # those. Saves tokens and removes a class of mistakes.
     held = {s.upper() for s in (positions or {}).keys()}
     fresh_candidates = [c for c in candidates if c.get("symbol", "").upper() not in held]
     if len(fresh_candidates) < len(candidates):
@@ -369,9 +344,6 @@ def decide_buys(
     if not fresh_candidates:
         return BrainResult(decisions=[], summary="no fresh candidates after held-position filter")
 
-    # Pre-filter against slot caps. If swing_crypto is full, drop swing_crypto
-    # candidates from what we even ask Claude. Saves the model from having to
-    # juggle that.
     available = []
     for c in fresh_candidates:
         bucket = c.get("bucket", "")
@@ -384,8 +356,6 @@ def decide_buys(
     if not available:
         return BrainResult(decisions=[], summary="all relevant buckets full")
 
-    # Cap candidates by deterministic pre-score (token control + dilution control).
-    # Send Claude only the top N strongest setups, not 50 borderline ones.
     if len(available) > MAX_CANDIDATES_TO_CLAUDE:
         scored = [(_prescore_candidate(c), c) for c in available]
         scored.sort(key=lambda x: x[0], reverse=True)
@@ -409,7 +379,6 @@ def decide_buys(
         log.error(f"brain: Claude API failed: {e}")
         return BrainResult(decisions=[], summary="", error=f"API error: {e}")
 
-    # Extract text from response
     try:
         text = resp.content[0].text
     except (AttributeError, IndexError) as e:
@@ -420,7 +389,6 @@ def decide_buys(
         log.error(f"brain: {parse_err}")
         return BrainResult(decisions=[], summary="", error=parse_err)
 
-    # Get token usage from response (Anthropic SDK uses .usage attribute)
     in_tok = getattr(getattr(resp, "usage", None), "input_tokens", 0) or 0
     out_tok = getattr(getattr(resp, "usage", None), "output_tokens", 0) or 0
     cost = _estimate_cost_usd(in_tok, out_tok)
@@ -443,17 +411,18 @@ def filter_decisions_by_safety(
 ) -> tuple[list, list]:
     """
     Final gate: even if Claude said "buy", refuse if:
-      - bucket cap reached (defensive — we already filtered, but Claude might
-        have said buy on multiple from same bucket)
+      - bucket cap reached
       - ops floor would be breached
-      - duplicate symbols (Claude returned same symbol twice)
+      - duplicate symbols
+      - confidence below floor
+      - correlation cluster cap reached
 
     Returns (allowed_decisions, rejected_with_reason).
     """
     allowed = []
     rejected = []
     seen_symbols = set()
-    cluster_used_this_round = {}    # cluster_name -> count bought this round
+    cluster_used_this_round = {}
     bucket_used_this_round = dict(slot_state)
     cash_remaining = cash_aud
 
@@ -461,8 +430,6 @@ def filter_decisions_by_safety(
         if d.action != "buy":
             continue
 
-        # Confidence floor: Claude often hedges at 0.5 ("could go either way").
-        # We treat anything below MIN_CONFIDENCE as a skip, even if Claude said buy.
         if d.confidence < MIN_CONFIDENCE:
             rejected.append((d, f"confidence {d.confidence:.2f} below floor {MIN_CONFIDENCE}"))
             continue
@@ -472,7 +439,6 @@ def filter_decisions_by_safety(
             continue
         seen_symbols.add(d.symbol)
 
-        # Correlation cluster cap: don't buy 3 things that move together
         cluster = _cluster_for(d.symbol)
         if cluster_used_this_round.get(cluster, 0) >= MAX_BUYS_PER_CLUSTER:
             rejected.append((d, f"cluster '{cluster}' already has {MAX_BUYS_PER_CLUSTER} buys this round"))
@@ -507,17 +473,12 @@ def _fetch_bars(symbol: str, days: int = 60):
     Fetch daily OHLC bars for a US stock from Alpaca's data API.
     Returns a pandas DataFrame with columns: open, high, low, close, volume.
     Returns None on failure (caller treats this as "skip this symbol").
-
-    This is here in brain.py rather than scanner.py because brain already
-    has the Alpaca credentials in scope via config, and scanner is meant to
-    be exchange-agnostic.
     """
     try:
         import requests
         import pandas as pd
         from datetime import datetime, timedelta, timezone
 
-        # Lazy-load credentials so import errors are handled gracefully
         try:
             from .config import ALPACA_API_KEY, ALPACA_SECRET_KEY
         except ImportError:
@@ -527,8 +488,8 @@ def _fetch_bars(symbol: str, days: int = 60):
             log.warning(f"_fetch_bars {symbol}: no Alpaca credentials")
             return None
 
-        end = datetime.now(timezone.utc) - timedelta(minutes=20)  # avoid SIP delay
-        start = end - timedelta(days=days * 2)  # account for weekends/holidays
+        end = datetime.now(timezone.utc) - timedelta(minutes=20)
+        start = end - timedelta(days=days * 2)
 
         url = f"https://data.alpaca.markets/v2/stocks/{symbol}/bars"
         headers = {
@@ -541,7 +502,7 @@ def _fetch_bars(symbol: str, days: int = 60):
             "end": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "limit": 1000,
             "adjustment": "raw",
-            "feed": "iex",  # free tier; "sip" requires paid plan
+            "feed": "iex",
         }
 
         r = requests.get(url, headers=headers, params=params, timeout=10)
@@ -554,10 +515,9 @@ def _fetch_bars(symbol: str, days: int = 60):
             return None
 
         df = pd.DataFrame(bars)
-        # Alpaca bar fields: t (time), o, h, l, c, v
         df = df.rename(columns={"o": "open", "h": "high", "l": "low",
                                 "c": "close", "v": "volume", "t": "timestamp"})
-        return df.tail(days)  # cap to requested range
+        return df.tail(days)
     except Exception as e:
         log.debug(f"_fetch_bars {symbol}: {e}")
         return None
