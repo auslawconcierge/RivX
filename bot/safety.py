@@ -1,15 +1,10 @@
-# RIVX_VERSION: v2.9.0-buy-cap-10-2026-05-03
+# RIVX_VERSION: v3.0-buy-cap-15-2026-05-07
 """
 RivX safety.py — circuit breakers and bot-level safeguards.
 
 This module is the bot's emergency-stop system. It runs alongside the
 trading logic but its only job is to halt the bot when something looks
 wrong, before more damage happens.
-
-Yesterday's lesson: an autonomous bot that can't stop itself will dig
-holes faster than a human can patch them. The fixes we kept making
-("don't sell on time-exit when entry is 0", "validate prices before
-buy") were patches. This module is structural.
 
 Five guards:
 
@@ -24,13 +19,27 @@ Five guards:
   3. Daily trade cap
      Maximum N buys per UTC day. Stops a runaway bot from blowing
      the budget on a bad day.
-     v2.9.0: bumped from 6 to 10 to match the new momentum cadence
-     (12 scans/day). With cap at 6, a strong-trend day could exhaust
-     the cap by mid-morning and block valid swing/stock buys.
+
+     v3.0: raised from 10 to 15. The new strategy targets ~120-180
+     trades/year with looser entry rules, momentum every 2 hours, and
+     trail-only exits (which fire more often than target+trail). On a
+     strong-trend day the previous cap of 10 would block valid swing
+     and stock buys after the morning momentum scans burned through it.
+     15 buys × ~$700 avg = ~$10.5K — within total budget, so cap remains
+     a runaway-bot guard rather than a strategic constraint.
+
+     v2.9.0: bumped from 6 to 10 to match 12 momentum scans/day.
 
   4. Consecutive losses circuit breaker
      If the last N closed trades were all losses, halt. The strategy
      might be wrong for current market conditions. Default: 4.
+
+     v3.0 NOTE: the trail-only strategy by design has a lower win rate
+     than the old half-take + target rules. Expect more frequent stop-outs
+     (which is the trade-off for letting winners run). 4-loss streaks
+     should be more common in the first month of paper trading. If we
+     hit consec_loss halts repeatedly without a clear edge case, we
+     revisit this threshold in v3.1.
 
   5. Heartbeat / watchdog
      Bot writes timestamp every loop. External monitor (or the bot
@@ -40,10 +49,6 @@ Five guards:
 Each guard returns a SafetyVerdict. The trading code's contract:
 before any buy, call check_can_buy(). Before any sell, call
 check_can_sell(). If verdict.allowed=False, refuse and log the reason.
-
-State persistence: drawdown peak and consecutive losses survive bot
-restarts via Supabase flags (passed in as a callback). Daily counts
-reset at UTC midnight.
 """
 
 import time
@@ -55,12 +60,12 @@ from typing import Optional, Callable
 log = logging.getLogger(__name__)
 
 
-# ── Tunable thresholds (overridable via env or config) ────────────────────
+# ── Tunable thresholds ────────────────────────────────────────────────────
 
 DRAWDOWN_HALT_PCT       = 0.05   # 5% from peak halts new buys
 DRAWDOWN_RESUME_PCT     = 0.03   # must recover to within 3% of peak to resume
 SINGLE_LOSS_HALT_PCT    = 0.15   # >15% loss on a single sell halts bot
-DAILY_BUY_CAP           = 10     # max buys per UTC day (v2.9.0: was 6)
+DAILY_BUY_CAP           = 15     # v3.0: raised from 10 to match new cadence
 CONSECUTIVE_LOSS_HALT   = 4      # 4 losing closes in a row halts bot
 HEARTBEAT_STALE_MINUTES = 10     # if heartbeat older than this, alert
 
@@ -81,10 +86,7 @@ def check_drawdown(
 ) -> SafetyVerdict:
     """
     If portfolio is down >= DRAWDOWN_HALT_PCT from its peak, halt new buys.
-
-    Existing positions still get managed (stops/targets fire), so the bot
-    can still exit losers — it just can't open new positions while
-    underwater. Resume happens when drawdown recovers to <= DRAWDOWN_RESUME_PCT.
+    Existing positions still get managed (stops/trails fire).
     """
     if peak_total_aud <= 0:
         return SafetyVerdict(True, "no peak recorded yet")
@@ -113,8 +115,7 @@ def check_sell_loss(
 ) -> SafetyVerdict:
     """
     Refuses a sell that would record a realized loss greater than
-    SINGLE_LOSS_HALT_PCT. Catches the ARB-style scenario where bad data
-    creates a phantom -99% that auto-stops.
+    SINGLE_LOSS_HALT_PCT.
     """
     if entry_aud <= 0:
         return SafetyVerdict(
