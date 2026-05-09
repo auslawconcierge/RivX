@@ -1,33 +1,27 @@
-# RIVX_VERSION: v2.8.1-token-usage-2026-05-02
+# RIVX_VERSION: v3.0.1-qty-on-save-2026-05-09
 """
 RivX supabase_logger.py
 Stores all bot state between loop iterations.
 Tables: trades, positions, signal_weights, snapshots, approved_plan,
         crypto_checks, bot_flags, token_usage
 
+v3.0.1 changes from v2.8.1 (2026-05-09):
+  - save_position now accepts an optional qty parameter and writes it to the
+    positions row at insert time. Previously qty was only set later (for
+    stocks, via update_position_from_alpaca; for crypto, never). The crypto
+    sell path needs qty stored at buy time so coinspot_trader can sell the
+    exact amount we bought, not "all of this symbol's balance." This fix is
+    paired with bot.py and coinspot_trader.py changes.
+
 v2.8.1 changes from v2.6:
   - Added record_token_usage() method. Upserts one row per day in the
-    token_usage table, incrementing totals as Claude calls happen.
-    Powers the Cost tab on the dashboard. Was previously broken because
-    nothing ever wrote to this table — bot only wrote daily spend to a
-    bot_flags entry.
+    token_usage table.
 
 v2.6 fix: get_portfolio_value() previously only counted open positions +
-cash. When all positions were closed, total_aud snapped back to $10,000
-even though closed positions had realised gains/losses. Now includes
-sum of realised P&L from `positions` table where status='closed'.
-This means: total = cash + open_market_value + realised_pnl_lifetime,
-which is what the dashboard math reconciles to.
+cash. Now includes sum of realised P&L from `positions` table where
+status='closed'.
 
-v2.2 changes from v1:
-  - set_flag / get_flag now write to the dedicated `bot_flags` table
-    (key/value/updated_at columns) instead of JSON-inside-approved_plan.
-    The dashboard + safety circuit breakers all read from bot_flags so
-    everything reconciles.
-  - STARTING capital constant is 10000 (was 5000) to match the v2 strategy.
-
-Everything else is byte-identical to the v1 file so existing position/trade/
-snapshot/signal-weight logic keeps working.
+v2.2 changes from v1: set_flag / get_flag now write to bot_flags table.
 """
 
 import json
@@ -40,9 +34,6 @@ log = logging.getLogger(__name__)
 
 DEFAULT_WEIGHTS = {"rsi": 0.2, "macd": 0.2, "bollinger": 0.2, "volume": 0.2, "ma_cross": 0.2}
 
-# v2: $10K paper-trading capital. Single source of truth for portfolio math
-# in this module. Other modules (strategy.py) have their own constant; both
-# must agree.
 STARTING_CAPITAL_AUD = 10000.0
 
 
@@ -102,15 +93,9 @@ class SupabaseLogger:
             return False
 
     def _patch_with_fallback(self, table: str, data: dict, col: str, val: str) -> bool:
-        """
-        PATCH that retries without unknown columns if the first attempt fails.
-        Lets us add new fields (current_price, qty, last_priced_at, change_today)
-        without requiring the user to ALTER TABLE first. If the column exists, great.
-        If not, we drop it and keep going.
-        """
+        """PATCH that retries without unknown columns if the first attempt fails."""
         if self._patch(table, data, col, val):
             return True
-        # Try with progressively fewer optional fields
         optional = ["last_priced_at", "change_today", "qty", "current_price"]
         trimmed = dict(data)
         for field in optional:
@@ -124,12 +109,7 @@ class SupabaseLogger:
 
     def _post_with_fallback(self, table: str, data: dict,
                             optional_fields: list = None) -> dict | None:
-        """
-        POST that retries without optional columns if the first attempt fails.
-        Same pattern as _patch_with_fallback but for inserts. Lets the bot start
-        writing new fields (executions, skipped_setups) before the user has run
-        the ALTER TABLE — the data goes in without those fields until they exist.
-        """
+        """POST that retries without optional columns if the first attempt fails."""
         result = self._post(table, data)
         if result is not None:
             return result
@@ -174,8 +154,21 @@ class SupabaseLogger:
         return {r["symbol"]: r for r in rows}
 
     def save_position(self, symbol: str, entry_price: float,
-                      aud_amount: float, market: str):
-        self._post("positions", {
+                      aud_amount: float, market: str,
+                      qty: float = None):
+        """
+        Insert a new open position row.
+
+        v3.0.1: qty is now an optional parameter. When provided, it's written
+        at insert time. This is critical for crypto: the sell path uses the
+        stored qty to tell CoinSpot exactly how much to sell. Without it, the
+        live sell falls back to "sell entire symbol balance" which would dump
+        non-bot holdings of the same coin in the same account.
+
+        Stocks may pass qty=None at insert time (Alpaca fill might be pending);
+        update_position_from_alpaca will fill it in once the fill is confirmed.
+        """
+        row = {
             "symbol":      symbol,
             "entry_price": entry_price,
             "aud_amount":  aud_amount,
@@ -183,7 +176,11 @@ class SupabaseLogger:
             "status":      "open",
             "pnl_pct":     0,
             "created_at":  datetime.utcnow().isoformat(),
-        })
+        }
+        if qty is not None and qty > 0:
+            row["qty"] = round(float(qty), 8)
+
+        self._post_with_fallback("positions", row, optional_fields=["qty"])
 
     def close_position(self, symbol: str, exit_price: float, pnl_pct: float):
         existing = self._get("positions",
@@ -211,10 +208,7 @@ class SupabaseLogger:
             self._patch_with_fallback("positions", data, "id", str(pos["id"]))
 
     def update_position_pnl_direct(self, symbol: str, pnl_pct: float):
-        """
-        Write a pre-computed pnl_pct directly (e.g. from Alpaca's unrealized_plpc).
-        Used when we trust the upstream broker more than our own math.
-        """
+        """Write a pre-computed pnl_pct directly (e.g. from Alpaca's unrealized_plpc)."""
         existing = self._get("positions",
                              {"symbol": f"eq.{symbol}", "status": "eq.open"})
         if existing:
@@ -226,13 +220,7 @@ class SupabaseLogger:
                                     pnl_pct: float, qty: float = None,
                                     change_today: float = None,
                                     avg_entry_price: float = None):
-        """
-        Push live Alpaca position data back to Supabase for the dashboard.
-
-        Also heals historical rows where entry_price was stored as 0 due to the
-        old bug — if the stored entry_price is 0 and Alpaca reports a non-zero
-        avg_entry_price, we overwrite.
-        """
+        """Push live Alpaca position data back to Supabase for the dashboard."""
         existing = self._get("positions",
                              {"symbol": f"eq.{symbol}", "status": "eq.open"})
         if not existing:
@@ -249,7 +237,6 @@ class SupabaseLogger:
         if change_today is not None:
             data["change_today"] = round(change_today, 6)
 
-        # Heal entry_price=0 rows (from the old bug where Alpaca fills weren't captured)
         stored_entry = float(pos.get("entry_price") or 0)
         if stored_entry == 0 and avg_entry_price and avg_entry_price > 0:
             data["entry_price"] = round(avg_entry_price, 6)
@@ -282,12 +269,8 @@ class SupabaseLogger:
             self._post("signal_weights", data)
 
     # ── Approved plan ─────────────────────────────────────────────────────────
-    # The approved_plan table still exists for v1 nightly-plan storage. It is
-    # NOT used for flags any more. Kept here so save_approved_plan / get_approved_plan
-    # callers (if any remain) keep working.
 
     def save_approved_plan(self, plan: dict):
-        """Save tonight's approved plan so intraday loop can reference it."""
         data     = {"plan": json.dumps(plan), "updated_at": datetime.utcnow().isoformat()}
         existing = self._get("approved_plan")
         if existing:
@@ -307,11 +290,6 @@ class SupabaseLogger:
     # ── Snapshots & portfolio value ───────────────────────────────────────────
 
     def save_snapshot(self, total_aud: float, day_pnl: float, total_pnl: float):
-        """
-        v2.3: Write a new row every call for time-series charting.
-        The dashboard chart reads `created_at` to plot the line.
-        Old behavior was upsert-by-date which only kept one row per day.
-        """
         self._post("snapshots", {
             "date":       date.today().isoformat(),
             "total_aud":  round(float(total_aud), 2),
@@ -321,24 +299,9 @@ class SupabaseLogger:
         })
 
     # ── Token usage (Cost tab) ────────────────────────────────────────────────
-    # v2.8.1: track Claude API spend per day. One row per date — increment if
-    # the row exists, insert if it doesn't.
 
     def record_token_usage(self, input_tokens: int, output_tokens: int,
                            cost_usd: float):
-        """
-        Upsert today's token_usage row.
-
-        token_usage schema (all NOT NULL):
-          date         date PK
-          input_tokens bigint
-          output_tokens bigint
-          cost_usd     numeric
-          call_count   integer
-
-        If today's row exists, increment all four counters. If not, create
-        the row with these as the starting values.
-        """
         today = date.today().isoformat()
         try:
             existing = self._get("token_usage",
@@ -371,12 +334,8 @@ class SupabaseLogger:
                 log.warning(f"token_usage INSERT failed for {today}")
 
     # ── Flags (bot_flags table) ───────────────────────────────────────────────
-    # v2.2 fix: was previously stored as JSON keys inside approved_plan.plan
-    # (`_flag_<key>`). Now lives in a dedicated key/value table that both the
-    # dashboard and the safety/circuit-breaker code can read directly.
 
     def get_flag(self, key: str) -> str:
-        """Read a flag value from bot_flags. Returns "" if missing/error."""
         rows = self._get("bot_flags", {"key": f"eq.{key}", "limit": "1"})
         if rows:
             v = rows[0].get("value")
@@ -384,11 +343,6 @@ class SupabaseLogger:
         return ""
 
     def set_flag(self, key: str, value: str) -> bool:
-        """
-        Write a flag to bot_flags. Upsert: update if key exists, insert if not.
-        Returns True on success. All values stored as text — callers that need
-        numbers must cast on read.
-        """
         str_value = "" if value is None else str(value)
         now_iso   = datetime.utcnow().isoformat()
         existing  = self._get("bot_flags", {"key": f"eq.{key}", "limit": "1"})
@@ -401,20 +355,6 @@ class SupabaseLogger:
         return result is not None
 
     def get_portfolio_value(self) -> dict:
-        """
-        Live portfolio total = cash + market value of open positions + lifetime
-        realised P&L from closed positions.
-
-        v2.6 fix: previously this only counted cash + market_value of open
-        positions. When everything was closed, total_aud snapped back to the
-        starting $10,000 even though realised gains/losses had moved the real
-        balance. Now sums realised P&L (aud_amount × pnl_pct) across all
-        closed positions and adds it in.
-
-        Cash modelling: starting capital minus capital deployed into currently-
-        OPEN positions. Closed positions don't tie up cash — their realised P&L
-        becomes part of cash automatically (via the realised_lifetime add).
-        """
         STARTING = STARTING_CAPITAL_AUD
         try:
             open_positions = self._get("positions", {"status": "eq.open"}) or []
@@ -426,9 +366,8 @@ class SupabaseLogger:
         except Exception:
             closed_positions = []
 
-        # ── Open positions: market value + capital deployed ─────────────
-        deployed_entry = 0.0   # capital that went into entries (still locked up)
-        market_value   = 0.0   # current value of those positions
+        deployed_entry = 0.0
+        market_value   = 0.0
         for p in open_positions:
             entry = float(p.get("aud_amount") or 0)
             deployed_entry += entry
@@ -440,25 +379,16 @@ class SupabaseLogger:
             mv = 0.0
             if qty > 0 and current_price > 0:
                 if market == "alpaca":
-                    # Stocks: current_price is USD. We don't have today's FX
-                    # cleanly server-side, so use entry × (1 + pnl_pct) which
-                    # captures the USD move via Alpaca's unrealized_plpc.
                     pnl_pct = float(p.get("pnl_pct") or 0)
                     mv = entry * (1 + pnl_pct) if entry > 0 else 0
                 else:
-                    # Crypto: current_price is AUD-native
                     mv = qty * current_price
             else:
-                # Missing fields — fall back to aud_amount × (1 + pnl_pct)
                 pnl_pct = float(p.get("pnl_pct") or 0)
                 mv = entry * (1 + pnl_pct) if entry > 0 else 0
 
             market_value += mv
 
-        # ── Closed positions: lifetime realised P&L ─────────────────────
-        # Filter out phantom cleanups (entry==exit AND pnl_pct==0). Those are
-        # rows we manually marked closed without a real sell — they shouldn't
-        # count toward realised gains.
         realised_lifetime = 0.0
         for c in closed_positions:
             try:
@@ -466,23 +396,17 @@ class SupabaseLogger:
                 pct = float(c.get("pnl_pct") or 0)
                 entry_p = float(c.get("entry_price") or 0)
                 exit_p  = float(c.get("exit_price") or 0)
-                # Phantom cleanup detection: entry == exit AND pnl == 0
                 if abs(entry_p - exit_p) < 0.0001 and abs(pct) < 0.0001:
                     continue
                 realised_lifetime += aud * pct
             except (TypeError, ValueError):
                 continue
 
-        # ── Cash & total ────────────────────────────────────────────────
-        # Cash = starting capital + lifetime realised gains − capital still
-        # locked up in open positions. When you close a winner, your cash
-        # goes up by the entry amount + realised gain. This formula captures that.
         cash = STARTING + realised_lifetime - deployed_entry
         cash = max(0, cash)
 
         total = market_value + cash
 
-        # ── Day P&L: vs prior snapshot (kept simple) ────────────────────
         try:
             snaps = self._get("snapshots", {"order": "created_at.desc",
                                              "limit": "1"}) or []
