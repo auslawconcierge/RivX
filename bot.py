@@ -1,27 +1,18 @@
-# RIVX_VERSION: v3.0.1-qty-scoped-sells-2026-05-09
+# RIVX_VERSION: v3.0.2-paper-sells-fixed-2026-05-09
 """
-RivX bot.py — main loop orchestrator (v3 strategy).
+RivX bot.py — main loop orchestrator.
 
-v3.0.1 changes from v3.0 (2026-05-09):
-  - CRYPTO BUY: stores qty on save_position so the sell path can reference
-    the exact amount the bot bought. Without this, live crypto sells would
-    fall through to "sell entire balance" in coinspot_trader and dump
-    non-bot holdings of the same coin.
-  - CRYPTO SELL: passes coin_amount (=stored qty) to coinspot.sell().
-    Refuses to sell if no qty is stored — would rather fail loudly than
-    risk a full-balance sell.
-  - STOCK SELL: passes qty (=stored qty from Alpaca live position) to
-    alpaca.sell(). The full-position DELETE path now requires explicit
-    close_full_position=True; we don't use it from the regular exit path.
-  - Healing path for stocks unchanged: relies on the most recent filled
-    SELL order, which is correct since the order has already happened.
+v3.0.2 changes from v3.0.1 (2026-05-09):
+  BUG FIX. execute_sell()'s qty check fired in BOTH paper and live mode.
+  The qty protection is meant for the live CoinSpot/Alpaca API calls that
+  could otherwise dump non-bot holdings — paper mode never calls those APIs,
+  so the check was wrongly blocking legacy paper positions from auto-exiting.
+  Now: qty check only enforced when PAPER_MODE is False.
 
-v3.0 changes from v2.9.4: trail-only momentum, peak passed through.
-
-v2.9.4: SELF-HEALING ORPHAN STOCK CLOSE.
-v2.9.3: TRAILING STOP BUG FIX — peak_pnl_pct writes correctly.
-v2.9.0: Crypto scan cadence; daily buy cap raised.
-v2.8.x: pending_close lifecycle, scanner_exclusions, reconciler, token_usage.
+v3.0.1: qty stored on buy, qty passed on sell (live protection).
+v3.0:   trail-only exits, momentum 5d/1.5x entry, daily cap 15.
+v2.9.4: orphan stock close auto-heal.
+v2.9.3: trailing stop peak tracking.
 """
 
 from __future__ import annotations
@@ -401,9 +392,7 @@ def _heal_orphan_stock_close(*, symbol: str, position: dict, db,
 def execute_buy(
     *, symbol: str, bucket: str, db, alpaca, coinspot,
 ) -> tuple[bool, str]:
-    """
-    v3.0.1: crypto buys now store qty at insert time so sells can pass it.
-    """
+    """Crypto buys store qty at insert time so live sells can pass the exact amount."""
     is_stock = bucket == strategy.Bucket.SWING_STOCK
     size_aud = strategy.position_size_for(bucket)
 
@@ -459,9 +448,6 @@ def execute_buy(
         if entry_price <= 0:
             entry_price = quote.aud
 
-        # v3.0.1: capture qty bought. coinspot.buy() echoes coin_amount in
-        # both PAPER and LIVE responses. If absent (older response shape),
-        # derive from size_aud / entry_price.
         coin_amount = float(res.get("coin_amount") or 0)
         if coin_amount <= 0 and entry_price > 0:
             coin_amount = round(size_aud / entry_price, 8)
@@ -518,9 +504,11 @@ def execute_sell(
     """
     Close a position.
 
-    v3.0.1: passes qty to both alpaca.sell() and coinspot.sell(). Refuses
-    crypto sells when no qty is stored — would rather fail loudly than
-    fall through to "sell entire balance" on CoinSpot.
+    v3.0.2: qty checks for both stock and crypto branches now ONLY fire in
+    LIVE mode. Paper mode lets the sell through to the simulator regardless
+    of qty. This is correct because the qty protection was designed against
+    live API "sell entire balance" mistakes — paper APIs never call the real
+    exchange so there's no balance to mistakenly dump.
     """
     market = (position.get("market") or "").lower()
     is_stock = market == "alpaca"
@@ -560,14 +548,13 @@ def execute_sell(
             if not v.allowed:
                 return False, f"safety blocked: {v.reason}"
 
-        # v3.0.1: prefer Supabase-stored qty; fall back to Alpaca's reported
-        # qty (which only differs if something has gone wrong).
         stored_qty = float(position.get("qty") or 0)
         sell_qty = stored_qty if stored_qty > 0 else live_qty
 
-        if sell_qty <= 0:
+        # v3.0.2: only enforce qty in live mode
+        if not PAPER_MODE and sell_qty <= 0:
             return False, (f"{symbol}: no stored qty in Supabase and Alpaca "
-                           f"returned qty=0 — refusing sell")
+                           f"returned qty=0 — refusing live sell")
 
         if _RECONCILIATION_AVAILABLE and pending_sells is not None:
             ok, msg = pending_sells.submit_sell_for_stock(
@@ -600,9 +587,13 @@ def execute_sell(
                 return True, msg
             return False, msg
 
-        # Fallback (old path): explicit qty sell, NOT close-full-position
+        # Fallback (old path). In paper with qty=0, use close_full_position so
+        # the alpaca paper API still simulates a close.
         try:
-            res = alpaca.sell(symbol, qty=sell_qty)
+            if sell_qty > 0:
+                res = alpaca.sell(symbol, qty=sell_qty)
+            else:
+                res = alpaca.sell(symbol, close_full_position=True)
         except Exception as e:
             return False, f"alpaca sell error: {e}"
         if not res:
@@ -658,19 +649,21 @@ def execute_sell(
         if not v.allowed:
             return False, f"safety blocked: {v.reason}"
 
-    # v3.0.1: must have qty stored. No fallback to "sell whatever balance."
     stored_qty = float(position.get("qty") or 0)
-    if stored_qty <= 0:
-        # Defensive: this shouldn't happen for any position bought after
-        # v3.0.1, but legacy positions from before the fix might have qty=NULL.
-        # Refuse rather than risk a full-balance sell.
+
+    # v3.0.2: only enforce qty in LIVE mode. Paper mode never calls the real
+    # CoinSpot trading API, so there's no risk of dumping non-bot holdings.
+    if not PAPER_MODE and stored_qty <= 0:
         return False, (f"{symbol}: no qty stored on this position (likely a "
                        f"pre-v3.0.1 row). Refusing live sell. Manual close "
                        f"required — check Supabase row and sell on CoinSpot "
                        f"directly, then mark closed.")
 
     try:
-        res = coinspot.sell(symbol, coin_amount=stored_qty)
+        # In paper, coin_amount can be None — coinspot.sell() simulates anyway.
+        # In live, stored_qty is guaranteed > 0 by the check above.
+        sell_qty_arg = stored_qty if stored_qty > 0 else None
+        res = coinspot.sell(symbol, coin_amount=sell_qty_arg)
     except Exception as e:
         return False, f"coinspot sell error: {e}"
     if not res:
@@ -684,7 +677,8 @@ def execute_sell(
     new_count = safety.update_consecutive_losses(prior, last_trade_was_loss=(pnl_pct < 0))
     db.set_flag("consec_losses", str(new_count))
 
-    log.info(f"SELL {symbol}: {stored_qty:.8f} @ ${exit_price:.4f} AUD "
+    qty_str = f"{stored_qty:.8f}" if stored_qty > 0 else "(legacy: no qty)"
+    log.info(f"SELL {symbol}: {qty_str} @ ${exit_price:.4f} AUD "
              f"({pnl_pct*100:+.2f}%) — {reason}")
 
     try:
@@ -706,7 +700,7 @@ def execute_sell(
     except Exception as e:
         log.debug(f"claude_decisions outcome update {symbol}: {e}")
 
-    return True, f"sold {stored_qty:.8f} @ ${exit_price:.4f} AUD ({pnl_pct*100:+.2f}%)"
+    return True, f"sold {qty_str} @ ${exit_price:.4f} AUD ({pnl_pct*100:+.2f}%)"
 
 
 # ── Position management ─────────────────────────────────────────────────
@@ -1240,10 +1234,11 @@ def _call_claude_for_qa(client, context: str, question: str) -> tuple[str, int, 
 
 def main():
     try:
-        log.info(f"RivX v3.0.1 starting — {'PAPER' if PAPER_MODE else 'LIVE'} mode")
+        log.info(f"RivX v3.0.2 starting — {'PAPER' if PAPER_MODE else 'LIVE'} mode")
         log.info(f"Strategy: $4K swing crypto / $2K momentum crypto / $3.5K stocks / $500 ops floor")
         log.info(f"Schedule: swing crypto 8 AM + 8 PM AEST | momentum crypto every 2 hrs 24/7 | stocks 11 PM + 3 AM AEST (weekdays)")
-        log.info("v3.0.1: qty-scoped sells (CoinSpot + Alpaca) — protects non-bot holdings")
+        log.info("v3.0.2: paper-mode sells no longer blocked by missing qty (live still protected)")
+        log.info("v3.0.1: qty-scoped sells (CoinSpot + Alpaca) — protects non-bot holdings in LIVE")
         log.info("v3.0: trail-only exits, momentum 5d/1.5x entry, pullback windows widened, daily buy cap 15")
         log.info("v2.9.4: orphan stock close auto-heal active")
         log.info("v2.9.3: trailing stop peak tracking active")
@@ -1265,8 +1260,8 @@ def main():
         if db.get_flag("last_startup") != today:
             db.set_flag("last_startup", today)
             rec_status = "Reconciler online" if _RECONCILIATION_AVAILABLE else "Reconciler DISABLED"
-            tg.send(f"🟢 RivX v3.0.1 online. {'PAPER' if PAPER_MODE else 'LIVE'} mode. "
-                    f"{rec_status}. Trail-only strategy, qty-scoped sells.")
+            tg.send(f"🟢 RivX v3.0.2 online. {'PAPER' if PAPER_MODE else 'LIVE'} mode. "
+                    f"{rec_status}. Trail-only strategy, qty-scoped live sells.")
 
         log.info("setup complete — entering main loop")
         sys.stdout.flush()
