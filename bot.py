@@ -1,14 +1,14 @@
-# RIVX_VERSION: v3.0.2-paper-sells-fixed-2026-05-09
+# RIVX_VERSION: v3.0.3-net-fee-alerts-2026-05-10
 """
 RivX bot.py — main loop orchestrator.
 
-v3.0.2 changes from v3.0.1 (2026-05-09):
-  BUG FIX. execute_sell()'s qty check fired in BOTH paper and live mode.
-  The qty protection is meant for the live CoinSpot/Alpaca API calls that
-  could otherwise dump non-bot holdings — paper mode never calls those APIs,
-  so the check was wrongly blocking legacy paper positions from auto-exiting.
-  Now: qty check only enforced when PAPER_MODE is False.
+v3.0.3 changes from v3.0.2 (2026-05-10):
+  Per-trade SELL alerts (and the manual-sell alert) now show net-of-fees
+  dollars and percentage, matching the dashboard and daily summary. The
+  raw gross pnl_pct is still stored on the position row (strategy thresholds
+  are gross-based) — only the human-facing message is converted.
 
+v3.0.2: paper-mode sells no longer blocked by missing qty.
 v3.0.1: qty stored on buy, qty passed on sell (live protection).
 v3.0:   trail-only exits, momentum 5d/1.5x entry, daily cap 15.
 v2.9.4: orphan stock close auto-heal.
@@ -45,6 +45,7 @@ from bot import strategy
 from bot import safety
 from bot import scanner
 from bot import brain
+from bot import fees as fee_calc
 from bot.supabase_logger import SupabaseLogger
 from bot.telegram_notify import TelegramNotifier
 from bot.alpaca_trader import AlpacaTrader
@@ -387,6 +388,24 @@ def _heal_orphan_stock_close(*, symbol: str, position: dict, db,
                   f"filled {filled_at}")
 
 
+# ── Net-of-fees alert formatting ──────────────────────────────────────────
+
+def _format_sell_msg(*, symbol: str, qty_str: str, exit_price: float,
+                     gross_pnl_pct: float, market: str | None,
+                     aud_amount: float, currency: str = "AUD") -> str:
+    """
+    Build a human-facing SELL alert string with net-of-fees dollars and pct.
+    Matches the dashboard's CLOSED POSITIONS columns and the daily summary.
+    """
+    net_dollar = fee_calc.realised_dollar_net(
+        aud_amount=aud_amount, pnl_pct=gross_pnl_pct, market=market,
+    )
+    net_pct = fee_calc.realised_pct_net(pnl_pct=gross_pnl_pct, market=market) * 100
+    sign = "+" if net_dollar >= 0 else "-"
+    return (f"sold {qty_str} @ ${exit_price:.4f} {currency} "
+            f"({sign}${abs(net_dollar):.2f} / {net_pct:+.2f}% net)")
+
+
 # ── Trade execution ──────────────────────────────────────────────────────
 
 def execute_buy(
@@ -504,14 +523,17 @@ def execute_sell(
     """
     Close a position.
 
-    v3.0.2: qty checks for both stock and crypto branches now ONLY fire in
-    LIVE mode. Paper mode lets the sell through to the simulator regardless
-    of qty. This is correct because the qty protection was designed against
-    live API "sell entire balance" mistakes — paper APIs never call the real
-    exchange so there's no balance to mistakenly dump.
+    v3.0.3: human-facing return message now uses net-of-fees dollars and pct
+    (matches dashboard / daily summary). Internal storage of pnl_pct on the
+    closed position row remains GROSS — strategy thresholds are gross-based
+    and the fee model is applied at display time.
+
+    v3.0.2: paper-mode qty checks bypassed.
+    v3.0.1: live qty enforced.
     """
     market = (position.get("market") or "").lower()
     is_stock = market == "alpaca"
+    aud_amount = float(position.get("aud_amount") or 0)
 
     if is_stock:
         try:
@@ -551,7 +573,6 @@ def execute_sell(
         stored_qty = float(position.get("qty") or 0)
         sell_qty = stored_qty if stored_qty > 0 else live_qty
 
-        # v3.0.2: only enforce qty in live mode
         if not PAPER_MODE and sell_qty <= 0:
             return False, (f"{symbol}: no stored qty in Supabase and Alpaca "
                            f"returned qty=0 — refusing live sell")
@@ -587,8 +608,7 @@ def execute_sell(
                 return True, msg
             return False, msg
 
-        # Fallback (old path). In paper with qty=0, use close_full_position so
-        # the alpaca paper API still simulates a close.
+        # Fallback path (no reconciler module)
         try:
             if sell_qty > 0:
                 res = alpaca.sell(symbol, qty=sell_qty)
@@ -608,7 +628,7 @@ def execute_sell(
         db.set_flag("consec_losses", str(new_count))
 
         log.info(f"SELL {symbol}: {sell_qty} sh @ ${exit_price_usd:.4f} USD "
-                 f"({pnl_pct*100:+.2f}%) — {reason}")
+                 f"({pnl_pct*100:+.2f}% gross) — {reason}")
 
         try:
             recent = db._get("claude_decisions", {
@@ -629,7 +649,11 @@ def execute_sell(
         except Exception as e:
             log.debug(f"claude_decisions outcome update {symbol}: {e}")
 
-        return True, f"sold {sell_qty} @ ${exit_price_usd:.4f} USD ({pnl_pct*100:+.2f}%)"
+        return True, _format_sell_msg(
+            symbol=symbol, qty_str=f"{sell_qty} sh",
+            exit_price=exit_price_usd, gross_pnl_pct=pnl_pct,
+            market="alpaca", aud_amount=aud_amount, currency="USD",
+        )
 
     # ── Crypto branch ──
     entry_aud = float(position.get("entry_price") or 0)
@@ -651,8 +675,6 @@ def execute_sell(
 
     stored_qty = float(position.get("qty") or 0)
 
-    # v3.0.2: only enforce qty in LIVE mode. Paper mode never calls the real
-    # CoinSpot trading API, so there's no risk of dumping non-bot holdings.
     if not PAPER_MODE and stored_qty <= 0:
         return False, (f"{symbol}: no qty stored on this position (likely a "
                        f"pre-v3.0.1 row). Refusing live sell. Manual close "
@@ -660,8 +682,6 @@ def execute_sell(
                        f"directly, then mark closed.")
 
     try:
-        # In paper, coin_amount can be None — coinspot.sell() simulates anyway.
-        # In live, stored_qty is guaranteed > 0 by the check above.
         sell_qty_arg = stored_qty if stored_qty > 0 else None
         res = coinspot.sell(symbol, coin_amount=sell_qty_arg)
     except Exception as e:
@@ -679,7 +699,7 @@ def execute_sell(
 
     qty_str = f"{stored_qty:.8f}" if stored_qty > 0 else "(legacy: no qty)"
     log.info(f"SELL {symbol}: {qty_str} @ ${exit_price:.4f} AUD "
-             f"({pnl_pct*100:+.2f}%) — {reason}")
+             f"({pnl_pct*100:+.2f}% gross) — {reason}")
 
     try:
         recent = db._get("claude_decisions", {
@@ -700,7 +720,11 @@ def execute_sell(
     except Exception as e:
         log.debug(f"claude_decisions outcome update {symbol}: {e}")
 
-    return True, f"sold {qty_str} @ ${exit_price:.4f} AUD ({pnl_pct*100:+.2f}%)"
+    return True, _format_sell_msg(
+        symbol=symbol, qty_str=qty_str,
+        exit_price=exit_price, gross_pnl_pct=pnl_pct,
+        market=market, aud_amount=aud_amount, currency="AUD",
+    )
 
 
 # ── Position management ─────────────────────────────────────────────────
@@ -1234,9 +1258,10 @@ def _call_claude_for_qa(client, context: str, question: str) -> tuple[str, int, 
 
 def main():
     try:
-        log.info(f"RivX v3.0.2 starting — {'PAPER' if PAPER_MODE else 'LIVE'} mode")
+        log.info(f"RivX v3.0.3 starting — {'PAPER' if PAPER_MODE else 'LIVE'} mode")
         log.info(f"Strategy: $4K swing crypto / $2K momentum crypto / $3.5K stocks / $500 ops floor")
         log.info(f"Schedule: swing crypto 8 AM + 8 PM AEST | momentum crypto every 2 hrs 24/7 | stocks 11 PM + 3 AM AEST (weekdays)")
+        log.info("v3.0.3: per-trade SELL alerts now show net-of-fees $ and %")
         log.info("v3.0.2: paper-mode sells no longer blocked by missing qty (live still protected)")
         log.info("v3.0.1: qty-scoped sells (CoinSpot + Alpaca) — protects non-bot holdings in LIVE")
         log.info("v3.0: trail-only exits, momentum 5d/1.5x entry, pullback windows widened, daily buy cap 15")
@@ -1260,8 +1285,8 @@ def main():
         if db.get_flag("last_startup") != today:
             db.set_flag("last_startup", today)
             rec_status = "Reconciler online" if _RECONCILIATION_AVAILABLE else "Reconciler DISABLED"
-            tg.send(f"🟢 RivX v3.0.2 online. {'PAPER' if PAPER_MODE else 'LIVE'} mode. "
-                    f"{rec_status}. Trail-only strategy, qty-scoped live sells.")
+            tg.send(f"🟢 RivX v3.0.3 online. {'PAPER' if PAPER_MODE else 'LIVE'} mode. "
+                    f"{rec_status}. Net-of-fees alerts.")
 
         log.info("setup complete — entering main loop")
         sys.stdout.flush()
