@@ -1,36 +1,27 @@
-# RIVX_VERSION: v3.0-momentum-trail-2026-05-07
+# RIVX_VERSION: v3.0.1-qty-scoped-sells-2026-05-09
 """
 RivX bot.py — main loop orchestrator (v3 strategy).
 
-v3.0 changes from v2.9.4:
-  - Pass effective_peak to decide_exit_momentum. v3.0 strategy added a
-    trail-only exit to momentum (arms at +20%, 7% giveback) which requires
-    the peak. v2.9.4's call site only passed pnl_pct + age_days, so the
-    momentum trail would never fire. One-line fix in manage_open_positions.
-  - Q&A and main-loop log lines updated to reflect trail-only strategy.
+v3.0.1 changes from v3.0 (2026-05-09):
+  - CRYPTO BUY: stores qty on save_position so the sell path can reference
+    the exact amount the bot bought. Without this, live crypto sells would
+    fall through to "sell entire balance" in coinspot_trader and dump
+    non-bot holdings of the same coin.
+  - CRYPTO SELL: passes coin_amount (=stored qty) to coinspot.sell().
+    Refuses to sell if no qty is stored — would rather fail loudly than
+    risk a full-balance sell.
+  - STOCK SELL: passes qty (=stored qty from Alpaca live position) to
+    alpaca.sell(). The full-position DELETE path now requires explicit
+    close_full_position=True; we don't use it from the regular exit path.
+  - Healing path for stocks unchanged: relies on the most recent filled
+    SELL order, which is correct since the order has already happened.
 
-v2.9.4 changes from v2.9.3:
-  - SELF-HEALING ORPHAN STOCK CLOSE. When alpaca.get_position returns None
-    for a stock Supabase still shows as open, fetch the most recent filled
-    SELL order from Alpaca and use its fill price to close Supabase
-    properly. Removes the alert-spam loop AMD got stuck in on 2026-05-06.
+v3.0 changes from v2.9.4: trail-only momentum, peak passed through.
 
-v2.9.3 changes from v2.9.0:
-  - TRAILING STOP BUG FIX. peak_pnl_pct now writes to Supabase correctly.
-  - Swing stocks no longer skipped entirely when US market is closed —
-    peak still updates from Alpaca's 24/7 price feed; we just don't try
-    to fire a sell outside market hours.
-
-v2.9.0 changes from v2.8.2:
-  - Crypto scan cadence: momentum every 2 hours, swing twice daily.
-  - Daily buy cap raised from 6 to 10 (then 15 in v3.0).
-
-v2.8.2: token_usage table writes for the Cost tab.
-v2.8.1: ASX analyser removed.
-v2.8: pending_close lifecycle for stock sells, scanner_exclusions filter,
-      reconciler.tick.
-v2.6: claude_decisions executed flag flipped only after fill confirms.
-v2.4: stock entry prices read from actual Alpaca fill in USD.
+v2.9.4: SELF-HEALING ORPHAN STOCK CLOSE.
+v2.9.3: TRAILING STOP BUG FIX — peak_pnl_pct writes correctly.
+v2.9.0: Crypto scan cadence; daily buy cap raised.
+v2.8.x: pending_close lifecycle, scanner_exclusions, reconciler, token_usage.
 """
 
 from __future__ import annotations
@@ -42,7 +33,6 @@ import logging
 import traceback
 from datetime import datetime, timezone, timedelta
 
-# Force stdout/stderr unbuffered so Render captures crashes
 try:
     sys.stdout.reconfigure(line_buffering=True)
     sys.stderr.reconfigure(line_buffering=True)
@@ -128,7 +118,6 @@ def is_us_trading_weekday_aest() -> bool:
 
 
 def is_us_market_open_aest() -> bool:
-    """True iff the US equity market is currently open (M-F, 09:30-16:00 ET)."""
     try:
         from zoneinfo import ZoneInfo
         now_et = datetime.now(ZoneInfo("America/New_York"))
@@ -275,7 +264,6 @@ def run_snapshot(db: SupabaseLogger, alpaca: AlpacaTrader):
 
 
 def _sync_alpaca_stocks(db, alpaca, symbols):
-    """Pull current_price + pnl + avg_entry from Alpaca for held stocks."""
     import requests
     headers = {
         "APCA-API-KEY-ID": ALPACA_API_KEY,
@@ -310,12 +298,7 @@ def _sync_alpaca_stocks(db, alpaca, symbols):
 
 def _heal_orphan_stock_close(*, symbol: str, position: dict, db,
                               reason: str = "auto-heal") -> tuple[bool, str]:
-    """
-    Called when Alpaca says "no position" for a stock that Supabase still
-    shows as open. Looks up the most recent filled SELL order on Alpaca for
-    this symbol, computes pnl from stored entry vs that fill price, and
-    closes the Supabase position properly.
-    """
+    """Heal Supabase when Alpaca says position is gone but we still have an open row."""
     import requests
 
     headers = {
@@ -418,7 +401,9 @@ def _heal_orphan_stock_close(*, symbol: str, position: dict, db,
 def execute_buy(
     *, symbol: str, bucket: str, db, alpaca, coinspot,
 ) -> tuple[bool, str]:
-    """v2.4: stock branch reads actual Alpaca fill price."""
+    """
+    v3.0.1: crypto buys now store qty at insert time so sells can pass it.
+    """
     is_stock = bucket == strategy.Bucket.SWING_STOCK
     size_aud = strategy.position_size_for(bucket)
 
@@ -435,7 +420,7 @@ def execute_buy(
                             f"(id={order.get('id')}) — saving entry=0, will heal")
                 db.save_position(
                     symbol=symbol, entry_price=0, aud_amount=size_aud,
-                    market="alpaca",
+                    market="alpaca", qty=None,
                 )
                 db._patch("positions", {"bucket": bucket, "qty": 0},
                           "symbol", symbol)
@@ -446,9 +431,10 @@ def execute_buy(
                 entry_price=fill_usd,
                 aud_amount=size_aud,
                 market="alpaca",
+                qty=qty,
             )
             db._patch("positions",
-                      {"bucket": bucket, "qty": qty},
+                      {"bucket": bucket},
                       "symbol", symbol)
             log.info(f"BUY {symbol}: {qty:.4f} sh @ ${fill_usd:.2f} USD "
                      f"· ${size_aud:.0f} AUD total")
@@ -457,6 +443,7 @@ def execute_buy(
             log.error(f"alpaca buy {symbol}: {e}")
             return False, f"alpaca error: {e}"
 
+    # ── Crypto branch ──
     quote = prices.get_crypto_price(symbol)
     if not quote:
         return False, "no price quote available"
@@ -471,14 +458,24 @@ def execute_buy(
         entry_price = float(res.get("price") or quote.aud)
         if entry_price <= 0:
             entry_price = quote.aud
+
+        # v3.0.1: capture qty bought. coinspot.buy() echoes coin_amount in
+        # both PAPER and LIVE responses. If absent (older response shape),
+        # derive from size_aud / entry_price.
+        coin_amount = float(res.get("coin_amount") or 0)
+        if coin_amount <= 0 and entry_price > 0:
+            coin_amount = round(size_aud / entry_price, 8)
+
         db.save_position(
             symbol=symbol,
             entry_price=entry_price,
             aud_amount=size_aud,
             market="coinspot",
+            qty=coin_amount,
         )
         db._patch("positions", {"bucket": bucket}, "symbol", symbol)
-        log.info(f"BUY {symbol}: ${size_aud:.0f} AUD @ ${entry_price:.4f} via coinspot ({bucket})")
+        log.info(f"BUY {symbol}: {coin_amount:.8f} {symbol} @ ${entry_price:.4f} "
+                 f"AUD · ${size_aud:.0f} AUD via coinspot ({bucket})")
         return True, "ok"
     except Exception as e:
         return False, f"coinspot error: {e}"
@@ -518,7 +515,13 @@ def execute_sell(
     *, symbol: str, position: dict, db, alpaca, coinspot,
     is_forced: bool = False, reason: str = "exit rule",
 ) -> tuple[bool, str]:
-    """Close a position."""
+    """
+    Close a position.
+
+    v3.0.1: passes qty to both alpaca.sell() and coinspot.sell(). Refuses
+    crypto sells when no qty is stored — would rather fail loudly than
+    fall through to "sell entire balance" on CoinSpot.
+    """
     market = (position.get("market") or "").lower()
     is_stock = market == "alpaca"
 
@@ -529,7 +532,6 @@ def execute_sell(
             return False, f"{symbol}: alpaca position fetch failed: {e}"
 
         if not live:
-            # v2.9.4: self-heal
             log.warning(f"{symbol}: alpaca reports no live position — attempting heal")
             return _heal_orphan_stock_close(
                 symbol=symbol, position=position, db=db,
@@ -540,6 +542,7 @@ def execute_sell(
             avg_entry_usd = float(live.get("avg_entry_price") or 0)
             current_usd   = float(live.get("current_price") or 0)
             pnl_pct_alp   = float(live.get("unrealized_plpc") or 0)
+            live_qty      = float(live.get("qty") or 0)
         except (TypeError, ValueError) as e:
             return False, f"{symbol}: malformed alpaca data: {e}"
 
@@ -556,6 +559,15 @@ def execute_sell(
             )
             if not v.allowed:
                 return False, f"safety blocked: {v.reason}"
+
+        # v3.0.1: prefer Supabase-stored qty; fall back to Alpaca's reported
+        # qty (which only differs if something has gone wrong).
+        stored_qty = float(position.get("qty") or 0)
+        sell_qty = stored_qty if stored_qty > 0 else live_qty
+
+        if sell_qty <= 0:
+            return False, (f"{symbol}: no stored qty in Supabase and Alpaca "
+                           f"returned qty=0 — refusing sell")
 
         if _RECONCILIATION_AVAILABLE and pending_sells is not None:
             ok, msg = pending_sells.submit_sell_for_stock(
@@ -588,9 +600,9 @@ def execute_sell(
                 return True, msg
             return False, msg
 
-        # Fallback (old path)
+        # Fallback (old path): explicit qty sell, NOT close-full-position
         try:
-            res = alpaca.sell(symbol)
+            res = alpaca.sell(symbol, qty=sell_qty)
         except Exception as e:
             return False, f"alpaca sell error: {e}"
         if not res:
@@ -604,7 +616,8 @@ def execute_sell(
         new_count = safety.update_consecutive_losses(prior, last_trade_was_loss=(pnl_pct < 0))
         db.set_flag("consec_losses", str(new_count))
 
-        log.info(f"SELL {symbol}: ${exit_price_usd:.4f} USD ({pnl_pct*100:+.2f}%) — {reason}")
+        log.info(f"SELL {symbol}: {sell_qty} sh @ ${exit_price_usd:.4f} USD "
+                 f"({pnl_pct*100:+.2f}%) — {reason}")
 
         try:
             recent = db._get("claude_decisions", {
@@ -625,7 +638,7 @@ def execute_sell(
         except Exception as e:
             log.debug(f"claude_decisions outcome update {symbol}: {e}")
 
-        return True, f"sold @ ${exit_price_usd:.4f} USD ({pnl_pct*100:+.2f}%)"
+        return True, f"sold {sell_qty} @ ${exit_price_usd:.4f} USD ({pnl_pct*100:+.2f}%)"
 
     # ── Crypto branch ──
     entry_aud = float(position.get("entry_price") or 0)
@@ -645,12 +658,23 @@ def execute_sell(
         if not v.allowed:
             return False, f"safety blocked: {v.reason}"
 
+    # v3.0.1: must have qty stored. No fallback to "sell whatever balance."
+    stored_qty = float(position.get("qty") or 0)
+    if stored_qty <= 0:
+        # Defensive: this shouldn't happen for any position bought after
+        # v3.0.1, but legacy positions from before the fix might have qty=NULL.
+        # Refuse rather than risk a full-balance sell.
+        return False, (f"{symbol}: no qty stored on this position (likely a "
+                       f"pre-v3.0.1 row). Refusing live sell. Manual close "
+                       f"required — check Supabase row and sell on CoinSpot "
+                       f"directly, then mark closed.")
+
     try:
-        res = coinspot.sell(symbol)
+        res = coinspot.sell(symbol, coin_amount=stored_qty)
     except Exception as e:
         return False, f"coinspot sell error: {e}"
     if not res:
-        return False, "coinspot returned None"
+        return False, "coinspot returned None (refused sell or API error)"
 
     exit_price = float(res.get("price") or current_aud or 0)
     pnl_pct = (exit_price - entry_aud) / entry_aud if entry_aud > 0 else 0
@@ -660,7 +684,8 @@ def execute_sell(
     new_count = safety.update_consecutive_losses(prior, last_trade_was_loss=(pnl_pct < 0))
     db.set_flag("consec_losses", str(new_count))
 
-    log.info(f"SELL {symbol}: ${exit_price:.4f} AUD ({pnl_pct*100:+.2f}%) — {reason}")
+    log.info(f"SELL {symbol}: {stored_qty:.8f} @ ${exit_price:.4f} AUD "
+             f"({pnl_pct*100:+.2f}%) — {reason}")
 
     try:
         recent = db._get("claude_decisions", {
@@ -681,17 +706,12 @@ def execute_sell(
     except Exception as e:
         log.debug(f"claude_decisions outcome update {symbol}: {e}")
 
-    return True, f"sold @ ${exit_price:.4f} AUD ({pnl_pct*100:+.2f}%)"
+    return True, f"sold {stored_qty:.8f} @ ${exit_price:.4f} AUD ({pnl_pct*100:+.2f}%)"
 
 
 # ── Position management ─────────────────────────────────────────────────
 
 def manage_open_positions(db, alpaca, coinspot, tg: TelegramNotifier):
-    """
-    v3.0: pass effective_peak to decide_exit_momentum so the new momentum
-    trail (arms at +20%, 7% giveback) can fire. Previously not passed
-    because momentum had no trail.
-    """
     positions = db.get_positions()
     if not positions:
         return
@@ -746,7 +766,6 @@ def manage_open_positions(db, alpaca, coinspot, tg: TelegramNotifier):
                     pnl_pct=pnl_pct, peak_pnl_pct=effective_peak, age_days=age_days,
                 )
             elif bucket == strategy.Bucket.MOMENTUM_CRYPTO:
-                # v3.0: momentum now uses trail; pass peak.
                 d = strategy.decide_exit_momentum(
                     pnl_pct=pnl_pct, peak_pnl_pct=effective_peak, age_days=age_days,
                 )
@@ -968,7 +987,6 @@ def run_buy_cycle(
 # ── Daily summary push ───────────────────────────────────────────────────
 
 def run_daily_summary(db, tg: TelegramNotifier):
-    """v2.5+: delegates to bot.rich_summary for a comprehensive report."""
     from bot.rich_summary import run_rich_daily_summary
     run_rich_daily_summary(db, tg, log)
 
@@ -1023,7 +1041,6 @@ def run_manual_orders(db, alpaca, coinspot, tg: TelegramNotifier):
 # ── Q&A ──────────────────────────────────────────────────────────────────
 
 def _qa_estimate_cost_usd(input_tokens: int, output_tokens: int) -> float:
-    """Sonnet 4.6 pricing: $3 / $15 per 1M tokens."""
     return (input_tokens * 3.0 + output_tokens * 15.0) / 1_000_000
 
 
@@ -1031,7 +1048,6 @@ QA_MODEL = "claude-sonnet-4-6"
 QA_MAX_TOKENS = 600
 QA_POLL_LIMIT = 3
 
-# v3.0: Q&A system prompt updated for trail-only strategy
 QA_SYSTEM_PROMPT = """You are RivX, a paper-trading bot answering questions from your owner.
 
 You trade three buckets with $10K total starting capital:
@@ -1224,9 +1240,10 @@ def _call_claude_for_qa(client, context: str, question: str) -> tuple[str, int, 
 
 def main():
     try:
-        log.info(f"RivX v3.0 starting — {'PAPER' if PAPER_MODE else 'LIVE'} mode")
+        log.info(f"RivX v3.0.1 starting — {'PAPER' if PAPER_MODE else 'LIVE'} mode")
         log.info(f"Strategy: $4K swing crypto / $2K momentum crypto / $3.5K stocks / $500 ops floor")
         log.info(f"Schedule: swing crypto 8 AM + 8 PM AEST | momentum crypto every 2 hrs 24/7 | stocks 11 PM + 3 AM AEST (weekdays)")
+        log.info("v3.0.1: qty-scoped sells (CoinSpot + Alpaca) — protects non-bot holdings")
         log.info("v3.0: trail-only exits, momentum 5d/1.5x entry, pullback windows widened, daily buy cap 15")
         log.info("v2.9.4: orphan stock close auto-heal active")
         log.info("v2.9.3: trailing stop peak tracking active")
@@ -1248,8 +1265,8 @@ def main():
         if db.get_flag("last_startup") != today:
             db.set_flag("last_startup", today)
             rec_status = "Reconciler online" if _RECONCILIATION_AVAILABLE else "Reconciler DISABLED"
-            tg.send(f"🟢 RivX v3.0 online. {'PAPER' if PAPER_MODE else 'LIVE'} mode. "
-                    f"{rec_status}. Trail-only strategy active.")
+            tg.send(f"🟢 RivX v3.0.1 online. {'PAPER' if PAPER_MODE else 'LIVE'} mode. "
+                    f"{rec_status}. Trail-only strategy, qty-scoped sells.")
 
         log.info("setup complete — entering main loop")
         sys.stdout.flush()
