@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- RIVX_VERSION: v2.7-pwa-mobile-2026-05-03 -->
+<!-- RIVX_VERSION: v2.8-yaxis-floor-2026-05-10 -->
 <!--
   v2.7 changes from v2.6:
     1. PWA enablement. Added manifest.webmanifest, apple-touch-icon, theme
@@ -672,7 +672,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
           <strong>Every 30 sec</strong> — heartbeat, kill switch, manual orders<br>
           <strong>Every 5 min</strong> — mark-to-market, exit-rule check<br>
           <strong>8:00 AM</strong> — daily summary + swing crypto scan + momentum crypto scan<br>
-          <strong>Every 2 hours, 24/7</strong> — momentum crypto scan (12 scans/day)<br>
+          <strong>Every 2 hours, 24/7</strong> — momentum crypto scan (12/day)<br>
           <strong>8:00 PM</strong> — daily summary + swing crypto scan<br>
           <strong>11:00 PM (weekdays)</strong> — stock scan, 30 min before NYSE open<br>
           <strong>3:00 AM (weekdays)</strong> — stock scan, mid-session
@@ -801,7 +801,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     </div>
 
   </div>
-  <div class="footer">NYSE · NASDAQ · CRYPTO · AUD · BRISBANE · v2.7</div>
+  <div class="footer">NYSE · NASDAQ · CRYPTO · AUD · BRISBANE · v2.8</div>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
@@ -2227,7 +2227,28 @@ function renderChart(tf){
       },
       scales:{
         x:{ticks:{color:'#9aa0a6', font:{size:10}, maxTicksLimit: mode==='time'?12:8}, grid:{color:'rgba(0,0,0,0.04)'}},
-        y:{ticks:{color:'#9aa0a6', font:{size:10}, callback:v=>'$'+v.toLocaleString('en-AU',{maximumFractionDigits:0})}, grid:{color:'rgba(0,0,0,0.04)'}}
+        y:(function(){
+          // y-axis floor: always show at least a $500 range, padded around
+          // the data midpoint. Small moves look small; big moves still scale.
+          const MIN_RANGE = 500;
+          const PAD_RATIO = 0.15;
+          let yMin, yMax;
+          if(values && values.length){
+            const lo = Math.min.apply(null, values);
+            const hi = Math.max.apply(null, values);
+            const range = Math.max(hi - lo, MIN_RANGE);
+            const pad = range * PAD_RATIO;
+            const mid = (hi + lo) / 2;
+            yMin = mid - range/2 - pad;
+            yMax = mid + range/2 + pad;
+          }
+          return {
+            min: yMin, max: yMax,
+            ticks:{color:'#9aa0a6', font:{size:10},
+                   callback:v=>'$'+v.toLocaleString('en-AU',{maximumFractionDigits:0})},
+            grid:{color:'rgba(0,0,0,0.04)'}
+          };
+        })()
       }
     }
   });
