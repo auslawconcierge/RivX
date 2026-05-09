@@ -1,27 +1,20 @@
-# RIVX_VERSION: v3.0.1-qty-on-save-2026-05-09
+# RIVX_VERSION: v3.0.2-fee-adjusted-portfolio-2026-05-09
 """
 RivX supabase_logger.py
 Stores all bot state between loop iterations.
-Tables: trades, positions, signal_weights, snapshots, approved_plan,
-        crypto_checks, bot_flags, token_usage
 
-v3.0.1 changes from v2.8.1 (2026-05-09):
-  - save_position now accepts an optional qty parameter and writes it to the
-    positions row at insert time. Previously qty was only set later (for
-    stocks, via update_position_from_alpaca; for crypto, never). The crypto
-    sell path needs qty stored at buy time so coinspot_trader can sell the
-    exact amount we bought, not "all of this symbol's balance." This fix is
-    paired with bot.py and coinspot_trader.py changes.
+v3.0.2 changes from v3.0.1 (2026-05-09):
+  - get_portfolio_value() now uses bot.fees to compute net-of-fees
+    realised, unrealised, market value, and cash. Telegram and dashboard
+    now agree to the cent on closed-trade P&L.
+  - "total_aud" is the post-liquidation total: STARTING +
+    realised_lifetime_net + unrealised_net.
+  - "cash_aud" subtracts buy fees paid on currently-open positions.
 
-v2.8.1 changes from v2.6:
-  - Added record_token_usage() method. Upserts one row per day in the
-    token_usage table.
-
-v2.6 fix: get_portfolio_value() previously only counted open positions +
-cash. Now includes sum of realised P&L from `positions` table where
-status='closed'.
-
-v2.2 changes from v1: set_flag / get_flag now write to bot_flags table.
+v3.0.1: save_position accepts qty parameter, written at insert time.
+v2.8.1: record_token_usage()
+v2.6:   get_portfolio_value() includes realised P&L from closed positions
+v2.2:   set_flag/get_flag use bot_flags table
 """
 
 import json
@@ -93,7 +86,6 @@ class SupabaseLogger:
             return False
 
     def _patch_with_fallback(self, table: str, data: dict, col: str, val: str) -> bool:
-        """PATCH that retries without unknown columns if the first attempt fails."""
         if self._patch(table, data, col, val):
             return True
         optional = ["last_priced_at", "change_today", "qty", "current_price"]
@@ -109,7 +101,6 @@ class SupabaseLogger:
 
     def _post_with_fallback(self, table: str, data: dict,
                             optional_fields: list = None) -> dict | None:
-        """POST that retries without optional columns if the first attempt fails."""
         result = self._post(table, data)
         if result is not None:
             return result
@@ -156,18 +147,7 @@ class SupabaseLogger:
     def save_position(self, symbol: str, entry_price: float,
                       aud_amount: float, market: str,
                       qty: float = None):
-        """
-        Insert a new open position row.
-
-        v3.0.1: qty is now an optional parameter. When provided, it's written
-        at insert time. This is critical for crypto: the sell path uses the
-        stored qty to tell CoinSpot exactly how much to sell. Without it, the
-        live sell falls back to "sell entire symbol balance" which would dump
-        non-bot holdings of the same coin in the same account.
-
-        Stocks may pass qty=None at insert time (Alpaca fill might be pending);
-        update_position_from_alpaca will fill it in once the fill is confirmed.
-        """
+        """v3.0.1: qty optional, written at insert time when provided."""
         row = {
             "symbol":      symbol,
             "entry_price": entry_price,
@@ -193,7 +173,6 @@ class SupabaseLogger:
                         "id", str(existing[0]["id"]))
 
     def update_position_pnl(self, symbol: str, current_price: float):
-        """Update unrealised P&L for an open position using a provided current price."""
         existing = self._get("positions",
                              {"symbol": f"eq.{symbol}", "status": "eq.open"})
         if existing:
@@ -208,7 +187,6 @@ class SupabaseLogger:
             self._patch_with_fallback("positions", data, "id", str(pos["id"]))
 
     def update_position_pnl_direct(self, symbol: str, pnl_pct: float):
-        """Write a pre-computed pnl_pct directly (e.g. from Alpaca's unrealized_plpc)."""
         existing = self._get("positions",
                              {"symbol": f"eq.{symbol}", "status": "eq.open"})
         if existing:
@@ -220,7 +198,6 @@ class SupabaseLogger:
                                     pnl_pct: float, qty: float = None,
                                     change_today: float = None,
                                     avg_entry_price: float = None):
-        """Push live Alpaca position data back to Supabase for the dashboard."""
         existing = self._get("positions",
                              {"symbol": f"eq.{symbol}", "status": "eq.open"})
         if not existing:
@@ -298,7 +275,7 @@ class SupabaseLogger:
             "created_at": datetime.utcnow().isoformat(),
         })
 
-    # ── Token usage (Cost tab) ────────────────────────────────────────────────
+    # ── Token usage ───────────────────────────────────────────────────────────
 
     def record_token_usage(self, input_tokens: int, output_tokens: int,
                            cost_usd: float):
@@ -333,7 +310,7 @@ class SupabaseLogger:
             if result is None:
                 log.warning(f"token_usage INSERT failed for {today}")
 
-    # ── Flags (bot_flags table) ───────────────────────────────────────────────
+    # ── Flags ─────────────────────────────────────────────────────────────────
 
     def get_flag(self, key: str) -> str:
         rows = self._get("bot_flags", {"key": f"eq.{key}", "limit": "1"})
@@ -354,58 +331,75 @@ class SupabaseLogger:
                             {"key": key, "value": str_value, "updated_at": now_iso})
         return result is not None
 
+    # ── Portfolio value (NET of estimated fees) ───────────────────────────────
+
     def get_portfolio_value(self) -> dict:
+        """
+        v3.0.2 — net-of-fees portfolio math, matches dashboard to-the-cent.
+
+        Returns:
+          deployed_aud      — gross capital deployed (no buy fees)
+          realised_lifetime — net realised P&L on closed positions
+          unrealised        — net unrealised P&L on opens (if liquidated)
+          market_value      — net liquidation value of open positions
+          cash_aud          — STARTING + realised_lifetime
+                              - deployed_aud - buy_fees_open
+          total_aud         — STARTING + realised_lifetime + unrealised
+                            == cash_aud + market_value
+        """
+        from bot import fees
+
         STARTING = STARTING_CAPITAL_AUD
+
         try:
             open_positions = self._get("positions", {"status": "eq.open"}) or []
         except Exception:
             open_positions = []
-
         try:
             closed_positions = self._get("positions", {"status": "eq.closed"}) or []
         except Exception:
             closed_positions = []
 
-        deployed_entry = 0.0
-        market_value   = 0.0
+        deployed_entry   = 0.0
+        buy_fees_open    = 0.0
+        market_value_net = 0.0
+        unrealised_net   = 0.0
+
         for p in open_positions:
-            entry = float(p.get("aud_amount") or 0)
-            deployed_entry += entry
-
-            qty           = float(p.get("qty") or 0)
-            current_price = float(p.get("current_price") or 0)
-            market        = (p.get("market") or "").lower()
-
-            mv = 0.0
-            if qty > 0 and current_price > 0:
-                if market == "alpaca":
-                    pnl_pct = float(p.get("pnl_pct") or 0)
-                    mv = entry * (1 + pnl_pct) if entry > 0 else 0
-                else:
-                    mv = qty * current_price
-            else:
+            try:
+                aud     = float(p.get("aud_amount") or 0)
                 pnl_pct = float(p.get("pnl_pct") or 0)
-                mv = entry * (1 + pnl_pct) if entry > 0 else 0
-
-            market_value += mv
+            except (TypeError, ValueError):
+                continue
+            market = p.get("market")
+            deployed_entry   += aud
+            buy_fees_open    += fees.buy_fee_paid(aud_amount=aud, market=market)
+            unrealised_net   += fees.realised_dollar_net(
+                aud_amount=aud, pnl_pct=pnl_pct, market=market,
+            )
+            market_value_net += fees.market_value_net_if_sold(
+                aud_amount=aud, pnl_pct=pnl_pct, market=market,
+            )
 
         realised_lifetime = 0.0
         for c in closed_positions:
             try:
-                aud = float(c.get("aud_amount") or 0)
-                pct = float(c.get("pnl_pct") or 0)
+                aud     = float(c.get("aud_amount") or 0)
+                pnl_pct = float(c.get("pnl_pct") or 0)
                 entry_p = float(c.get("entry_price") or 0)
                 exit_p  = float(c.get("exit_price") or 0)
-                if abs(entry_p - exit_p) < 0.0001 and abs(pct) < 0.0001:
-                    continue
-                realised_lifetime += aud * pct
             except (TypeError, ValueError):
                 continue
+            # phantom cleanup
+            if abs(entry_p - exit_p) < 0.0001 and abs(pnl_pct) < 0.0001:
+                continue
+            realised_lifetime += fees.realised_dollar_net(
+                aud_amount=aud, pnl_pct=pnl_pct, market=c.get("market"),
+            )
 
-        cash = STARTING + realised_lifetime - deployed_entry
+        cash = STARTING + realised_lifetime - deployed_entry - buy_fees_open
         cash = max(0, cash)
-
-        total = market_value + cash
+        total = STARTING + realised_lifetime + unrealised_net
 
         try:
             snaps = self._get("snapshots", {"order": "created_at.desc",
@@ -420,6 +414,6 @@ class SupabaseLogger:
             "total_pnl":         round(total - STARTING, 2),
             "realised_lifetime": round(realised_lifetime, 2),
             "deployed_aud":      round(deployed_entry, 2),
-            "market_value":      round(market_value, 2),
+            "market_value":      round(market_value_net, 2),
             "cash_aud":          round(cash, 2),
         }
