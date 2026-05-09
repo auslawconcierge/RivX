@@ -1,34 +1,28 @@
-# RIVX_VERSION: v2.6-rich-summary-2026-04-30
+# RIVX_VERSION: v2.7-fee-adjusted-2026-05-09
 """
 Rich daily summary for RivX.
 
+v2.7 changes from v2.6 (2026-05-09):
+  - All displayed dollar amounts and percentages are now NET of estimated
+    fees (using bot.fees model). Matches the dashboard's "Closed Positions"
+    table and headline portfolio total to-the-cent.
+  - Open positions still show stop/tgt distance in GROSS pct (because
+    strategy thresholds operate against gross). The leading dollar/pct
+    on each row is net.
+
 v2.6 changes:
-  - Bot activity section rewritten in plain English: groups decisions by
-    scan event (8 AM crypto, 4 PM crypto, 11 PM stock, 3 AM stock),
-    explains what each scan was looking at, what the bot decided, and
-    what actually happened. Cross-references claude_decisions.executed
-    against the positions table to verify every "executed=True" actually
-    became an open or closed position. Decisions where executed=True but
-    no position exists get flagged as "execution failed".
-
-  - Headline portfolio number now computes its own total from
-    cash + open market value + lifetime realised P&L, instead of trusting
-    the broken get_portfolio_value() helper. Same calculation as the
-    dashboard so the two never disagree.
-
-  - Phantom cleanups (manually-marked-closed positions where entry==exit
-    and pnl==0) are filtered out of all P&L math.
-
-Reads from `positions` directly because `trades` table isn't populated
-on close (separate bug, not addressed here).
+  - Bot activity rewritten in plain English, grouped by scan event.
+  - Headline portfolio computed locally (matches dashboard).
+  - Phantom cleanups filtered.
 """
 
 from __future__ import annotations
 from datetime import datetime, timezone, timedelta
 from bot import strategy
+from bot import fees as fee_calc
 
 
-# ── Time helpers (self-contained) ───────────────────────────────────────
+# ── Time helpers ─────────────────────────────────────────────────────────
 
 AEST = timezone(timedelta(hours=10))
 
@@ -38,9 +32,8 @@ def _aest_now() -> datetime:
 
 
 def _us_market_state() -> str:
-    """Returns one of: open, premarket, afterhours, closed (weekend or other)."""
     now_aest = _aest_now()
-    et_now = now_aest - timedelta(hours=14)  # rough EDT; off by 1hr in winter
+    et_now = now_aest - timedelta(hours=14)
     if et_now.weekday() >= 5:
         return "closed (weekend)"
     mins = et_now.hour * 60 + et_now.minute
@@ -54,7 +47,6 @@ def _us_market_state() -> str:
 
 
 def _next_scan_label() -> str:
-    """Next upcoming scan/summary event in human form."""
     now = _aest_now()
     candidates = []
 
@@ -106,7 +98,6 @@ def _bucket_of(position: dict) -> str:
 
 
 def _bucket_label(bucket: str) -> str:
-    """Human-readable bucket name."""
     return {
         strategy.Bucket.SWING_CRYPTO:    "swing crypto",
         strategy.Bucket.MOMENTUM_CRYPTO: "momentum crypto",
@@ -115,7 +106,6 @@ def _bucket_label(bucket: str) -> str:
 
 
 def _hold_duration(opened_iso: str, closed_iso: str | None = None) -> str:
-    """Human-readable duration like '2d 4h' or '6h 30m'."""
     try:
         opened = datetime.fromisoformat((opened_iso or "").replace("Z", "+00:00"))
         end = (datetime.fromisoformat((closed_iso or "").replace("Z", "+00:00"))
@@ -147,11 +137,6 @@ def _signed_pct(pct: float) -> str:
 
 
 def _scan_window(decided_at_iso: str) -> str:
-    """
-    Map a decision timestamp to its scan window label.
-    Crypto scans fire at 8 AM and 4 PM AEST. Stock scans at 11 PM and 3 AM AEST.
-    Decisions made within ~30 min of those times belong to that scan.
-    """
     try:
         dt = datetime.fromisoformat(decided_at_iso.replace("Z", "+00:00")).astimezone(AEST)
     except Exception:
@@ -170,42 +155,32 @@ def _scan_window(decided_at_iso: str) -> str:
 
 
 def _explain_signal(decision: dict, position_for_symbol: dict | None) -> str:
-    """
-    Translate a decision row into plain English.
-    Uses the `reason` field (which Claude wrote) but cleans it up,
-    and adds the executed/failed outcome inline.
-    """
     sym = decision.get("symbol", "?")
     action = (decision.get("action") or "").lower()
-    bucket = decision.get("bucket") or ""
     conf = decision.get("confidence")
     raw_reason = (decision.get("reason") or "").strip()
     executed = bool(decision.get("executed"))
 
-    # Clean up the reason: strip trailing ellipses, redundant prefixes
     reason_clean = raw_reason
     for prefix in ["Clean breakout setup: ", "Clean ", "Setup: "]:
         if reason_clean.startswith(prefix):
             reason_clean = reason_clean[len(prefix):]
     reason_clean = reason_clean.rstrip(".…")
 
-    # Truncate the reason if it's a long one
     if len(reason_clean) > 130:
         reason_clean = reason_clean[:127].rstrip() + "…"
 
     conf_str = f" ({float(conf)*100:.0f}% conf)" if conf is not None else ""
 
     if action == "buy" and executed:
-        # Verify a position actually exists
         if position_for_symbol:
             if position_for_symbol.get("status") == "open":
                 return f"BOUGHT <b>{sym}</b>{conf_str} — {reason_clean} → position now open"
             else:
-                pnl_pct = float(position_for_symbol.get("pnl_pct") or 0) * 100
+                _, net_pct = fee_calc.net_dollar_pct_for_position(position_for_symbol)
                 return (f"BOUGHT <b>{sym}</b>{conf_str} — {reason_clean} → "
-                        f"already closed at {_signed_pct(pnl_pct)}")
+                        f"already closed at {_signed_pct(net_pct)}")
         else:
-            # executed=True but no position — orphan from earlier bug
             return (f"BOUGHT <b>{sym}</b>{conf_str} — {reason_clean} → "
                     f"<i>no matching position found (data anomaly)</i>")
 
@@ -221,14 +196,12 @@ def _explain_signal(decision: dict, position_for_symbol: dict | None) -> str:
     return f"<b>{sym}</b> {action}{conf_str} — {reason_clean}"
 
 
-# ── Headline portfolio calculation (defensive) ───────────────────────────
+# ── Headline portfolio (NET of fees) ─────────────────────────────────────
 
 def _compute_portfolio_headline(db) -> dict:
     """
-    Compute the headline numbers ourselves so we don't trust a possibly-
-    broken get_portfolio_value(). Returns same shape:
-      total_aud, day_pnl, total_pnl, realised_lifetime, deployed_aud,
-      market_value, cash_aud
+    v2.7: net-of-fees portfolio math. Mirrors supabase_logger.get_portfolio_value
+    so both the bot's internal view and Telegram's headline agree.
     """
     STARTING = strategy.STARTING_CAPITAL_AUD
     try:
@@ -240,38 +213,44 @@ def _compute_portfolio_headline(db) -> dict:
     except Exception:
         closed_positions = []
 
-    deployed_entry = 0.0
-    market_value   = 0.0
+    deployed_entry   = 0.0
+    buy_fees_open    = 0.0
+    market_value_net = 0.0
+    unrealised_net   = 0.0
+
     for p in open_positions:
-        entry = float(p.get("aud_amount") or 0)
-        deployed_entry += entry
-
-        qty           = float(p.get("qty") or 0)
-        current_price = float(p.get("current_price") or 0)
-        market        = (p.get("market") or "").lower()
-        pnl_pct       = float(p.get("pnl_pct") or 0)
-
-        if qty > 0 and current_price > 0 and market != "alpaca":
-            mv = qty * current_price
-        else:
-            mv = entry * (1 + pnl_pct) if entry > 0 else 0
-        market_value += mv
+        try:
+            aud     = float(p.get("aud_amount") or 0)
+            pnl_pct = float(p.get("pnl_pct") or 0)
+        except (TypeError, ValueError):
+            continue
+        market = p.get("market")
+        deployed_entry   += aud
+        buy_fees_open    += fee_calc.buy_fee_paid(aud_amount=aud, market=market)
+        unrealised_net   += fee_calc.realised_dollar_net(
+            aud_amount=aud, pnl_pct=pnl_pct, market=market,
+        )
+        market_value_net += fee_calc.market_value_net_if_sold(
+            aud_amount=aud, pnl_pct=pnl_pct, market=market,
+        )
 
     realised_lifetime = 0.0
     for c in closed_positions:
         try:
-            aud = float(c.get("aud_amount") or 0)
-            pct = float(c.get("pnl_pct") or 0)
+            aud     = float(c.get("aud_amount") or 0)
+            pnl_pct = float(c.get("pnl_pct") or 0)
             entry_p = float(c.get("entry_price") or 0)
             exit_p  = float(c.get("exit_price") or 0)
-            if abs(entry_p - exit_p) < 0.0001 and abs(pct) < 0.0001:
-                continue  # phantom cleanup
-            realised_lifetime += aud * pct
         except (TypeError, ValueError):
             continue
+        if abs(entry_p - exit_p) < 0.0001 and abs(pnl_pct) < 0.0001:
+            continue  # phantom
+        realised_lifetime += fee_calc.realised_dollar_net(
+            aud_amount=aud, pnl_pct=pnl_pct, market=c.get("market"),
+        )
 
-    cash = max(0, STARTING + realised_lifetime - deployed_entry)
-    total = market_value + cash
+    cash = max(0, STARTING + realised_lifetime - deployed_entry - buy_fees_open)
+    total = STARTING + realised_lifetime + unrealised_net
 
     try:
         snaps = db._get("snapshots",
@@ -286,8 +265,9 @@ def _compute_portfolio_headline(db) -> dict:
         "total_pnl":         round(total - STARTING, 2),
         "realised_lifetime": round(realised_lifetime, 2),
         "deployed_aud":      round(deployed_entry, 2),
-        "market_value":      round(market_value, 2),
+        "market_value":      round(market_value_net, 2),
         "cash_aud":          round(cash, 2),
+        "unrealised_net":    round(unrealised_net, 2),
     }
 
 
@@ -306,7 +286,6 @@ def run_rich_daily_summary(db, tg, log):
         positions = db.get_positions() or {}
         portfolio = _compute_portfolio_headline(db)
 
-        # All closed-today positions (for the "closed today" section)
         try:
             closed_today = db._get("positions", {
                 "status": "eq.closed",
@@ -324,12 +303,11 @@ def run_rich_daily_summary(db, tg, log):
                 exit_p  = float(c.get("exit_price") or 0)
                 pct     = float(c.get("pnl_pct") or 0)
                 if abs(entry_p - exit_p) < 0.0001 and abs(pct) < 0.0001:
-                    continue  # phantom
+                    continue
                 real_closes.append(c)
             except Exception:
                 real_closes.append(c)
 
-        # All decisions from today
         try:
             decisions_today = db._get("claude_decisions", {
                 "decided_at": f"gte.{midnight_iso}",
@@ -339,8 +317,6 @@ def run_rich_daily_summary(db, tg, log):
             log.warning(f"summary: decisions read failed: {e}")
             decisions_today = []
 
-        # Build a lookup of all positions (open + closed) by symbol so we can
-        # cross-reference each "executed" decision with reality.
         try:
             all_positions_today = db._get("positions", {
                 "created_at": f"gte.{midnight_iso}",
@@ -352,7 +328,6 @@ def run_rich_daily_summary(db, tg, log):
         for p in all_positions_today:
             positions_by_symbol[(p.get("symbol") or "").upper()] = p
 
-        # Today's API cost
         try:
             cost_str = db.get_flag(
                 f"claude_spend_{datetime.now(timezone.utc).strftime('%Y%m%d')}"
@@ -361,7 +336,7 @@ def run_rich_daily_summary(db, tg, log):
         except Exception:
             api_cost = 0.0
 
-        # ── Calculate numbers ───────────────────────────────────────────
+        # ── Calculate numbers (NET of fees) ─────────────────────────────
 
         STARTING = float(strategy.STARTING_CAPITAL_AUD)
         total       = float(portfolio.get("total_aud") or STARTING)
@@ -369,23 +344,18 @@ def run_rich_daily_summary(db, tg, log):
         deployed    = float(portfolio.get("deployed_aud") or 0)
         all_pnl     = float(portfolio.get("total_pnl") or 0)
         realised_lt = float(portfolio.get("realised_lifetime") or 0)
+        unrealised  = float(portfolio.get("unrealised_net") or 0)
         all_pct     = (all_pnl / STARTING) * 100 if STARTING else 0
 
+        # Today's realised P&L (net of fees)
         realised_today = 0.0
         for c in real_closes:
             try:
                 aud = float(c.get("aud_amount") or 0)
-                pct = float(c.get("pnl_pct") or 0)
-                realised_today += aud * pct
-            except Exception:
-                pass
-
-        unrealised = 0.0
-        for sym, p in positions.items():
-            try:
-                aud = float(p.get("aud_amount") or 0)
-                pct = float(p.get("pnl_pct") or 0)
-                unrealised += aud * pct
+                pnl_pct = float(c.get("pnl_pct") or 0)
+                realised_today += fee_calc.realised_dollar_net(
+                    aud_amount=aud, pnl_pct=pnl_pct, market=c.get("market"),
+                )
             except Exception:
                 pass
 
@@ -401,12 +371,11 @@ def run_rich_daily_summary(db, tg, log):
 
         # ── Group decisions by scan window ──────────────────────────────
 
-        scan_groups = {}     # window_label -> list of decision dicts
-        scan_summaries = {}  # window_label -> dict with bucket, candidates_qualified
+        scan_groups = {}
+        scan_summaries = {}
         for d in decisions_today:
             window = _scan_window(d.get("decided_at") or "")
             if d.get("symbol") == "_scan" and d.get("action") == "scan_summary":
-                # This is a scan-event marker row
                 scan_summaries[window] = {
                     "bucket": d.get("bucket"),
                     "reason": d.get("reason") or "",
@@ -415,7 +384,6 @@ def run_rich_daily_summary(db, tg, log):
                 continue
             scan_groups.setdefault(window, []).append(d)
 
-        # Order scans chronologically
         all_windows = sorted(
             set(list(scan_groups.keys()) + list(scan_summaries.keys())),
             key=lambda w: ({
@@ -430,7 +398,6 @@ def run_rich_daily_summary(db, tg, log):
 
         lines = []
 
-        # Header
         market_state = _us_market_state()
         head_emoji = "📈" if (realised_today + unrealised) >= 0 else "📉"
         lines.append(
@@ -440,8 +407,8 @@ def run_rich_daily_summary(db, tg, log):
         )
         lines.append("")
 
-        # Portfolio
-        lines.append("📊 <b>PORTFOLIO</b>")
+        # Portfolio (all NET of est. fees)
+        lines.append("📊 <b>PORTFOLIO</b> <i>(net of est. fees)</i>")
         lines.append(f"Total: <b>${total:,.2f} AUD</b>")
         lines.append(
             f"All-time: {_signed_dollar(all_pnl)} ({_signed_pct(all_pct)})"
@@ -456,26 +423,21 @@ def run_rich_daily_summary(db, tg, log):
             )
         lines.append("")
 
-        # Closed today
+        # Closed today (NET, matches dashboard)
         if real_closes:
             lines.append(f"✅ <b>CLOSED TODAY ({len(real_closes)})</b>")
+            net_total = 0.0
             for c in real_closes:
                 sym = c.get("symbol") or "?"
-                aud = float(c.get("aud_amount") or 0)
-                pct = float(c.get("pnl_pct") or 0)
-                dollar = aud * pct
-                pct_disp = pct * 100
+                net_dollar, net_pct = fee_calc.net_dollar_pct_for_position(c)
+                net_total += net_dollar
                 hold = _hold_duration(c.get("created_at"), c.get("closed_at"))
-                emoji = "🟢" if pct > 0 else "🔴"
+                emoji = "🟢" if net_dollar > 0 else "🔴"
                 lines.append(
-                    f"  {emoji} <b>{sym}</b>  {_signed_dollar(dollar)} "
-                    f"({_signed_pct(pct_disp)}) · held {hold}"
+                    f"  {emoji} <b>{sym}</b>  {_signed_dollar(net_dollar)} "
+                    f"({_signed_pct(net_pct)}) · held {hold}"
                 )
-            net = sum(
-                float(c.get("aud_amount") or 0) * float(c.get("pnl_pct") or 0)
-                for c in real_closes
-            )
-            lines.append(f"  <b>Net realised: {_signed_dollar(net)}</b>")
+            lines.append(f"  <b>Net realised: {_signed_dollar(net_total)}</b>")
             lines.append("")
         else:
             lines.append("✅ <b>CLOSED TODAY</b>: none")
@@ -506,28 +468,29 @@ def run_rich_daily_summary(db, tg, log):
                     continue
                 lines.append(f"  <i>{label} ({len(group)}/{slots})</i>")
                 for sym, p in group.items():
-                    aud = float(p.get("aud_amount") or 0)
-                    pct = float(p.get("pnl_pct") or 0)
-                    dollar = aud * pct
-                    pct_disp = pct * 100
+                    # NET dollar + NET pct (matches dashboard)
+                    net_dollar, net_pct = fee_calc.net_dollar_pct_for_position(p)
+                    # GROSS pct used for stop/tgt distance hints (those are
+                    # against gross strategy thresholds)
+                    gross_pct = float(p.get("pnl_pct") or 0) * 100
                     age = _hold_duration(p.get("created_at"))
-                    emoji = "🟢" if pct >= 0 else "🔴"
+                    emoji = "🟢" if net_dollar >= 0 else "🔴"
                     extra = ""
                     if key == strategy.Bucket.SWING_CRYPTO:
-                        stop_dist = pct_disp - (-8.0)
-                        tgt_dist = 15.0 - pct_disp
+                        stop_dist = gross_pct - (-8.0)
+                        tgt_dist = 15.0 - gross_pct
                         extra = f" · stop {stop_dist:.1f}% away · tgt {tgt_dist:.1f}% to go"
                     elif key == strategy.Bucket.MOMENTUM_CRYPTO:
-                        stop_dist = pct_disp - (-10.0)
-                        tgt_dist = 30.0 - pct_disp
+                        stop_dist = gross_pct - (-10.0)
+                        tgt_dist = 30.0 - gross_pct
                         extra = f" · stop {stop_dist:.1f}% away · tgt {tgt_dist:.1f}% to go"
                     elif key == strategy.Bucket.SWING_STOCK:
-                        stop_dist = pct_disp - (-5.0)
-                        tgt_dist = 12.0 - pct_disp
+                        stop_dist = gross_pct - (-5.0)
+                        tgt_dist = 12.0 - gross_pct
                         extra = f" · stop {stop_dist:.1f}% away · tgt {tgt_dist:.1f}% to go"
                     lines.append(
-                        f"    {emoji} <b>{sym}</b> {_signed_dollar(dollar)} "
-                        f"({_signed_pct(pct_disp)}) · age {age}{extra}"
+                        f"    {emoji} <b>{sym}</b> {_signed_dollar(net_dollar)} "
+                        f"({_signed_pct(net_pct)}) · age {age}{extra}"
                     )
         lines.append("")
 
@@ -560,7 +523,7 @@ def run_rich_daily_summary(db, tg, log):
         )
         lines.append("")
 
-        # ── Bot activity (plain English, grouped by scan) ───────────────
+        # ── Bot activity ────────────────────────────────────────────────
         lines.append("🤖 <b>SCANS &amp; DECISIONS TODAY</b>")
 
         if not all_windows:
@@ -570,7 +533,6 @@ def run_rich_daily_summary(db, tg, log):
                 lines.append("")
                 lines.append(f"  <b>{window}</b>")
 
-                # Show scan-marker info first if we have it
                 marker = scan_summaries.get(window)
                 if marker:
                     bucket = marker.get("bucket") or ""
@@ -581,7 +543,6 @@ def run_rich_daily_summary(db, tg, log):
                     else:
                         lines.append(f"    {reason}")
 
-                # Show actual decisions
                 window_decisions = scan_groups.get(window, [])
                 if not window_decisions:
                     if marker:
@@ -596,13 +557,11 @@ def run_rich_daily_summary(db, tg, log):
 
         lines.append("")
 
-        # Cost & next scan
         lines.append("⏱ <b>NEXT &amp; COST</b>")
         lines.append(f"  API spend today: ${api_cost:.3f} of $2.00 cap")
         lines.append(f"  Next event: {_next_scan_label()}")
         lines.append("")
 
-        # Footer
         lines.append("Reply <b>STOP ALL</b> to halt · /summary for fresh data")
 
         message = "\n".join(lines)
