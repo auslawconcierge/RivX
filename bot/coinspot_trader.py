@@ -1,6 +1,15 @@
+# RIVX_VERSION: v3.0.1-explicit-qty-2026-05-09
 """
 coinspot_trader.py — Executes crypto trades via CoinSpot API.
 Paper mode never calls authenticated endpoints.
+
+v3.0.1 changes from v2.x (2026-05-09):
+  - LIVE sell now REFUSES if coin_amount is None. Previously fell through
+    to "fetch full balance and sell that," which would dump non-bot
+    holdings of the same coin in the same CoinSpot account. The bot must
+    pass the exact qty it bought.
+  - Removed the silent fallback to _get_balances() in the live sell path.
+    A missing qty is now a hard error, not a "be helpful" guess.
 """
 
 import hmac
@@ -55,21 +64,17 @@ class CoinSpotTrader:
         """Try multiple CoinSpot endpoints — they return different shapes for different coins."""
         sym = coin.upper()
 
-        # Try 1: /pubapi/v2/latest/{coin} — works for BTC, ETH, major coins
         try:
             resp = requests.get(f"{COINSPOT_BASE}/pubapi/v2/latest/{sym}", timeout=5)
             if resp.status_code == 200:
                 data = resp.json()
-                # Shape A: {"prices": {"last": "..."}}
                 if isinstance(data.get("prices"), dict) and "last" in data["prices"]:
                     return float(data["prices"]["last"])
-                # Shape B: {"prices": "..."}  (single value)
                 if isinstance(data.get("prices"), (str, int, float)):
                     return float(data["prices"])
         except Exception as e:
             log.debug(f"v2/latest/{sym} failed: {e}")
 
-        # Try 2: /pubapi/v2/latest (full list, lookup by key)
         try:
             resp = requests.get(f"{COINSPOT_BASE}/pubapi/v2/latest", timeout=5)
             if resp.status_code == 200:
@@ -84,7 +89,6 @@ class CoinSpotTrader:
         except Exception as e:
             log.debug(f"v2/latest list failed: {e}")
 
-        # Try 3: legacy v1 endpoint
         try:
             resp = requests.get(f"{COINSPOT_BASE}/pubapi/latest", timeout=5)
             if resp.status_code == 200:
@@ -97,9 +101,8 @@ class CoinSpotTrader:
         except Exception as e:
             log.debug(f"v1 fallback failed: {e}")
 
-        # Try 4: CoinGecko as last-resort fallback (uses cached prices to dodge rate limits)
         try:
-            from bot.brain import get_market_data  # already used elsewhere in the bot
+            from bot.brain import get_market_data
             md = get_market_data([sym])
             p = (md.get(sym) or {}).get("price")
             if p and float(p) > 0:
@@ -114,9 +117,6 @@ class CoinSpotTrader:
         coin = symbol.lower()
         price = self.get_latest_price(coin)
 
-        # PAPER mode: never block on missing price. Record the trade and let
-        # the snapshot loop backfill price/qty from market_data later.
-        # Previously: price==0 → return None → bot looked broken for hours.
         if PAPER_MODE:
             coin_amount = round(aud_amount / price, 8) if price > 0 else 0.0
             if price > 0:
@@ -128,24 +128,38 @@ class CoinSpotTrader:
                 "aud_amount": aud_amount, "coin_amount": coin_amount, "price": price,
             }
 
-        # LIVE mode: CoinSpot's actual API call needs a real rate
         if price == 0:
             log.error(f"Cannot buy {symbol} live — CoinSpot price lookup failed")
             return None
 
         coin_amount = round(aud_amount / price, 8)
         log.info(f"[LIVE] BUY {coin_amount} {symbol} (~${aud_amount:.2f} AUD) @ ${price:.4f}")
-        return self._post("/api/v2/my/buy/now", {
+        result = self._post("/api/v2/my/buy/now", {
             "cointype": symbol.upper(),
             "amount": coin_amount,
             "rate": price,
             "markettype": "AUD",
         })
+        # Echo coin_amount and price into the response so callers can store qty
+        # at insert time without re-deriving it.
+        if result is not None:
+            result.setdefault("coin_amount", coin_amount)
+            result.setdefault("price", price)
+        return result
 
-    def sell(self, symbol: str, coin_amount: float = None, aud_amount: float = None) -> dict | None:
+    def sell(self, symbol: str, coin_amount: float = None,
+             aud_amount: float = None) -> dict | None:
+        """
+        Sell `coin_amount` of `symbol` on CoinSpot.
+
+        v3.0.1 SAFETY: in LIVE mode, coin_amount is required (either passed
+        directly or derived from aud_amount). If neither is provided, the
+        sell is REFUSED. Previously this method fell back to "sell whatever
+        balance CoinSpot reports for this symbol" which would dump non-bot
+        holdings sitting in the same account.
+        """
         coin = symbol.lower()
 
-        # Paper mode: simulate without touching any live API; never block on price
         if PAPER_MODE:
             price = self.get_latest_price(coin)
             log.info(f"[PAPER] SELL {symbol}{f' @ ${price:.4f}' if price > 0 else ' (price TBD)'}")
@@ -154,19 +168,23 @@ class CoinSpotTrader:
                 "coin_amount": coin_amount or 1.0, "price": price,
             }
 
-        # Live mode
-        if coin_amount is None and aud_amount is not None:
+        # ─── LIVE MODE BELOW ───────────────────────────────────────────────
+
+        # Derive from aud_amount only if explicitly given.
+        if coin_amount is None and aud_amount is not None and aud_amount > 0:
             price = self.get_latest_price(coin)
-            coin_amount = round(aud_amount / price, 8) if price > 0 else None
+            if price > 0:
+                coin_amount = round(aud_amount / price, 8)
+            else:
+                log.error(f"REFUSING live sell {symbol}: aud_amount given but "
+                          f"price lookup failed — cannot derive qty safely")
+                return None
 
-        if coin_amount is None:
-            balances = self._get_balances()
-            entry = balances.get(symbol.upper(), {})
-            if isinstance(entry, dict):
-                coin_amount = float(entry.get("balance", 0) or 0)
-
-        if not coin_amount or coin_amount == 0:
-            log.warning(f"No {symbol} balance to sell")
+        # Hard refuse: never fall through to "sell entire balance."
+        if coin_amount is None or coin_amount <= 0:
+            log.error(f"REFUSING live sell {symbol}: coin_amount not specified. "
+                      f"The bot must pass the exact qty it bought. Refusing to "
+                      f"fall back to full-balance sell to protect non-bot holdings.")
             return None
 
         log.info(f"[LIVE] SELL {coin_amount} {symbol}")
