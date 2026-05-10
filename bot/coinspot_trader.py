@@ -3,13 +3,22 @@
 coinspot_trader.py — Executes crypto trades via CoinSpot API.
 Paper mode never calls authenticated endpoints.
 
-v3.0.1 changes from v2.x (2026-05-09):
-  - LIVE sell now REFUSES if coin_amount is None. Previously fell through
-    to "fetch full balance and sell that," which would dump non-bot
-    holdings of the same coin in the same CoinSpot account. The bot must
-    pass the exact qty it bought.
-  - Removed the silent fallback to _get_balances() in the live sell path.
-    A missing qty is now a hard error, not a "be helpful" guess.
+v3.0.8 (2026-05-10): amount and rate sent to CoinSpot order endpoints
+  must be JSON strings, not numbers. CoinSpot rejected numeric values
+  with 'Valid amount type required' (HTTP 400). Cast to str().
+
+v3.0.7 (2026-05-10): _post now reads response body BEFORE raise_for_status,
+  so HTTP 4xx errors include CoinSpot's actual rejection reason in the
+  log instead of a generic 'Bad Request' message.
+
+v3.0.6 (2026-05-10): buy() accepts price_hint kwarg. When CoinSpot's
+  public price endpoints return 0 (their listings API has been degraded
+  for weeks), we use the validated hint from prices.py rather than
+  refusing the trade.
+
+v3.0.1 (2026-05-09): live sell REFUSES if coin_amount is None, so the
+  bot can never accidentally dump non-bot holdings sitting in the same
+  CoinSpot account. Bot must pass the exact qty it bought.
 """
 
 import hmac
@@ -50,14 +59,23 @@ class CoinSpotTrader:
         try:
             resp = requests.post(f"{COINSPOT_BASE}{endpoint}",
                                 data=payload_str, headers=headers, timeout=10)
-            resp.raise_for_status()
+            # v3.0.7: read body BEFORE raise_for_status. CoinSpot returns the
+            # actual rejection reason in the JSON body even on 4xx, but
+            # raise_for_status throws away the body. Log it so we can see why.
+            body_snippet = (resp.text or "")[:400].replace("\n", " ")
+            if resp.status_code >= 400:
+                log.error(
+                    f"CoinSpot HTTP {resp.status_code} on {endpoint}: "
+                    f"body={body_snippet!r}"
+                )
+                return None
             result = resp.json()
             if result.get("status") != "ok":
-                log.error(f"CoinSpot error: {result}")
+                log.error(f"CoinSpot error on {endpoint}: {result}")
                 return None
             return result
         except Exception as e:
-            log.error(f"CoinSpot request failed: {e}")
+            log.error(f"CoinSpot request failed on {endpoint}: {e}")
             return None
 
     def get_latest_price(self, coin: str) -> float:
@@ -118,14 +136,9 @@ class CoinSpotTrader:
         """
         Place a market buy on CoinSpot for ~aud_amount AUD.
 
-        v3.0.6: price_hint is an optional pre-validated AUD price coming
-        from prices.py (which has Binance + CoinPaprika + multiple CoinSpot
-        endpoints as fallback chain). If CoinSpot's own price endpoints
-        return nothing (their public listings API has been degraded for
-        weeks, missing many tradeable mid-cap coins), we accept the hint
-        rather than refusing the trade. CoinSpot still fills at THEIR rate
-        — `rate` is just a max-acceptable price. So the validated hint
-        is safe to use as a ceiling.
+        v3.0.8: amount and rate sent as strings (CoinSpot requirement).
+        v3.0.6: price_hint as fallback when CoinSpot's own price endpoints
+        return 0 for mid-cap coins missing from their degraded listings API.
         """
         coin = symbol.lower()
         price = self.get_latest_price(coin)
@@ -157,8 +170,8 @@ class CoinSpotTrader:
         log.info(f"[LIVE] BUY {coin_amount} {symbol} (~${aud_amount:.2f} AUD) @ ${price:.4f}")
         result = self._post("/api/v2/my/buy/now", {
             "cointype": symbol.upper(),
-            "amount": str(coin_amount),
-            "rate": str(price),
+            "amount": str(coin_amount),  # v3.0.8: CoinSpot requires string
+            "rate": str(price),          # v3.0.8: CoinSpot requires string
             "markettype": "AUD",
         })
         # Echo coin_amount and price into the response so callers can store qty
@@ -211,7 +224,7 @@ class CoinSpotTrader:
         log.info(f"[LIVE] SELL {coin_amount} {symbol}")
         return self._post("/api/v2/my/sell/now", {
             "cointype": symbol.upper(),
-            "amount": str(coin_amount),
+            "amount": str(coin_amount),  # v3.0.8: CoinSpot requires string
             "markettype": "AUD",
         })
 
