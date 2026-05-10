@@ -1258,7 +1258,7 @@ def _call_claude_for_qa(client, context: str, question: str) -> tuple[str, int, 
 
 def main():
     try:
-        log.info(f"RivX v3.0.3 starting — {'PAPER' if PAPER_MODE else 'LIVE'} mode")
+        log.info(f"RivX v3.0.4 starting — {'PAPER' if PAPER_MODE else 'LIVE'} mode")
         log.info(f"Strategy: $4K swing crypto / $2K momentum crypto / $3.5K stocks / $500 ops floor")
         log.info(f"Schedule: swing crypto 8 AM + 8 PM AEST | momentum crypto every 2 hrs 24/7 | stocks 11 PM + 3 AM AEST (weekdays)")
         log.info("v3.0.3: per-trade SELL alerts now show net-of-fees $ and %")
@@ -1285,7 +1285,7 @@ def main():
         if db.get_flag("last_startup") != today:
             db.set_flag("last_startup", today)
             rec_status = "Reconciler online" if _RECONCILIATION_AVAILABLE else "Reconciler DISABLED"
-            tg.send(f"🟢 RivX v3.0.3 online. {'PAPER' if PAPER_MODE else 'LIVE'} mode. "
+            tg.send(f"🟢 RivX v3.0.4 online. {'PAPER' if PAPER_MODE else 'LIVE'} mode. "
                     f"{rec_status}. Net-of-fees alerts.")
 
         log.info("setup complete — entering main loop")
@@ -1313,6 +1313,32 @@ def main():
     last_momentum_runs = {t: db.get_flag(f"last_momentum_{t}") for t in MOMENTUM_TIMES_AEST}
     last_stock_runs = {t: db.get_flag(f"last_stock_{t}") for t in SWING_STOCK_TIMES_AEST}
     last_summary_runs = {t: db.get_flag(f"last_summary_{t}") for t in DAILY_SUMMARY_TIMES_AEST}
+
+    # v3.0.4: suppress catch-up on startup. If a scheduled slot is in the past
+    # today AND has no last_run flag (e.g. fresh deploy or post-wipe), mark it
+    # as already run "now" so we wait for the next legitimate slot rather than
+    # firing every missed slot in sequence on 30-second ticks.
+    _now_iso = safety.now_utc_iso()
+    _suppressed = []
+    def _suppress_past(slots: dict, prefix: str):
+        for t, last in list(slots.items()):
+            if last:
+                continue
+            target_h, target_m = map(int, t.split(":"))
+            now_aest_t = aest_now()
+            target_today = now_aest_t.replace(hour=target_h, minute=target_m,
+                                              second=0, microsecond=0)
+            if now_aest_t >= target_today:
+                slots[t] = _now_iso
+                db.set_flag(f"{prefix}_{t}", _now_iso)
+                _suppressed.append(f"{prefix}_{t}")
+    _suppress_past(last_swing_crypto_runs, "last_swing_crypto")
+    _suppress_past(last_momentum_runs,     "last_momentum")
+    _suppress_past(last_stock_runs,        "last_stock")
+    _suppress_past(last_summary_runs,      "last_summary")
+    if _suppressed:
+        log.info(f"v3.0.4: suppressed catch-up for {len(_suppressed)} past slots "
+                 f"(next scan at next scheduled slot)")
 
     while True:
         try:
