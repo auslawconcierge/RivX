@@ -1,18 +1,19 @@
 """
-test_coinspot_diag_v2.py — Verify v3.0.8 string-amounts fix works.
+test_coinspot_diag_v2.py — Verify v3.0.9 amounttype fix works.
 
 NO MONEY MOVES. NO REAL ORDER. NO BUYING.
 
-Same approach as test_coinspot_diag.py — invalid cointype so CoinSpot
-must reject — but THIS time we send amount/rate as STRINGS like v3.0.8 does.
+v3.0.9 added the 'amounttype' field that CoinSpot's V2 API actually
+requires. Without it the API rejects with "Valid amount type required."
+This test sends an invalid coin (XXXFAKE) WITH the amounttype field.
 
 Expected outcomes:
-  GOOD: body contains 'invalid coin' / 'cointype' / similar — meaning
-        CoinSpot accepted the amount format but rejected the fake coin.
-        This proves v3.0.8's string fix works.
+  GOOD: body contains 'invalid coin' / 'cointype not found' / similar
+        — meaning CoinSpot accepted the payload format and got far
+        enough to validate the cointype. v3.0.9 fix works.
 
-  BAD:  body contains 'Valid amount type required' — meaning strings
-        ALSO don't work. We'd need to investigate further.
+  BAD:  body contains 'Valid amount type required' — strings/amounttype
+        STILL not what CoinSpot wants. Need different approach.
 
 USAGE in Render shell:
     python test_coinspot_diag_v2.py
@@ -32,24 +33,19 @@ def main():
         sys.exit(0)
 
     print("=" * 70)
-    print("v3.0.8 verification — sending invalid coin with STRING amount/rate")
-    print("If string format works: CoinSpot will reject with 'invalid coin'")
-    print("If string format doesn't work: 'Valid amount type required' (same as before)")
-    print("NO real coins purchased.")
+    print("v3.0.9 verification — sending invalid coin with amounttype='coin'")
     print("=" * 70)
     print()
 
     cs = CoinSpotTrader()
 
-    # Send strings just like v3.0.8 does in production.
-    # Fake cointype ensures no real order can possibly land.
-    print("Sending: cointype=XXXFAKE, amount='0.001', rate='1.0' (strings)")
+    print("Sending: cointype=XXXFAKE, amounttype='coin', amount='0.001'")
     print()
 
     result = cs._post("/api/v2/my/buy/now", {
         "cointype": "XXXFAKE",
-        "amount": "0.001",   # STRING — v3.0.8 fix
-        "rate": "1.0",       # STRING — v3.0.8 fix
+        "amounttype": "coin",
+        "amount": "0.001",
         "markettype": "AUD",
     })
 
@@ -60,18 +56,17 @@ def main():
     if result is None:
         print("_post returned None (expected for invalid cointype).")
         print()
-        print("Now check the 'CoinSpot HTTP 400 ... body=' line above:")
+        print("Check the 'CoinSpot HTTP 400 ... body=' line above:")
         print()
-        print("  -> If body says 'Valid amount type required' AGAIN:")
-        print("     v3.0.8 string fix did NOT work. Need different approach.")
+        print("  -> If body STILL says 'Valid amount type required':")
+        print("     v3.0.9 didn't help. amounttype isn't enough.")
         print()
-        print("  -> If body says anything ELSE (invalid coin, unknown coin,")
-        print("     cointype not found, etc):")
-        print("     v3.0.8 string fix WORKS. CoinSpot got past amount validation")
-        print("     and is now rejecting because XXXFAKE isn't a real coin.")
-        print("     Real buys with real coin names will succeed.")
+        print("  -> If body says 'invalid coin' / 'cointype' / 'unknown' etc:")
+        print("     v3.0.9 WORKS. Real coin names will succeed.")
+        print()
+        print("  -> Anything else: new info, share it.")
     else:
-        print("UNEXPECTED: got a non-None result for fake coin:")
+        print("UNEXPECTED: got non-None result for fake coin:")
         print(result)
 
 
