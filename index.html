@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- RIVX_VERSION: v2.9-live-badge-2026-05-10 -->
+<!-- RIVX_VERSION: v3.0.0-strategy-sync-2026-05-11 -->
 <!--
   v2.7 changes from v2.6:
     1. PWA enablement. Added manifest.webmanifest, apple-touch-icon, theme
@@ -801,7 +801,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     </div>
 
   </div>
-  <div class="footer">NYSE · NASDAQ · CRYPTO · AUD · BRISBANE · v2.9</div>
+  <div class="footer">NYSE · NASDAQ · CRYPTO · AUD · BRISBANE · v3.0</div>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
@@ -837,16 +837,16 @@ const BUCKETS = {
     perBuy: 800,
     universe: 'Top 30 by market cap',
     entry: {
-      'Pullback from 7d high': '5–15%',
+      'Pullback from 7d high': '4–13%',
       'Trend filter': 'Above 50d MA',
       'Falling-knife guard': 'RSI > 30 OR not still dropping',
       'Volatility guard': 'Daily range &lt; 3× ATR',
     },
     exit: {
       'Stop loss': '−8%',
-      'Target': '+15% (take half)',
-      'Trailing stop': '5% giveback after target',
-      'Review': '30 days',
+      'Trailing stop': 'arms at +10% peak, 5% giveback',
+      'Target sells': 'none — trail-only',
+      'Review': '14 days',
     },
     cadence: 'Twice daily, 8:00 AM + 8:00 PM AEST',
   },
@@ -861,16 +861,16 @@ const BUCKETS = {
     perBuy: 500,
     universe: 'Rank 30–200 (mid-caps)',
     entry: {
-      'Breakout': 'Broke 7d high TODAY',
-      'Volume confirmation': '≥ 2× 7d average',
+      'Breakout': 'Broke 5d high TODAY',
+      'Volume confirmation': '≥ 1.5× 5d average',
       'Falling-knife guard': 'RSI > 30 OR not still dropping',
       'Volatility guard': 'Daily range &lt; 3× ATR',
     },
     exit: {
       'Stop loss': '−10%',
-      'Target': '+30% (full exit)',
-      'Trailing stop': 'none',
-      'Hard exit': '7 days',
+      'Trailing stop': 'arms at +20% peak, 7% giveback',
+      'Target sells': 'none — trail-only',
+      'Hard exit': '4 days',
     },
     cadence: 'Every 2 hours, 24/7 (12/day)',
   },
@@ -885,15 +885,15 @@ const BUCKETS = {
     perBuy: 1167,
     universe: 'Quality list: NVDA, AAPL, MSFT, META, GOOGL, AMZN, AMD, AVGO, TSM, TSLA, NFLX, ADBE, CRM, SPY, QQQ, IWM',
     entry: {
-      'Pullback from 7d high': '3–8%',
+      'Pullback from 7d high': '3–12%',
       'Trend filter': 'Above 50d MA',
       'Universe': 'From quality list only',
     },
     exit: {
       'Stop loss': '−5%',
-      'Target': '+12% (take half)',
-      'Trailing stop': '4% giveback after target',
-      'Review': '30 days',
+      'Trailing stop': 'arms at +8% peak, 4% giveback',
+      'Target sells': 'none — trail-only',
+      'Review': '14 days',
     },
     cadence: '11:00 PM + 3:00 AM AEST (weekdays)',
   },
@@ -1995,11 +1995,11 @@ function renderRiskLevelsForBucket(pos, bucketKey){
   let stop, target, trailGiveback, reviewDays, hardExitDays;
 
   if(bucketKey === 'swing_crypto'){
-    stop = -0.08; target = 0.15; trailGiveback = 0.05; reviewDays = 30;
+    stop = -0.08; target = 0.10; trailGiveback = 0.05; reviewDays = 14;
   } else if(bucketKey === 'momentum_crypto'){
-    stop = -0.10; target = 0.30; hardExitDays = 7;
+    stop = -0.10; target = 0.20; trailGiveback = 0.07; hardExitDays = 4;
   } else {
-    stop = -0.05; target = 0.12; trailGiveback = 0.04; reviewDays = 30;
+    stop = -0.05; target = 0.08; trailGiveback = 0.04; reviewDays = 14;
   }
 
   const stopDist = pnlPct - stop;
