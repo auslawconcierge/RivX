@@ -1,4 +1,4 @@
-# RIVX_VERSION: v3.0.8-string-amounts-2026-05-10
+# RIVX_VERSION: v3.0.9-amounttype-required-2026-05-10
 """
 coinspot_trader.py — Executes crypto trades via CoinSpot API.
 Paper mode never calls authenticated endpoints.
@@ -168,10 +168,15 @@ class CoinSpotTrader:
 
         coin_amount = round(aud_amount / price, 8)
         log.info(f"[LIVE] BUY {coin_amount} {symbol} (~${aud_amount:.2f} AUD) @ ${price:.4f}")
+        # v3.0.9: CoinSpot V2 requires amounttype field. 'coin' means the
+        # amount below is in the coin unit (BTC), not AUD. We omit `rate`
+        # entirely — per CoinSpot docs, market orders fill at current rate
+        # regardless of submitted rate, and including rate forces us to
+        # also include threshold. Simpler to leave it out.
         result = self._post("/api/v2/my/buy/now", {
             "cointype": symbol.upper(),
-            "amount": str(coin_amount),  # v3.0.8: CoinSpot requires string
-            "rate": str(price),          # v3.0.8: CoinSpot requires string
+            "amounttype": "coin",
+            "amount": str(coin_amount),
             "markettype": "AUD",
         })
         # Echo coin_amount and price into the response so callers can store qty
@@ -224,7 +229,8 @@ class CoinSpotTrader:
         log.info(f"[LIVE] SELL {coin_amount} {symbol}")
         return self._post("/api/v2/my/sell/now", {
             "cointype": symbol.upper(),
-            "amount": str(coin_amount),  # v3.0.8: CoinSpot requires string
+            "amounttype": "coin",
+            "amount": str(coin_amount),
             "markettype": "AUD",
         })
 
