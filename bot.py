@@ -37,7 +37,8 @@ logging.basicConfig(
 log = logging.getLogger("rivx")
 
 from bot.config import (
-    PAPER_MODE, ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_DATA_URL,
+    PAPER_MODE, ALPACA_API_KEY, ALPACA_SECRET_KEY,
+    ALPACA_BASE_URL, ALPACA_DATA_URL,
     TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, ANTHROPIC_API_KEY,
 )
 from bot import prices
@@ -264,7 +265,7 @@ def _sync_alpaca_stocks(db, alpaca, symbols):
     for sym in symbols:
         try:
             r = requests.get(
-                f"https://paper-api.alpaca.markets/v2/positions/{sym}",
+                f"{ALPACA_BASE_URL}/v2/positions/{sym}",
                 headers=headers, timeout=8,
             )
             if r.status_code != 200:
@@ -300,7 +301,7 @@ def _heal_orphan_stock_close(*, symbol: str, position: dict, db,
 
     try:
         r = requests.get(
-            "https://paper-api.alpaca.markets/v2/orders",
+            f"{ALPACA_BASE_URL}/v2/orders",
             headers=headers,
             params={"status": "closed", "symbols": symbol,
                     "direction": "desc", "limit": "20"},
@@ -1258,7 +1259,7 @@ def _call_claude_for_qa(client, context: str, question: str) -> tuple[str, int, 
 
 def main():
     try:
-        log.info(f"RivX v3.0.4 starting — {'PAPER' if PAPER_MODE else 'LIVE'} mode")
+        log.info(f"RivX v3.0.5 starting — {'PAPER' if PAPER_MODE else 'LIVE'} mode")
         log.info(f"Strategy: $4K swing crypto / $2K momentum crypto / $3.5K stocks / $500 ops floor")
         log.info(f"Schedule: swing crypto 8 AM + 8 PM AEST | momentum crypto every 2 hrs 24/7 | stocks 11 PM + 3 AM AEST (weekdays)")
         log.info("v3.0.3: per-trade SELL alerts now show net-of-fees $ and %")
@@ -1285,7 +1286,7 @@ def main():
         if db.get_flag("last_startup") != today:
             db.set_flag("last_startup", today)
             rec_status = "Reconciler online" if _RECONCILIATION_AVAILABLE else "Reconciler DISABLED"
-            tg.send(f"🟢 RivX v3.0.4 online. {'PAPER' if PAPER_MODE else 'LIVE'} mode. "
+            tg.send(f"🟢 RivX v3.0.5 online. {'PAPER' if PAPER_MODE else 'LIVE'} mode. "
                     f"{rec_status}. Net-of-fees alerts.")
 
         log.info("setup complete — entering main loop")
