@@ -461,7 +461,7 @@ def execute_buy(
                        f"CoinSpot ${quote.cs_aud:.4f} AUD, disagree {quote.disagreement_pct:.1f}%")
 
     try:
-        res = coinspot.buy(symbol, size_aud)
+        res = coinspot.buy(symbol, size_aud, price_hint=quote.aud)
         if not res:
             return False, "coinspot returned None"
         entry_price = float(res.get("price") or quote.aud)
@@ -1259,7 +1259,7 @@ def _call_claude_for_qa(client, context: str, question: str) -> tuple[str, int, 
 
 def main():
     try:
-        log.info(f"RivX v3.0.5 starting — {'PAPER' if PAPER_MODE else 'LIVE'} mode")
+        log.info(f"RivX v3.0.6 starting — {'PAPER' if PAPER_MODE else 'LIVE'} mode")
         log.info(f"Strategy: $4K swing crypto / $2K momentum crypto / $3.5K stocks / $500 ops floor")
         log.info(f"Schedule: swing crypto 8 AM + 8 PM AEST | momentum crypto every 2 hrs 24/7 | stocks 11 PM + 3 AM AEST (weekdays)")
         log.info("v3.0.3: per-trade SELL alerts now show net-of-fees $ and %")
@@ -1286,7 +1286,7 @@ def main():
         if db.get_flag("last_startup") != today:
             db.set_flag("last_startup", today)
             rec_status = "Reconciler online" if _RECONCILIATION_AVAILABLE else "Reconciler DISABLED"
-            tg.send(f"🟢 RivX v3.0.5 online. {'PAPER' if PAPER_MODE else 'LIVE'} mode. "
+            tg.send(f"🟢 RivX v3.0.6 online. {'PAPER' if PAPER_MODE else 'LIVE'} mode. "
                     f"{rec_status}. Net-of-fees alerts.")
 
         log.info("setup complete — entering main loop")
