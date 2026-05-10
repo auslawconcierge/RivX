@@ -1,10 +1,21 @@
-# RIVX_VERSION: v3.0-momentum-5d-1.5x-2026-05-07
+# RIVX_VERSION: v3.0.4-quiet-listings-2026-05-10
 """
 RivX scanner.py — find candidates that match the strategy's entry rules.
 
 The scanner's only job is to produce a list of (symbol, bucket, signal_data)
 candidates. It does NOT decide what to buy — that's the brain's job, with
 Claude in the loop.
+
+═══════════════════════════════════════════════════════════════════════════
+v3.0.4 changes (2026-05-10)
+═══════════════════════════════════════════════════════════════════════════
+
+  Quietened CoinSpot listings noise. CoinSpot's pubapi/v2/latest and
+  pubapi/latest endpoints have been returning only 16-17 symbols for
+  weeks, so the bot has been logging three WARNING lines per scan as it
+  falls back through the chain. Now: full warning logged once per
+  cache-window (30 min), then silent. The CoinPaprika fallback path
+  still works, log spam stops.
 
 ═══════════════════════════════════════════════════════════════════════════
 v3.0 changes (2026-05-07)
@@ -76,6 +87,25 @@ COINSPOT_HEADERS = {
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "en-US,en;q=0.9",
 }
+
+
+# ── v3.0.4 noise budget for CoinSpot listings ───────────────────────────
+# CoinSpot's public listings API has been degraded for weeks; full warning
+# spam every scan adds nothing. Log full detail once per 30 min, silent
+# in between. Each unique warning key gets its own cooldown.
+_LISTINGS_WARN_COOLDOWN_SEC = 1800
+_listings_last_warn: dict = {}
+
+
+def _listings_warn_once(key: str, msg: str) -> None:
+    """Log msg at WARNING level if we haven't logged this key in the last 30 min."""
+    now = time.time()
+    last = _listings_last_warn.get(key, 0.0)
+    if now - last >= _LISTINGS_WARN_COOLDOWN_SEC:
+        log.warning(msg)
+        _listings_last_warn[key] = now
+    else:
+        log.debug(f"[suppressed-warn:{key}] {msg}")
 
 
 # ── Cache (mirrors prices.py for consistency) ────────────────────────────
@@ -222,17 +252,19 @@ def _coinspot_listings() -> set:
             last_status = r.status_code
             if r.status_code != 200:
                 last_body_snippet = (r.text or "")[:200].replace("\n", " ")
-                log.warning(
+                _listings_warn_once(
+                    f"http:{url}:{r.status_code}",
                     f"coinspot listings via {url}: HTTP {r.status_code} "
-                    f"body={last_body_snippet!r}"
+                    f"body={last_body_snippet!r}",
                 )
                 continue
             data = r.json()
             prices_obj = data.get("prices") or data
             if not isinstance(prices_obj, dict):
-                log.warning(
+                _listings_warn_once(
+                    f"shape:{url}",
                     f"coinspot listings via {url}: unexpected shape "
-                    f"keys={list(data.keys()) if isinstance(data, dict) else type(data).__name__}"
+                    f"keys={list(data.keys()) if isinstance(data, dict) else type(data).__name__}",
                 )
                 continue
             symbols = {s.upper() for s in prices_obj.keys()}
@@ -240,15 +272,22 @@ def _coinspot_listings() -> set:
                 log.info(f"coinspot listings: {len(symbols)} symbols (live)")
                 _cache_set("coinspot_listings", sorted(symbols))
                 return symbols
-            log.warning(f"coinspot listings via {url}: only {len(symbols)} symbols, skipping")
+            _listings_warn_once(
+                f"thin:{url}",
+                f"coinspot listings via {url}: only {len(symbols)} symbols, skipping",
+            )
         except Exception as e:
-            log.warning(f"coinspot listings via {url}: {type(e).__name__}: {e}")
+            _listings_warn_once(
+                f"exc:{url}:{type(e).__name__}",
+                f"coinspot listings via {url}: {type(e).__name__}: {e}",
+            )
 
     stale = _cache_get("coinspot_listings", 86400)
     if stale and len(stale) > 20:
-        log.warning(
+        _listings_warn_once(
+            "stale-fallback",
             f"CoinSpot listings: live unavailable "
-            f"(last status {last_status}), using stale cache ({len(stale)} symbols)"
+            f"(last status {last_status}), using stale cache ({len(stale)} symbols)",
         )
         return set(stale)
 
@@ -257,17 +296,19 @@ def _coinspot_listings() -> set:
         if ranks:
             top_200 = {sym for sym, rank in ranks.items() if rank <= 200}
             if len(top_200) > 50:
-                log.warning(
+                _listings_warn_once(
+                    "paprika-fallback",
                     f"CoinSpot listings: live + stale failed, using CoinPaprika "
-                    f"top 200 fallback ({len(top_200)} symbols)"
+                    f"top 200 fallback ({len(top_200)} symbols)",
                 )
                 return top_200
     except Exception as e:
         log.debug(f"coinpaprika fallback failed: {e}")
 
-    log.warning(
+    _listings_warn_once(
+        "hardcoded-fallback",
         f"CoinSpot listings: ALL sources failed, using hardcoded fallback "
-        f"({len(COINSPOT_HARDCODED_FALLBACK)} symbols)"
+        f"({len(COINSPOT_HARDCODED_FALLBACK)} symbols)",
     )
     return set(COINSPOT_HARDCODED_FALLBACK)
 
