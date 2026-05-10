@@ -1,4 +1,4 @@
-# RIVX_VERSION: v3.0.6-price-hint-fallback-2026-05-10
+# RIVX_VERSION: v3.0.7-log-coinspot-400-body-2026-05-10
 """
 coinspot_trader.py — Executes crypto trades via CoinSpot API.
 Paper mode never calls authenticated endpoints.
@@ -50,14 +50,23 @@ class CoinSpotTrader:
         try:
             resp = requests.post(f"{COINSPOT_BASE}{endpoint}",
                                 data=payload_str, headers=headers, timeout=10)
-            resp.raise_for_status()
+            # v3.0.7: read body BEFORE raise_for_status. CoinSpot returns the
+            # actual rejection reason in the JSON body even on 4xx, but
+            # raise_for_status throws away the body. Log it so we can see why.
+            body_snippet = (resp.text or "")[:400].replace("\n", " ")
+            if resp.status_code >= 400:
+                log.error(
+                    f"CoinSpot HTTP {resp.status_code} on {endpoint}: "
+                    f"body={body_snippet!r}"
+                )
+                return None
             result = resp.json()
             if result.get("status") != "ok":
-                log.error(f"CoinSpot error: {result}")
+                log.error(f"CoinSpot error on {endpoint}: {result}")
                 return None
             return result
         except Exception as e:
-            log.error(f"CoinSpot request failed: {e}")
+            log.error(f"CoinSpot request failed on {endpoint}: {e}")
             return None
 
     def get_latest_price(self, coin: str) -> float:
