@@ -1,4 +1,4 @@
-# RIVX_VERSION: v3.0.1-explicit-qty-2026-05-09
+# RIVX_VERSION: v3.0.6-price-hint-fallback-2026-05-10
 """
 coinspot_trader.py — Executes crypto trades via CoinSpot API.
 Paper mode never calls authenticated endpoints.
@@ -113,9 +113,29 @@ class CoinSpotTrader:
         log.warning(f"Price unavailable for {sym} on CoinSpot — coin may not be tradeable")
         return 0.0
 
-    def buy(self, symbol: str, aud_amount: float) -> dict | None:
+    def buy(self, symbol: str, aud_amount: float,
+            price_hint: float = 0.0) -> dict | None:
+        """
+        Place a market buy on CoinSpot for ~aud_amount AUD.
+
+        v3.0.6: price_hint is an optional pre-validated AUD price coming
+        from prices.py (which has Binance + CoinPaprika + multiple CoinSpot
+        endpoints as fallback chain). If CoinSpot's own price endpoints
+        return nothing (their public listings API has been degraded for
+        weeks, missing many tradeable mid-cap coins), we accept the hint
+        rather than refusing the trade. CoinSpot still fills at THEIR rate
+        — `rate` is just a max-acceptable price. So the validated hint
+        is safe to use as a ceiling.
+        """
         coin = symbol.lower()
         price = self.get_latest_price(coin)
+
+        if price == 0 and price_hint > 0:
+            log.warning(
+                f"{symbol}: CoinSpot public price endpoints returned 0, "
+                f"using validated price_hint ${price_hint:.6f} from prices.py"
+            )
+            price = price_hint
 
         if PAPER_MODE:
             coin_amount = round(aud_amount / price, 8) if price > 0 else 0.0
@@ -129,7 +149,8 @@ class CoinSpotTrader:
             }
 
         if price == 0:
-            log.error(f"Cannot buy {symbol} live — CoinSpot price lookup failed")
+            log.error(f"Cannot buy {symbol} live — CoinSpot price lookup failed "
+                      f"and no price_hint provided")
             return None
 
         coin_amount = round(aud_amount / price, 8)
