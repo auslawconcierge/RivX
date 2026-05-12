@@ -1,4 +1,4 @@
-# RIVX_VERSION: v2.8-scanner-exclusions-2026-04-30
+# RIVX_VERSION: v3.0.1-scanner-exclusions-env-url-2026-05-12
 """
 Scanner pre-filter for blocked symbols.
 
@@ -17,10 +17,12 @@ USAGE:
   candidate list through filter_blocked_symbols() before returning.
 
   Cheap: one HTTP call per scan event, cached for 60 seconds.
+
+v3.0.1 change:
+  Switched hardcoded paper-api.alpaca.markets URL to ALPACA_BASE_URL from
+  config, so the same code path works against paper or live without edits.
 """
-
 from __future__ import annotations
-
 import logging
 import time
 from typing import Iterable
@@ -43,7 +45,6 @@ def get_blocked_symbols(force_refresh: bool = False) -> set:
             and _BLOCKED_CACHE["data"] is not None
             and now - _BLOCKED_CACHE["fetched_at"] < _CACHE_TTL_SEC):
         return _BLOCKED_CACHE["data"]
-
     try:
         blocked = _fetch_blocked_from_alpaca()
         _BLOCKED_CACHE["data"] = blocked
@@ -64,11 +65,9 @@ def filter_blocked_symbols(candidates: list, log_obj=None) -> list:
     """
     if log_obj is None:
         log_obj = log
-
     blocked = get_blocked_symbols()
     if not blocked:
         return candidates
-
     out = []
     for c in candidates:
         sym = (c.get("symbol") or "").upper()
@@ -77,28 +76,26 @@ def filter_blocked_symbols(candidates: list, log_obj=None) -> list:
                          f"(would cause wash-trade rejection)")
             continue
         out.append(c)
-
     return out
 
 
 def _fetch_blocked_from_alpaca() -> set:
     import requests
-    from bot.config import ALPACA_API_KEY, ALPACA_SECRET_KEY
+    from bot.config import ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL
 
     headers = {
         "APCA-API-KEY-ID": ALPACA_API_KEY,
         "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
     }
-
+    base = ALPACA_BASE_URL.rstrip("/")
     r = requests.get(
-        "https://paper-api.alpaca.markets/v2/orders",
+        f"{base}/v2/orders",
         headers=headers,
         params={"status": "open", "limit": "100"},
         timeout=8,
     )
     r.raise_for_status()
     data = r.json() or []
-
     out = set()
     for o in data:
         sym = (o.get("symbol") or "").upper()
