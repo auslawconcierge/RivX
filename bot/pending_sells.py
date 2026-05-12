@@ -1,6 +1,13 @@
-# RIVX_VERSION: v2.9.4-pending-sells-direct-patch-2026-05-07
+# RIVX_VERSION: v3.0.1-pending-sells-env-url-2026-05-12
 """
 Pending sells tracker.
+
+v3.0.1 change (2026-05-12):
+  Switched hardcoded paper-api.alpaca.markets URL in _fetch_alpaca_order
+  to ALPACA_BASE_URL from config. Critical fix for live Alpaca rollout:
+  without this, the post-submit poll for fill confirmation would hit
+  paper-api with live keys, get 401s, never confirm fills, and leave
+  positions stuck in pending_close until the 48h timeout reverted them.
 
 v2.9.4 fix from v2.8:
   Two bugs, plus a subtle interaction.
@@ -339,15 +346,16 @@ def _timeout_stale_pending(db, log_obj):
 def _fetch_alpaca_order(order_id: str) -> Optional[dict]:
     """Get current state of one order from Alpaca."""
     import requests
-    from bot.config import ALPACA_API_KEY, ALPACA_SECRET_KEY
+    from bot.config import ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL
 
     headers = {
         "APCA-API-KEY-ID": ALPACA_API_KEY,
         "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
     }
+    base = ALPACA_BASE_URL.rstrip("/")
 
     r = requests.get(
-        f"https://paper-api.alpaca.markets/v2/orders/{order_id}",
+        f"{base}/v2/orders/{order_id}",
         headers=headers, timeout=8,
     )
     if r.status_code != 200:
