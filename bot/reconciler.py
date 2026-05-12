@@ -1,4 +1,4 @@
-# RIVX_VERSION: v2.8-reconciler-2026-04-30
+# RIVX_VERSION: v3.0.1-reconciler-env-url-2026-05-12
 """
 RivX reconciler — keeps Alpaca and Supabase in agreement on US stock state.
 
@@ -27,6 +27,11 @@ NOT IN SCOPE:
 
 CALL SITE: bot.py main loop calls reconciler.tick(db, alpaca, tg, log)
 once per snapshot cycle (every 5 min). Cheap when nothing diverges.
+
+v3.0.1 change:
+  Switched two hardcoded paper-api.alpaca.markets URLs to ALPACA_BASE_URL
+  from config, so the same code path works against paper or live without
+  edits. Required for live Alpaca rollout 2026-05-12.
 """
 
 from __future__ import annotations
@@ -188,15 +193,16 @@ def run_reconciliation(db, alpaca, tg, log_obj) -> dict:
 def _fetch_alpaca_positions(alpaca) -> dict:
     """Returns {symbol: {qty, avg_entry, current_price}}."""
     import requests
-    from bot.config import ALPACA_API_KEY, ALPACA_SECRET_KEY
+    from bot.config import ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL
 
     headers = {
         "APCA-API-KEY-ID": ALPACA_API_KEY,
         "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
     }
+    base = ALPACA_BASE_URL.rstrip("/")
 
     r = requests.get(
-        "https://paper-api.alpaca.markets/v2/positions",
+        f"{base}/v2/positions",
         headers=headers, timeout=10,
     )
     r.raise_for_status()
@@ -226,15 +232,16 @@ def _fetch_alpaca_positions(alpaca) -> dict:
 def _fetch_alpaca_open_orders(alpaca) -> list:
     """Returns list of {symbol, side, qty, status, id, submitted_at}."""
     import requests
-    from bot.config import ALPACA_API_KEY, ALPACA_SECRET_KEY
+    from bot.config import ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL
 
     headers = {
         "APCA-API-KEY-ID": ALPACA_API_KEY,
         "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
     }
+    base = ALPACA_BASE_URL.rstrip("/")
 
     r = requests.get(
-        "https://paper-api.alpaca.markets/v2/orders",
+        f"{base}/v2/orders",
         headers=headers,
         params={"status": "open", "limit": "100"},
         timeout=10,
