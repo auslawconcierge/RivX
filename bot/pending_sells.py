@@ -1,6 +1,14 @@
-# RIVX_VERSION: v3.0.1-pending-sells-env-url-2026-05-12
+# RIVX_VERSION: v3.0.2-sell-qty-fix-2026-05-16
 """
 Pending sells tracker.
+
+v3.0.2 change (2026-05-16):
+  CRITICAL FIX: submit_sell_for_stock now passes qty from the position
+  row to alpaca.sell(). Previously called alpaca.sell(symbol) with no
+  qty and no close_full_position flag, which the v3.0.1 safety layer
+  in alpaca_trader.py correctly refused every time. This caused an
+  infinite retry loop (every 5 min) with ~200 Telegram alerts overnight
+  and zero sell orders reaching Alpaca.
 
 v3.0.1 change (2026-05-12):
   Switched hardcoded paper-api.alpaca.markets URL in _fetch_alpaca_order
@@ -98,12 +106,25 @@ def submit_sell_for_stock(*, symbol: str, position: dict,
     the order id stashed in bot_flags as a recovery breadcrumb — the
     self-heal path in bot.py (v2.9.4) will close the orphan on the
     next manage cycle.
+
+    v3.0.2: now passes qty from position row to alpaca.sell().
     """
     if log_obj is None:
         log_obj = log
 
+    # v3.0.2: extract qty from position and pass to alpaca.sell()
+    # so the v3.0.1 safety layer in alpaca_trader.py doesn't refuse.
     try:
-        res = alpaca.sell(symbol)
+        sell_qty = float(position.get("qty") or 0)
+    except (TypeError, ValueError):
+        sell_qty = 0.0
+
+    if sell_qty <= 0:
+        return False, (f"{symbol}: no qty stored in position row — "
+                       f"refusing live sell. Manual close required.")
+
+    try:
+        res = alpaca.sell(symbol, qty=sell_qty)
     except Exception as e:
         return False, f"alpaca sell error: {e}"
     if not res:
@@ -143,8 +164,8 @@ def submit_sell_for_stock(*, symbol: str, position: dict,
         return False, (f"alpaca order {order_id[:8]} submitted but supabase "
                        f"update failed — auto-heal will close on next cycle")
 
-    log_obj.info(f"SELL {symbol}: order {order_id} submitted, status={status}, "
-                 f"marked pending_close")
+    log_obj.info(f"SELL {symbol}: order {order_id} submitted (qty={sell_qty}), "
+                 f"status={status}, marked pending_close")
     return True, f"submitted, awaiting fill (order {order_id[:8]})"
 
 
