@@ -1,6 +1,14 @@
+# RIVX_VERSION: v3.0.1-env-url-2026-05-16
 """
 RivX AutoTrader — config.py
 All settings, portfolio allocation, and environment variable loading.
+
+v3.0.1 (2026-05-16):
+  ALPACA_BASE_URL now reads from os.getenv first, falling back to the
+  PAPER_MODE-derived default. This gives the operator a manual override
+  during incidents (e.g. pointing live keys at the live URL while
+  debugging PAPER_MODE env-var propagation) without having to flip
+  PAPER_MODE itself, which has cross-cutting effects elsewhere.
 """
 
 import os
@@ -11,7 +19,12 @@ PAPER_MODE = os.getenv("PAPER_MODE", "true").lower() == "true"
 # ─── API Keys ─────────────────────────────────────────────────────────────────
 ALPACA_API_KEY      = os.getenv("ALPACA_API_KEY")
 ALPACA_SECRET_KEY   = os.getenv("ALPACA_SECRET_KEY")
-ALPACA_BASE_URL     = (
+
+# v3.0.1: env var takes precedence over the PAPER_MODE-derived default.
+# Set ALPACA_BASE_URL in Render env to force a specific endpoint
+# regardless of PAPER_MODE. Useful for forcing live URL during the
+# live-rollout window if PAPER_MODE env propagation gets confused.
+ALPACA_BASE_URL     = os.getenv("ALPACA_BASE_URL") or (
     "https://paper-api.alpaca.markets" if PAPER_MODE
     else "https://api.alpaca.markets"
 )
