@@ -1,7 +1,26 @@
-# RIVX_VERSION: v3.0.9-amounttype-required-2026-05-10
+# RIVX_VERSION: v3.1.0-balance-checks-2026-05-16
 """
 coinspot_trader.py — Executes crypto trades via CoinSpot API.
 Paper mode never calls authenticated endpoints.
+
+v3.1.0 (2026-05-16): Pre-trade balance checks against the exchange.
+  - buy() now queries CoinSpot AUD balance before placing the order and
+    skips (returns None) if balance < requested trade size. Fixes ADA/BTC
+    buys getting rejected with HTTP 400 'Insufficient funds' when the
+    bot's internal cash model drifted ahead of actual CoinSpot AUD.
+  - sell() now queries CoinSpot's actual coin balance and clamps the
+    sell qty to min(supabase_qty, actual_balance). Fixes STX trail-stop
+    sells spinning on 'Insufficient funds' because tiny rounding/fee
+    deductions at buy time left Supabase qty slightly greater than the
+    coins actually held on CoinSpot.
+  - Added _available_balance() helper that returns the available balance
+    for an asset (AUD or any coin) as a float, or None if the CoinSpot
+    balances call failed. None vs 0.0 distinguishes 'cannot verify'
+    (abort the trade) from 'genuinely zero' (also abort, but a different
+    log line).
+  - sell() now echoes the (possibly-clamped) coin_amount into the result
+    dict so callers can record the actual sold qty in Supabase rather
+    than the requested qty.
 
 v3.0.8 (2026-05-10): amount and rate sent to CoinSpot order endpoints
   must be JSON strings, not numbers. CoinSpot rejected numeric values
@@ -131,10 +150,57 @@ class CoinSpotTrader:
         log.warning(f"Price unavailable for {sym} on CoinSpot — coin may not be tradeable")
         return 0.0
 
+    def _available_balance(self, asset: str) -> float | None:
+        """
+        v3.1.0: Live-mode lookup of available balance for `asset`
+        ('AUD' or any coin ticker like 'STX', 'BTC').
+
+        Returns:
+          - float >= 0 — the available balance from CoinSpot.
+          - 0.0 — asset is not in the account at all (e.g. never traded).
+          - None — the balances API call failed or returned an unparseable
+            shape. Callers MUST treat None as 'cannot verify, abort trade'.
+
+        Reuses _get_balances() so we inherit the list-or-dict response
+        shape handling that's already proven in production.
+
+        Prefers the 'available' field over 'balance' to exclude coins
+        locked in open orders. With market-only orders this rarely
+        matters, but it's the correct conservative choice.
+        """
+        if PAPER_MODE:
+            return None
+        balances = self._get_balances()
+        if not balances:
+            # _get_balances() returns {} on POST failure OR on a truly empty
+            # response. In practice the live account always has at least an
+            # AUD entry, so {} reliably means the API call failed.
+            return None
+        entry = balances.get(asset.upper())
+        if not isinstance(entry, dict):
+            # Asset is not in the balances response — never traded / not held.
+            return 0.0
+        for field in ("available", "balance"):
+            val = entry.get(field)
+            if val is None:
+                continue
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                continue
+        return 0.0
+
     def buy(self, symbol: str, aud_amount: float,
             price_hint: float = 0.0) -> dict | None:
         """
         Place a market buy on CoinSpot for ~aud_amount AUD.
+
+        v3.1.0: pre-buy AUD balance check against the exchange. If the
+        live AUD balance is below the requested trade size, the buy is
+        skipped (returns None). This avoids wasting Claude API spend on
+        execute paths that will be rejected with HTTP 400 'Insufficient
+        funds' anyway, and prevents misleading 'execution_failed' rows
+        in the log.
 
         v3.0.8: amount and rate sent as strings (CoinSpot requirement).
         v3.0.6: price_hint as fallback when CoinSpot's own price endpoints
@@ -166,6 +232,27 @@ class CoinSpotTrader:
                       f"and no price_hint provided")
             return None
 
+        # v3.1.0: pre-buy AUD balance check. The bot's internal cash model
+        # (starting_capital - deployed + closed_pnl) can drift from actual
+        # CoinSpot AUD over time. Verify with the exchange before submitting.
+        aud_balance = self._available_balance("AUD")
+        if aud_balance is None:
+            log.error(
+                f"Cannot buy {symbol}: CoinSpot AUD balance check failed "
+                f"(balances API call returned no data). Aborting rather than "
+                f"submitting a blind order."
+            )
+            return None
+        if aud_balance < aud_amount:
+            log.info(
+                f"Skipping {symbol} buy: CoinSpot AUD balance "
+                f"${aud_balance:.2f} < requested ${aud_amount:.2f}. "
+                f"Bot's internal cash model is ahead of actual exchange "
+                f"balance — this skip is the intended safety behaviour, "
+                f"not an execution failure."
+            )
+            return None
+
         coin_amount = round(aud_amount / price, 8)
         log.info(f"[LIVE] BUY {coin_amount} {symbol} (~${aud_amount:.2f} AUD) @ ${price:.4f}")
         # v3.0.9: CoinSpot V2 requires amounttype field. 'coin' means the
@@ -191,11 +278,22 @@ class CoinSpotTrader:
         """
         Sell `coin_amount` of `symbol` on CoinSpot.
 
+        v3.1.0: clamps the sell qty to min(requested, actual CoinSpot
+        balance). Tiny rounding and fee deductions at buy time can leave
+        the Supabase-tracked qty slightly larger than what CoinSpot
+        actually holds, which causes 'Insufficient funds' (HTTP 400) on
+        every trail-stop trigger. Clamping silently resolves the typical
+        case (sub-1% shortfall) while still refusing the trade if
+        CoinSpot reports zero balance (sign of a real accounting
+        mismatch that needs human eyes).
+
         v3.0.1 SAFETY: in LIVE mode, coin_amount is required (either passed
         directly or derived from aud_amount). If neither is provided, the
         sell is REFUSED. Previously this method fell back to "sell whatever
         balance CoinSpot reports for this symbol" which would dump non-bot
-        holdings sitting in the same account.
+        holdings sitting in the same account. The new v3.1.0 balance check
+        clamps DOWN only — it never sells more than the caller asked for,
+        so non-bot holdings remain protected.
         """
         coin = symbol.lower()
 
@@ -226,13 +324,49 @@ class CoinSpotTrader:
                       f"fall back to full-balance sell to protect non-bot holdings.")
             return None
 
-        log.info(f"[LIVE] SELL {coin_amount} {symbol}")
-        return self._post("/api/v2/my/sell/now", {
+        # v3.1.0: clamp to actual exchange balance.
+        actual_balance = self._available_balance(symbol)
+        if actual_balance is None:
+            log.error(
+                f"REFUSING live sell {symbol}: CoinSpot balance check failed. "
+                f"Will retry on next trail-stop trigger. (If this persists, "
+                f"check CoinSpot API status and key permissions.)"
+            )
+            return None
+        if actual_balance <= 0:
+            log.error(
+                f"REFUSING live sell {symbol}: CoinSpot reports 0 balance, "
+                f"but Supabase says we hold {coin_amount} {symbol}. This is a "
+                f"real accounting mismatch — manual reconciliation required, "
+                f"not a fee-dust shortfall."
+            )
+            return None
+
+        sell_qty = min(coin_amount, actual_balance)
+        if sell_qty < coin_amount:
+            shortfall_pct = (1 - sell_qty / coin_amount) * 100
+            log.warning(
+                f"{symbol}: clamping sell qty {coin_amount} -> {sell_qty} "
+                f"(shortfall {shortfall_pct:.4f}%). Supabase qty exceeds "
+                f"actual CoinSpot balance by a small amount — typical when "
+                f"buy-side fees were deducted in coin rather than AUD."
+            )
+
+        log.info(f"[LIVE] SELL {sell_qty} {symbol}")
+        result = self._post("/api/v2/my/sell/now", {
             "cointype": symbol.upper(),
             "amounttype": "coin",
-            "amount": str(coin_amount),
+            "amount": str(sell_qty),
             "markettype": "AUD",
         })
+        # v3.1.0: echo the actual sell_qty (post-clamp) into the response so
+        # the caller can write the true sold amount to Supabase rather than
+        # the originally-requested coin_amount.
+        if result is not None:
+            result.setdefault("coin_amount", sell_qty)
+            if sell_qty < coin_amount:
+                result.setdefault("clamped_from", coin_amount)
+        return result
 
     def _get_balances(self) -> dict:
         """Live-mode only. Normalises CoinSpot's list-or-dict response."""
