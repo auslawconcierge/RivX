@@ -1,6 +1,19 @@
 <!DOCTYPE html>
-<!-- RIVX_VERSION: v3.0.1-buy-cap-and-skip-wording-2026-05-16 -->
+<!-- RIVX_VERSION: v3.1.0-momentum-loosened-2026-05-16 -->
 <!--
+  v3.1.0 changes from v3.0.1 (2026-05-16):
+    Momentum bucket exit rules synced to bot/strategy.py v3.1. NEO and ENS
+    on 2026-05-14 hit the 4-day hard exit at peaks of +6.77% and +11.80%
+    respectively, force-closed flat. v3.1 loosens momentum:
+      - Trail arms at +15% peak (was +20%)
+      - Trail giveback 5% (was 7%) — tighter lock-in once armed
+      - Hard exit at 7 days (was 4) — runway to convert
+    Two dashboard sites updated:
+      1. BUCKETS.momentum_crypto.exit display strings
+      2. renderRiskLevelsForBucket() momentum_crypto thresholds
+         (target, trailGiveback, hardExitDays)
+    Swing crypto and swing stock buckets unchanged.
+
   v3.0.1 changes from v3.0.0 (2026-05-16):
     1. Daily buy cap raised from 10 to 15 to match the bot's v3.0 strategy
        constant (was a stale dashboard value from before the v3.0 ceiling
@@ -887,9 +900,9 @@ const BUCKETS = {
     },
     exit: {
       'Stop loss': '−10%',
-      'Trailing stop': 'arms at +20% peak, 7% giveback',
+      'Trailing stop': 'arms at +15% peak, 5% giveback',
       'Target sells': 'none — trail-only',
-      'Hard exit': '4 days',
+      'Hard exit': '7 days',
     },
     cadence: 'Every 2 hours, 24/7 (12/day)',
   },
@@ -2017,7 +2030,7 @@ function renderRiskLevelsForBucket(pos, bucketKey){
   if(bucketKey === 'swing_crypto'){
     stop = -0.08; target = 0.10; trailGiveback = 0.05; reviewDays = 14;
   } else if(bucketKey === 'momentum_crypto'){
-    stop = -0.10; target = 0.20; trailGiveback = 0.07; hardExitDays = 4;
+    stop = -0.10; target = 0.15; trailGiveback = 0.05; hardExitDays = 7;
   } else {
     stop = -0.05; target = 0.08; trailGiveback = 0.04; reviewDays = 14;
   }
