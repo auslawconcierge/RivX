@@ -1,12 +1,22 @@
-# RIVX_VERSION: v2.7-fee-adjusted-2026-05-09
+# RIVX_VERSION: v2.8-trail-aware-2026-05-16
 """
 Rich daily summary for RivX.
 
-v2.7 changes from v2.6 (2026-05-09):
+v2.8 changes from v2.7 (2026-05-16):
+  - Open position lines no longer say "tgt X% to go" — that was v2 wording
+    from before trail-only exits. v3.0 strategy has no target sells, so the
+    old "tgt 15.0% to go" line for a swing crypto position was misleading
+    (15% wasn't even the current trail-arm threshold of 10%).
+  - Each position now shows either "X% to trail-arm" (if the peak is below
+    the bucket's arm threshold) or "trail floor Y% away (peak Z%)" (if the
+    trail is live). Uses the stored peak_pnl_pct on the position row.
+  - Stop distance line unchanged.
+
+v2.7 changes (2026-05-09):
   - All displayed dollar amounts and percentages are now NET of estimated
     fees (using bot.fees model). Matches the dashboard's "Closed Positions"
     table and headline portfolio total to-the-cent.
-  - Open positions still show stop/tgt distance in GROSS pct (because
+  - Open positions still show stop/trail distance in GROSS pct (because
     strategy thresholds operate against gross). The leading dollar/pct
     on each row is net.
 
@@ -194,6 +204,39 @@ def _explain_signal(decision: dict, position_for_symbol: dict | None) -> str:
         return f"Skipped <b>{sym}</b>{conf_str} — {reason_clean}"
 
     return f"<b>{sym}</b> {action}{conf_str} — {reason_clean}"
+
+
+# ── Trail status for open positions (v2.8) ───────────────────────────────
+
+def _trail_status_extra(bucket: str, gross_pct: float, peak_pct: float) -> str:
+    """
+    Returns the trailing portion of an open-position one-liner — distance
+    to stop, plus either 'X% to trail-arm' (peak below arm threshold) or
+    'trail floor Y% away (peak Z%)' (trail is live).
+
+    All percentages are GROSS — same basis as the strategy thresholds.
+    The leading dollar/pct on the position row is NET (handled elsewhere).
+    """
+    if bucket == strategy.Bucket.SWING_CRYPTO:
+        stop_pct, arm_pct, give_pct = -8.0, 10.0, 5.0
+    elif bucket == strategy.Bucket.MOMENTUM_CRYPTO:
+        stop_pct, arm_pct, give_pct = -10.0, 20.0, 7.0
+    elif bucket == strategy.Bucket.SWING_STOCK:
+        stop_pct, arm_pct, give_pct = -5.0, 8.0, 4.0
+    else:
+        return ""
+
+    stop_dist = gross_pct - stop_pct
+
+    if peak_pct >= arm_pct:
+        floor_pct = peak_pct - give_pct
+        floor_dist = gross_pct - floor_pct
+        return (f" · stop {stop_dist:.1f}% away · "
+                f"trail floor {floor_dist:.1f}% away (peak {peak_pct:.1f}%)")
+    else:
+        arm_dist = arm_pct - peak_pct
+        return (f" · stop {stop_dist:.1f}% away · "
+                f"{arm_dist:.1f}% to trail-arm")
 
 
 # ── Headline portfolio (NET of fees) ─────────────────────────────────────
@@ -470,24 +513,24 @@ def run_rich_daily_summary(db, tg, log):
                 for sym, p in group.items():
                     # NET dollar + NET pct (matches dashboard)
                     net_dollar, net_pct = fee_calc.net_dollar_pct_for_position(p)
-                    # GROSS pct used for stop/tgt distance hints (those are
-                    # against gross strategy thresholds)
+                    # GROSS pct used for stop / trail distance (those thresholds
+                    # operate against gross)
                     gross_pct = float(p.get("pnl_pct") or 0) * 100
+
+                    # v2.8: peak-aware trail status, replaces the v2 "tgt X%" line.
+                    peak_raw = p.get("peak_pnl_pct")
+                    try:
+                        peak_pct = (
+                            float(peak_raw) * 100 if peak_raw is not None
+                            else gross_pct
+                        )
+                    except (TypeError, ValueError):
+                        peak_pct = gross_pct
+                    peak_pct = max(peak_pct, gross_pct)
+
                     age = _hold_duration(p.get("created_at"))
                     emoji = "🟢" if net_dollar >= 0 else "🔴"
-                    extra = ""
-                    if key == strategy.Bucket.SWING_CRYPTO:
-                        stop_dist = gross_pct - (-8.0)
-                        tgt_dist = 15.0 - gross_pct
-                        extra = f" · stop {stop_dist:.1f}% away · tgt {tgt_dist:.1f}% to go"
-                    elif key == strategy.Bucket.MOMENTUM_CRYPTO:
-                        stop_dist = gross_pct - (-10.0)
-                        tgt_dist = 30.0 - gross_pct
-                        extra = f" · stop {stop_dist:.1f}% away · tgt {tgt_dist:.1f}% to go"
-                    elif key == strategy.Bucket.SWING_STOCK:
-                        stop_dist = gross_pct - (-5.0)
-                        tgt_dist = 12.0 - gross_pct
-                        extra = f" · stop {stop_dist:.1f}% away · tgt {tgt_dist:.1f}% to go"
+                    extra = _trail_status_extra(key, gross_pct, peak_pct)
                     lines.append(
                         f"    {emoji} <b>{sym}</b> {_signed_dollar(net_dollar)} "
                         f"({_signed_pct(net_pct)}) · age {age}{extra}"
