@@ -1,6 +1,25 @@
 <!DOCTYPE html>
-<!-- RIVX_VERSION: v3.0.0-strategy-sync-2026-05-11 -->
+<!-- RIVX_VERSION: v3.0.1-buy-cap-and-skip-wording-2026-05-16 -->
 <!--
+  v3.0.1 changes from v3.0.0 (2026-05-16):
+    1. Daily buy cap raised from 10 to 15 to match the bot's v3.0 strategy
+       constant (was a stale dashboard value from before the v3.0 ceiling
+       lift). Updated the Capital structure card, the risk circuit-breaker
+       row's detail text and initial status badge, and renderRiskStatus()
+       JS thresholds (danger ≥15, warn ≥11).
+    2. "Failed buys & skipped setups" card no longer flags safety blocks
+       as red "FAILED". A safety rejection means the safety layer is
+       working correctly — it's not an error. rejected_by_safety now
+       renders as the amber "SKIPPED" badge with text "Safety check: ...".
+       True execution failures (Alpaca/CoinSpot API errors etc) still
+       render as red FAILED — that distinction matters.
+
+  v3.0.0 changes (2026-05-11):
+    BUCKETS constants synced to bot/strategy.py v3.0 (trail-only exits,
+    momentum loosened to 5d/1.5x, pullback windows widened, trail triggers
+    lowered to actually arm). Replaced fixed-target language with
+    trail-arming language throughout the strategy and detail panels.
+
   v2.7 changes from v2.6:
     1. PWA enablement. Added manifest.webmanifest, apple-touch-icon, theme
        colour, apple-mobile-web-app-* meta tags. iPhone users can now
@@ -450,7 +469,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   <div class="login-wrap">
     <div class="login-header">
       <div class="login-logo">RivX</div>
-      <div class="login-sub">Autonomous Trading · v2</div>
+      <div class="login-sub">Autonomous Trading · v3</div>
     </div>
     <div class="login-box">
       <input type="password" id="pw" placeholder="Passphrase" onkeydown="if(event.key==='Enter')login()" autocomplete="current-password"/>
@@ -618,7 +637,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
           </div>
           <div class="alloc-item">
             <div class="alloc-label">Daily buy cap</div>
-            <div class="alloc-val">10</div>
+            <div class="alloc-val">15</div>
             <div class="alloc-pct">UTC day reset</div>
           </div>
         </div>
@@ -646,8 +665,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
         </div>
         <div class="risk-row"><span class="risk-icon">⏱</span>
           <div class="risk-text"><div class="risk-text-label">Daily buy cap</div>
-            <div class="risk-text-detail">Maximum 10 buys per UTC day. Resets at UTC midnight.</div></div>
-          <span class="risk-status ok" id="risk-buys-today">0 / 10 today</span>
+            <div class="risk-text-detail">Maximum 15 buys per UTC day. Resets at UTC midnight.</div></div>
+          <span class="risk-status ok" id="risk-buys-today">0 / 15 today</span>
         </div>
         <div class="risk-row"><span class="risk-icon">📊</span>
           <div class="risk-text"><div class="risk-text-label">Consecutive losses</div>
@@ -1432,8 +1451,9 @@ function renderRiskStatus(){
   const buysToday = Number(botFlags['buys_today_'+today]) || 0;
   const buysEl = document.getElementById('risk-buys-today');
   if(buysEl){
-    buysEl.textContent = `${buysToday} / 10 today`;
-    buysEl.className = 'risk-status ' + (buysToday >= 10 ? 'danger' : buysToday >= 7 ? 'warn' : 'ok');
+    // v3.0.1: daily buy cap is 15 (bot/strategy v3.0 ceiling), was 10 in v2.
+    buysEl.textContent = `${buysToday} / 15 today`;
+    buysEl.className = 'risk-status ' + (buysToday >= 15 ? 'danger' : buysToday >= 11 ? 'warn' : 'ok');
   }
 
   const consec = Number(botFlags.consec_losses) || 0;
@@ -2496,10 +2516,12 @@ function renderFailures(){
 
   allDecisions.slice(0, 30).forEach(d => {
     if(d.action === 'rejected_by_safety'){
+      // v3.0.1: safety blocks are SKIPPED, not FAILED. The safety layer
+      // doing its job is the system working as designed, not an error.
       rows.push({
-        kind: 'fail',
+        kind: 'skip',
         symbol: d.symbol,
-        reason: `Safety blocked: ${d.reason || 'unknown'}`,
+        reason: `Safety check: ${d.reason || 'unknown'}`,
         time: d.decided_at,
       });
     } else if(d.action === 'skip' && d.confidence != null && d.confidence < 0.6){
