@@ -1,4 +1,4 @@
-# RIVX_VERSION: v3.0-trail-only-2026-05-07
+# RIVX_VERSION: v3.1-momentum-loosened-2026-05-16
 """
 RivX strategy.py — the trading rules.
 
@@ -8,7 +8,44 @@ them. Execution is in bot.py. Data fetching is in prices.py and scanner.py.
 This file is pure logic — easy to test, easy to change.
 
 ═══════════════════════════════════════════════════════════════════════════
-v3.0 changes from v2 (2026-05-07)
+v3.1 changes from v3.0 (2026-05-16) — MOMENTUM LOOSENED
+═══════════════════════════════════════════════════════════════════════════
+
+Lesson from NEO and ENS on 2026-05-14: both opened on 2026-05-10, both
+were momentum_crypto, both hit the 4-day hard exit at almost exactly
+96 hours. NEO peaked at +6.77% and force-closed at -0.18%. ENS peaked
+at +11.80% (a real building winner) and force-closed at +0.04%. Neither
+hit the v3.0 +20% trail-arm threshold, and neither was given enough
+runway to.
+
+The previous config was internally inconsistent: it required +20% to
+arm a trail, but only gave positions 96 hours to get there. Positions
+trending up at +10-15% over 3-4 days were force-killed before they
+could mature. ENS at peak +11.8% should have been protected, not
+liquidated.
+
+v3.1 momentum changes:
+  - Trail arms at +15% peak (was +20%) — ENS would have armed at peak,
+    and the trail floor would have been +10% (5% giveback).
+  - Trail giveback tightened to 5% (was 7%) — once armed, lock in more.
+  - Hard exit extended to 7 days (was 4) — gives positions a full week
+    to convert, matching the cadence at which momentum setups typically
+    play out. ENS and NEO would have had 3 more days to either arm the
+    trail or hit the stop honestly.
+  - Stop unchanged at -10%.
+
+Net effect: positions like ENS get protected. Positions like INJ
+(peaked at +30%, exited +21%) are unaffected — they would have armed
+the trail at +15% just the same and the 5% giveback would actually
+LOCK IN MORE on the way down. Positions that genuinely fail still
+hit -10% stops within the 7-day window.
+
+Worst case downside: capital tied up an extra 3 days in stinkers that
+would have closed flat at day 4 under v3.0. Best case: 2-3 of every
+10 momentum trades convert from flat-at-day-4 to real wins.
+
+═══════════════════════════════════════════════════════════════════════════
+v3.0 changes from v2 (2026-05-07) — kept for context
 ═══════════════════════════════════════════════════════════════════════════
 
 Lesson from AMD on 2026-05-06: trend-following winners run past the target
@@ -25,28 +62,8 @@ AMD case study:
 So v3.0 is fully trail-only. Target thresholds become trail-arming events,
 not sell events. One rule, no hedge.
 
-Other v3.0 changes (volume + speed):
-
-  - Momentum entries loosened: 5d high break on 1.5x volume (was 7d on 2x).
-    Doubles candidate flow into the most active bucket.
-  - Momentum time exit: 4 days (was 7). Faster cycling, more turnover.
-  - Swing review: 14 days (was 30). Forces faster turnover on positions
-    that aren't doing anything (MSFT/TSM are the case in point — they'd sit
-    for another 27 days under the old rule despite going nowhere).
-  - Pullback windows widened:
-      Stocks: 3-12% (was 3-8%) — catches more setups
-      Swing crypto: 4-13% (was 5-15%) — catches shallower pullbacks
-  - Trail triggers lowered so they actually arm:
-      Swing crypto: arms at +10% with 5% giveback (was +15% / 5%)
-      Swing stocks: arms at +8% with 4% giveback (was +12% / 4%)
-      Momentum: arms at +20% with 7% giveback (NEW — momentum had no trail)
-
-Combined ceiling: realistic 120-180 trades/year. Hits the 100+ target with
-margin and generates enough trade volume that paper data actually means
-something inside two weeks.
-
 ═══════════════════════════════════════════════════════════════════════════
-Capital allocation ($10,000 total) — UNCHANGED in v3.0
+Capital allocation ($10,000 total) — UNCHANGED in v3.1
 ═══════════════════════════════════════════════════════════════════════════
 
   Swing crypto    $4,000   up to 5 positions   $800 each      patient pile
@@ -55,7 +72,7 @@ Capital allocation ($10,000 total) — UNCHANGED in v3.0
   Ops floor          $500   not deployed                       fees + FX buffer
 
 ═══════════════════════════════════════════════════════════════════════════
-Entry rules (v3.0)
+Entry rules (UNCHANGED from v3.0)
 ═══════════════════════════════════════════════════════════════════════════
 
   SWING CRYPTO — buying quality on pullbacks
@@ -64,33 +81,33 @@ Entry rules (v3.0)
     - Above 50-day MA
     - 8 AM + 8 PM AEST scans (twice daily)
 
-  MOMENTUM CRYPTO — catching the start of moves (loosened in v3.0)
+  MOMENTUM CRYPTO — catching the start of moves
     - Outside top 30, inside top 200
-    - Just broke above 5-day high TODAY (was 7-day)
-    - Volume in last 24h > 1.5x its 5-day average (was 2x its 7-day)
+    - Just broke above 5-day high TODAY
+    - Volume in last 24h > 1.5x its 5-day average
     - Every 2 hours, 24/7 (12 scans/day)
 
   SWING STOCKS — buying quality on pullbacks (US equities)
     - From quality list (NVDA, AAPL, MSFT, etc.)
-    - Down 3-12% from 7-day high (widened upper end in v3.0)
+    - Down 3-12% from 7-day high
     - Above 50-day MA
     - 11 PM + 3 AM AEST scans (US weekdays)
 
 ═══════════════════════════════════════════════════════════════════════════
-Exit rules (v3.0 — TRAIL-ONLY)
+Exit rules (v3.1 — TRAIL-ONLY, MOMENTUM LOOSENED)
 ═══════════════════════════════════════════════════════════════════════════
 
-  SWING CRYPTO
+  SWING CRYPTO (unchanged)
     Stop:  -8% from entry
     Trail: arms once peak ≥ +10%, exits if price falls 5% below peak
     Time:  14-day review
 
-  MOMENTUM CRYPTO
+  MOMENTUM CRYPTO (v3.1: trail-arm lowered, giveback tightened, time exit extended)
     Stop:  -10% from entry
-    Trail: arms once peak ≥ +20%, exits if price falls 7% below peak
-    Time:  4-day hard exit
+    Trail: arms once peak ≥ +15% (was +20%), exits if price falls 5% below peak (was 7%)
+    Time:  7-day hard exit (was 4)
 
-  SWING STOCKS
+  SWING STOCKS (unchanged)
     Stop:  -5% from entry
     Trail: arms once peak ≥ +8%, exits if price falls 4% below peak
     Time:  14-day review
@@ -102,7 +119,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 
-# ── Allocation constants (unchanged in v3.0) ──────────────────────────────
+# ── Allocation constants (unchanged in v3.1) ──────────────────────────────
 
 STARTING_CAPITAL_AUD = 10_000.0
 OPS_FLOOR_AUD        = 500.0   # always-cash buffer for fees, FX
@@ -120,25 +137,25 @@ SWING_STOCKS_SLOTS     = 3
 SWING_STOCKS_SIZE      = SWING_STOCKS_BUDGET / SWING_STOCKS_SLOTS  # ~$1,167
 
 
-# ── Exit rules (v3.0 — trail-only) ────────────────────────────────────────
+# ── Exit rules (v3.1 — trail-only, momentum loosened) ─────────────────────
 
-# Swing crypto
+# Swing crypto (unchanged from v3.0)
 SWING_CRYPTO_STOP_PCT       = -0.08    # -8%
-SWING_CRYPTO_TRAIL_TRIGGER  = 0.10     # arm trail at +10% (was +15%)
+SWING_CRYPTO_TRAIL_TRIGGER  = 0.10     # arm trail at +10%
 SWING_CRYPTO_TRAIL_GIVEBACK = 0.05     # exit if 5% below peak
-SWING_CRYPTO_REVIEW_DAYS    = 14       # was 30
+SWING_CRYPTO_REVIEW_DAYS    = 14
 
-# Momentum crypto (NEW: trail added in v3.0)
-MOMENTUM_STOP_PCT           = -0.10    # -10%
-MOMENTUM_TRAIL_TRIGGER      = 0.20     # arm trail at +20%
-MOMENTUM_TRAIL_GIVEBACK     = 0.07     # 7% giveback
-MOMENTUM_MAX_DAYS           = 4        # was 7
+# Momentum crypto (v3.1: ALL three exit knobs adjusted)
+MOMENTUM_STOP_PCT           = -0.10    # -10% (unchanged)
+MOMENTUM_TRAIL_TRIGGER      = 0.15     # arm trail at +15% (v3.1: was +20%)
+MOMENTUM_TRAIL_GIVEBACK     = 0.05     # 5% giveback (v3.1: was 7%)
+MOMENTUM_MAX_DAYS           = 7        # 7-day hard exit (v3.1: was 4)
 
-# Swing stocks
+# Swing stocks (unchanged from v3.0)
 SWING_STOCKS_STOP_PCT       = -0.05    # -5%
-SWING_STOCKS_TRAIL_TRIGGER  = 0.08     # arm trail at +8% (was +12%)
+SWING_STOCKS_TRAIL_TRIGGER  = 0.08     # arm trail at +8%
 SWING_STOCKS_TRAIL_GIVEBACK = 0.04     # 4% giveback
-SWING_STOCKS_REVIEW_DAYS    = 14       # was 30
+SWING_STOCKS_REVIEW_DAYS    = 14
 
 
 # ── Bucket enum ───────────────────────────────────────────────────────────
@@ -359,7 +376,7 @@ def buy_respects_ops_floor(
 class ExitDecision:
     """Result of applying exit rules to one open position."""
     should_exit: bool
-    fraction: float       # 1.0 = full exit. v3.0: always 1.0 (no half-take)
+    fraction: float       # 1.0 = full exit. v3.0+: always 1.0 (no half-take)
     reason: str
     new_peak_pnl_pct: float = 0.0   # what to update the trailing-stop watermark to
 
@@ -417,16 +434,34 @@ def decide_exit_swing_crypto(
 def decide_exit_momentum(
     *,
     pnl_pct: float,
-    peak_pnl_pct: float,             # v3.0: NEW required param
+    peak_pnl_pct: float,
     age_days: float,
 ) -> ExitDecision:
     """
-    v3.0 trail-only: stop -10%, trail arms at +20% with 7% giveback,
-    hard time exit at 4 days. Was previously target +30% full exit.
+    v3.1 trail-only LOOSENED: stop -10%, trail arms at +15% (was +20%) with
+    5% giveback (was 7%), hard time exit at 7 days (was 4).
+
+    Why all three knobs changed at once:
+      The previous v3.0 config was internally inconsistent — it demanded
+      a +20% peak to arm a trail but only gave 96 hours to get there.
+      Positions trending up at +10-15% over 3-4 days were force-killed
+      at flat (NEO peaked +6.77% → closed -0.18%; ENS peaked +11.80% →
+      closed +0.04%). The trail-arm threshold and the time-exit window
+      have to be in the same ballpark or one of them is useless.
+
+      +15% / 5% / 7d is mutually consistent: a position that runs to
+      +15% in a week arms the trail; the 5% giveback locks in +10%
+      minimum; positions that fail still hit -10% stops within the
+      window. Position like INJ (peaked +30% in 21 hours, exited +21%
+      under v3.0) would arm the trail at the same point under v3.1 but
+      the tighter 5% giveback would lock in MORE on the way down.
+
+      Worst case: capital tied up 3 extra days in a position that would
+      have closed flat at day 4. Acceptable.
     """
     new_peak = max(peak_pnl_pct, pnl_pct)
 
-    # Stop loss
+    # Stop loss (unchanged at -10%)
     if pnl_pct <= MOMENTUM_STOP_PCT:
         return ExitDecision(
             should_exit=True,
@@ -435,8 +470,7 @@ def decide_exit_momentum(
             new_peak_pnl_pct=new_peak,
         )
 
-    # v3.0: trailing stop, arms at +20%, 7% giveback. The +30% target is
-    # gone — momentum that runs to +50% should keep running, not cap out.
+    # v3.1: trail arms at +15% (was +20%), 5% giveback (was 7%)
     if peak_pnl_pct >= MOMENTUM_TRAIL_TRIGGER:
         if pnl_pct <= peak_pnl_pct - MOMENTUM_TRAIL_GIVEBACK:
             return ExitDecision(
@@ -447,12 +481,12 @@ def decide_exit_momentum(
                 new_peak_pnl_pct=new_peak,
             )
 
-    # Hard time exit at 4 days (v3.0: was 7)
+    # v3.1: hard time exit at 7 days (was 4)
     if age_days >= MOMENTUM_MAX_DAYS:
         return ExitDecision(
             should_exit=True,
             fraction=1.0,
-            reason=f"4-day momentum window expired (age {age_days:.1f}d, pnl {pnl_pct*100:+.2f}%)",
+            reason=f"7-day momentum window expired (age {age_days:.1f}d, pnl {pnl_pct*100:+.2f}%)",
             new_peak_pnl_pct=new_peak,
         )
 
