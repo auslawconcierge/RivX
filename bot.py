@@ -1,8 +1,29 @@
-# RIVX_VERSION: v3.0.3-net-fee-alerts-2026-05-10
+# RIVX_VERSION: v3.0.7-stock-peak-gated-2026-05-16
 """
 RivX bot.py — main loop orchestrator.
 
-v3.0.3 changes from v3.0.2 (2026-05-10):
+v3.0.7 changes from v3.0.6 (2026-05-16):
+  manage_open_positions now skips ALL stock management (peak update AND
+  exit checks) when the US regular session is closed, instead of only
+  skipping exit checks. Previously, _sync_alpaca_stocks pulled
+  current_price from Alpaca on every 5-min snapshot — including
+  extended-hours prints — and that price flowed into pnl_pct on the
+  position row. manage_open_positions then wrote those after-hours
+  values into peak_pnl_pct. When regular trading opened the next day,
+  the trail could already be below its giveback, so the first in-
+  session manage cycle fired immediately at whatever the regular-
+  session price was, far below the configured threshold.
+  Hypothesis for NVDA on 2026-05-16: peak +11.35% landed during
+  extended hours, regular open was already past the 4% giveback floor.
+  Trail fired at +4.36% gross instead of the +7.35% the config implies.
+  Fix is one line moved: skip stocks when market is closed BEFORE the
+  peak update block, not after. Crypto management is unaffected
+  (crypto markets are 24/7).
+
+v3.0.6 startup banner alignment (header was still v3.0.3, log lines
+  said v3.0.6 — now both say v3.0.7).
+
+v3.0.3 changes (2026-05-10):
   Per-trade SELL alerts (and the manual-sell alert) now show net-of-fees
   dollars and percentage, matching the dashboard and daily summary. The
   raw gross pnl_pct is still stored on the position row (strategy thresholds
@@ -744,6 +765,19 @@ def manage_open_positions(db, alpaca, coinspot, tg: TelegramNotifier):
 
             bucket = (pos.get("bucket") or "").strip()
 
+            # v3.0.7: skip ALL stock management when the US regular session
+            # is closed — peak update AND exit check. Previously the
+            # market-closed guard was below the peak update, so Alpaca's
+            # extended-hours prints (carried into pnl_pct by the snapshot
+            # path) flowed into peak_pnl_pct unchecked. When regular hours
+            # opened, the bot could already be below the trail giveback
+            # from an after-hours print it could never have sold into, so
+            # the first in-session manage cycle fired the trail at a much
+            # worse level than the configured threshold implies.
+            # Crypto (24/7) is unaffected.
+            if bucket == strategy.Bucket.SWING_STOCK and not stock_market_open:
+                continue
+
             entry = float(pos.get("entry_price") or 0)
             if entry <= 0:
                 continue
@@ -774,9 +808,6 @@ def manage_open_positions(db, alpaca, coinspot, tg: TelegramNotifier):
                     log.debug(f"peak updated: {sym} → {new_peak_value*100:+.2f}%")
                 except Exception as e:
                     log.warning(f"peak write {sym}: {e}")
-
-            if bucket == strategy.Bucket.SWING_STOCK and not stock_market_open:
-                continue
 
             age_days = _position_age_days(pos)
 
@@ -1259,9 +1290,10 @@ def _call_claude_for_qa(client, context: str, question: str) -> tuple[str, int, 
 
 def main():
     try:
-        log.info(f"RivX v3.0.6 starting — {'PAPER' if PAPER_MODE else 'LIVE'} mode")
+        log.info(f"RivX v3.0.7 starting — {'PAPER' if PAPER_MODE else 'LIVE'} mode")
         log.info(f"Strategy: $4K swing crypto / $2K momentum crypto / $3.5K stocks / $500 ops floor")
         log.info(f"Schedule: swing crypto 8 AM + 8 PM AEST | momentum crypto every 2 hrs 24/7 | stocks 11 PM + 3 AM AEST (weekdays)")
+        log.info("v3.0.7: stock peak update now gated by US regular session — no more extended-hours peaks polluting trail")
         log.info("v3.0.3: per-trade SELL alerts now show net-of-fees $ and %")
         log.info("v3.0.2: paper-mode sells no longer blocked by missing qty (live still protected)")
         log.info("v3.0.1: qty-scoped sells (CoinSpot + Alpaca) — protects non-bot holdings in LIVE")
@@ -1286,8 +1318,8 @@ def main():
         if db.get_flag("last_startup") != today:
             db.set_flag("last_startup", today)
             rec_status = "Reconciler online" if _RECONCILIATION_AVAILABLE else "Reconciler DISABLED"
-            tg.send(f"🟢 RivX v3.0.6 online. {'PAPER' if PAPER_MODE else 'LIVE'} mode. "
-                    f"{rec_status}. Net-of-fees alerts.")
+            tg.send(f"🟢 RivX v3.0.7 online. {'PAPER' if PAPER_MODE else 'LIVE'} mode. "
+                    f"{rec_status}. Stock peak now gated by regular session.")
 
         log.info("setup complete — entering main loop")
         sys.stdout.flush()
